@@ -7,10 +7,10 @@ dependencies:
   - python=3.11
   - geopandas=1.0.1
   - rasterio=1.4.3
-  - scipy
+  - numpy<2.0
+  - scipy>=1.12
   - spectral
   - matplotlib
-  - numpy
   - pandas
   - tqdm
   - pyyaml
@@ -18,10 +18,12 @@ dependencies:
   - pytest
   - pip
   - pip:
-    - scikit-learn
-    - xgboost
-    - lightgbm
-    - torch
-    - torchvision
+    - scikit-learn>=1.4
+    - xgboost>=2.0
+    - lightgbm>=4.0
     - wandb
     - openpyxl
+    # For GPU support, install torch manually after env creation:
+    # pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+    - torch
+    - torchvision

@@ -4,6 +4,7 @@ gpkg_dir: /mnt/crism/MRDR/categorized_mineral_units
 output_dir: /mnt/crism/MRDR/crism_classification/data
 predictions_dir: /mnt/crism/MRDR/crism_classification/predictions
 checkpoints_dir: /mnt/crism/MRDR/crism_classification/checkpoints
+reports_dir: /mnt/crism/MRDR/crism_classification/reports
 
 classes:
   - olivine_t1

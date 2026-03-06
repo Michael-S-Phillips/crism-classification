@@ -1,7 +1,12 @@
 __pycache__/
 *.pyc
 *.egg-info/
-data/pixels.parquet
+data/*.parquet
+*.parquet
+*.ipynb_checkpoints/
+*.log
+.DS_Store
+htmlcov/
 predictions/
 checkpoints/
 .env
