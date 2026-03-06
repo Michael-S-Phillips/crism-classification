@@ -1,0 +1,16 @@
+program: scripts/train.py
+method: bayes
+metric:
+  name: val_mAP
+  goal: maximize
+parameters:
+  model:
+    value: xgb
+  n_estimators:
+    values: [100, 200, 400]
+  max_depth:
+    values: [4, 6, 8]
+  learning_rate:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 0.3

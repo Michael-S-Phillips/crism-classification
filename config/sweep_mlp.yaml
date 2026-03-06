@@ -1,0 +1,18 @@
+program: scripts/train.py
+method: bayes
+metric:
+  name: val_mAP
+  goal: maximize
+parameters:
+  model:
+    value: mlp
+  lr:
+    distribution: log_uniform_values
+    min: 1e-4
+    max: 1e-2
+  batch_size:
+    values: [128, 256, 512]
+  epochs:
+    value: 100
+  patience:
+    value: 10
