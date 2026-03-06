@@ -60,7 +60,7 @@ def extract_pixels_from_pair(
     For each polygon:
       - Rasterizes the polygon to a pixel mask aligned to the mrrsu grid
       - Reads all n_bands values at each masked pixel
-      - Drops pixels where any band >= NODATA_VALUE or is NaN
+      - Drops pixels where any band >= NODATA_VALUE; imputes NaN bands to 0.0
       - Parses the Category string into multi-hot labels + confidence weight
 
     Parameters
@@ -145,8 +145,11 @@ def extract_pixels_from_pair(
                 local_c = c - col_min
                 pixel_vals = chunk[:, local_r, local_c]
 
-                if np.any(pixel_vals >= NODATA_VALUE) or np.any(np.isnan(pixel_vals)):
+                if np.any(pixel_vals >= NODATA_VALUE):
                     continue
+                # Impute NaN bands (e.g. BD640_2 / band 5 is undefined in CRISM MRDR)
+                if np.any(np.isnan(pixel_vals)):
+                    pixel_vals = np.nan_to_num(pixel_vals, nan=0.0)
 
                 record: Dict[str, Any] = {
                     'tile_id': tile_id,

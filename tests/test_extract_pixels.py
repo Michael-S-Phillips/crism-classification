@@ -102,6 +102,29 @@ def test_find_tile_pairs_sorted():
     ids = [p[0] for p in pairs]
     assert ids == sorted(ids)
 
+def test_nan_bands_imputed_not_dropped(tmp_path):
+    """Pixels with NaN in one band (e.g. band 5 / BD640_2) should be kept with 0.0 imputed."""
+    img_path = tmp_path / "t0002_mrrsu_test.img"
+    transform = from_bounds(0, 0, 10, 10, 10, 10)
+    crs = CRS.from_epsg(4326)
+    data = np.random.rand(3, 10, 10).astype(np.float32)
+    data[1, :, :] = np.nan  # band index 1 is entirely NaN (like BD640_2)
+    with rasterio.open(
+        str(img_path), 'w', driver='GTiff', height=10, width=10,
+        count=3, dtype='float32', crs=crs, transform=transform
+    ) as dst:
+        dst.write(data)
+    gdf = gpd.GeoDataFrame(
+        {'Category': ['lcp (High)'], 'geometry': [box(1, 1, 4, 4)]},
+        crs='EPSG:4326'
+    )
+    gpkg_path = str(tmp_path / "T0002.gpkg")
+    gdf.to_file(gpkg_path, driver='GPKG')
+    records = extract_pixels_from_pair('t0002', str(img_path), gpkg_path, n_bands=3)
+    assert len(records) > 0, "NaN-band pixels should NOT be dropped"
+    assert all(r['b1'] == 0.0 for r in records), "NaN band should be imputed to 0.0"
+
+
 def test_other_polygon_filtering(synthetic_tile, tmp_path):
     """Other polygons not in other_polygon_ids set should be excluded."""
     img_path, _ = synthetic_tile
