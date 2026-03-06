@@ -1,0 +1,27 @@
+name: crism
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - geopandas=1.0.1
+  - rasterio=1.4.3
+  - scipy
+  - spectral
+  - matplotlib
+  - numpy
+  - pandas
+  - tqdm
+  - pyyaml
+  - pyarrow
+  - pytest
+  - pip
+  - pip:
+    - scikit-learn
+    - xgboost
+    - lightgbm
+    - torch
+    - torchvision
+    - wandb
+    - openpyxl

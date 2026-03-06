@@ -1,0 +1,33 @@
+project_root: /mnt/crism/MRDR/crism_classification
+data_root: /mnt/crism/MRDR
+gpkg_dir: /mnt/crism/MRDR/categorized_mineral_units
+output_dir: /mnt/crism/MRDR/crism_classification/data
+predictions_dir: /mnt/crism/MRDR/crism_classification/predictions
+checkpoints_dir: /mnt/crism/MRDR/crism_classification/checkpoints
+
+classes:
+  - olivine_t1
+  - olivine_t2
+  - lcp
+  - hcp
+  - plagioclase
+  - other
+
+confidence_weights:
+  High: 1.0
+  Moderate: 0.5
+  Low: 0.25
+
+other_max_polygons: 400
+patch_size: 7
+nodata_value: 65535
+
+split:
+  train: 0.70
+  val: 0.15
+  test: 0.15
+  random_seed: 42
+
+wandb:
+  project: crism-mineral-classification
+  entity: null

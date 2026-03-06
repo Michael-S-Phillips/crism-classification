@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.egg-info/
+data/pixels.parquet
+predictions/
+checkpoints/
+.env
+wandb/
+*.pt
+*.pkl
