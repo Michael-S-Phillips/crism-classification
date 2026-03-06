@@ -69,6 +69,7 @@ def train_torch_model(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs)
     loss_fn = WeightedBCEWithLogitsLoss()
 
+    val_sub = df[df['split'] == 'val']
     best_val_map = -1.0
     best_state = None
     patience_counter = 0
@@ -94,7 +95,6 @@ def train_torch_model(
         # --- Validate ---
         model.eval()
         all_logits, all_labels = [], []
-        val_sub = df[df['split'] == 'val']
 
         with torch.no_grad():
             for features, labels, weights in val_loader:

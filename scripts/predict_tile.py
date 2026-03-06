@@ -102,6 +102,8 @@ def _sklearn_predict(models, X, model_type):
     elif model_type == 'svc':
         m = models[0]
         raw = m.decision_function(X)
+        if raw.ndim == 1:
+            raw = raw[:, np.newaxis]
         return 1 / (1 + np.exp(-raw))
     else:
         proba_list = models[0].predict_proba(X)
