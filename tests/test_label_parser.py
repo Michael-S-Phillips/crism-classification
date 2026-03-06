@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from data.label_parser import parse_category, CLASSES
+from data.label_parser import parse_category, get_confidence_tier, CLASSES
 
 def test_classes_order():
     assert CLASSES == ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']
@@ -76,3 +76,37 @@ def test_returns_numpy_array():
     label, weight = parse_category("lcp (High)")
     assert isinstance(label, np.ndarray)
     assert label.dtype == np.float32
+
+def test_none_input_raises():
+    with pytest.raises(ValueError, match="None"):
+        parse_category(None)
+
+def test_empty_string_raises():
+    with pytest.raises(ValueError):
+        parse_category("")
+
+def test_whitespace_only_raises():
+    with pytest.raises(ValueError):
+        parse_category("   ")
+
+def test_confidence_case_insensitive_high():
+    """'(high)' lowercase should still give weight 1.0"""
+    label, weight = parse_category("lcp (high)")
+    assert weight == 1.0
+
+def test_confidence_case_insensitive_moderate():
+    label, weight = parse_category("lcp (MODERATE)")
+    assert weight == 0.5
+
+def test_missing_confidence_defaults_to_low():
+    label, weight = parse_category("lcp")
+    assert weight == 0.25
+
+def test_get_confidence_tier_preserves_case():
+    assert get_confidence_tier("lcp (High)") == "High"
+    assert get_confidence_tier("lcp (Moderate)") == "Moderate"
+    assert get_confidence_tier("lcp (Low)") == "Low"
+
+def test_red_slope_ignored():
+    label, weight = parse_category("red slope (Low)")
+    np.testing.assert_array_almost_equal(label, [0, 0, 0, 0, 0, 0])

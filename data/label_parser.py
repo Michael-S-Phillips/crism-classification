@@ -4,11 +4,15 @@ import numpy as np
 
 CLASSES = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']
 N_CLASSES = len(CLASSES)
+_CLASS_IDX = {c: i for i, c in enumerate(CLASSES)}
 
-_CONFIDENCE_WEIGHTS = {'High': 1.0, 'Moderate': 0.5, 'Low': 0.25}
+_CONFIDENCE_WEIGHTS = {'high': 1.0, 'moderate': 0.5, 'low': 0.25}
+_CONF_RE = re.compile(r'\((\w+)\)')
 
-# Maps token strings found in category to class indices and values.
-# For untyped "olivine", we assign 0.5 to both t1 and t2.
+# Maps token strings to class contributions.
+# Keys are lowercase substrings to match against tokens.
+# Longer keys must be tried first (see sorted() call in parse_category).
+# Empty-dict entries explicitly mark tokens that are known but not target classes.
 _TOKEN_MAP = {
     'type 1 olivine': {'olivine_t1': 1.0},
     'type 2 olivine': {'olivine_t2': 1.0},
@@ -17,7 +21,8 @@ _TOKEN_MAP = {
     'hcp':            {'hcp': 1.0},
     'plagioclase':    {'plagioclase': 1.0},
     'other':          {'other': 1.0},
-    # ignored tokens (produce no label contribution)
+    # Known non-target tokens — explicitly ignored so they don't fall through
+    # as unrecognised. New non-target minerals should be added here.
     'alteration':     {},
     'red slope':      {},
     'spinel':         {},
@@ -33,41 +38,52 @@ def parse_category(category: str) -> tuple[np.ndarray, float]:
     Parameters
     ----------
     category : str
-        e.g. "Type 1 olivine (High)", "hcp + olivine (Moderate)"
+        e.g. "Type 1 olivine (High)", "hcp + olivine (Moderate)".
+        Must not be None or empty — raises ValueError if so.
 
     Returns
     -------
     label : np.ndarray, shape (6,), dtype float32
         Multi-hot vector for [olivine_t1, olivine_t2, lcp, hcp, plagioclase, other].
         Untyped "olivine" in mixed labels contributes 0.5 to both t1 and t2.
+        Returns all-zeros if no recognised mineral token is found.
     weight : float
         Confidence sample weight: High=1.0, Moderate=0.5, Low=0.25.
+        Defaults to 0.25 if confidence tier is absent or unrecognised.
     """
-    label = np.zeros(N_CLASSES, dtype=np.float32)
-    class_idx = {c: i for i, c in enumerate(CLASSES)}
+    if category is None:
+        raise ValueError("category must not be None")
+    if not category.strip():
+        raise ValueError(f"category must not be empty, got: {category!r}")
 
-    # Extract confidence tier from parentheses, e.g. "(High)"
-    conf_match = re.search(r'\((\w+)\)', category)
-    confidence = conf_match.group(1) if conf_match else 'Low'
+    label = np.zeros(N_CLASSES, dtype=np.float32)
+
+    # Extract confidence tier — case-insensitive lookup
+    conf_match = _CONF_RE.search(category)
+    confidence = conf_match.group(1).lower() if conf_match else 'low'
     weight = _CONFIDENCE_WEIGHTS.get(confidence, 0.25)
 
-    # Remove the confidence part and split on '+'
-    mineral_part = re.sub(r'\s*\([^)]*\)', '', category).strip()
+    # Remove confidence parenthetical, split on '+', process each token
+    mineral_part = _CONF_RE.sub('', category).strip()
     tokens = [t.strip().lower() for t in mineral_part.split('+')]
 
     for token in tokens:
-        # Try longest match first (so "type 1 olivine" matches before "olivine")
+        # Try longest key first to prevent 'olivine' matching before 'type 1 olivine'
         for key in sorted(_TOKEN_MAP.keys(), key=len, reverse=True):
             if key in token:
                 for cls, val in _TOKEN_MAP[key].items():
-                    if cls in class_idx:
-                        label[class_idx[cls]] = max(label[class_idx[cls]], val)
-                break
+                    label[_CLASS_IDX[cls]] = max(label[_CLASS_IDX[cls]], val)
+                break  # each token matches at most one map entry
 
     return label, weight
 
 
 def get_confidence_tier(category: str) -> str:
-    """Extract the confidence tier string from a category label."""
-    match = re.search(r'\((\w+)\)', category)
+    """
+    Extract the confidence tier string from a category label.
+
+    Returns the original-case confidence string (e.g. 'High', 'Moderate', 'Low'),
+    or 'Low' if no parenthesised term is found.
+    """
+    match = _CONF_RE.search(category)
     return match.group(1) if match else 'Low'
