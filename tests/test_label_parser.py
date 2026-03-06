@@ -1,0 +1,78 @@
+import numpy as np
+import pytest
+from data.label_parser import parse_category, CLASSES
+
+def test_classes_order():
+    assert CLASSES == ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']
+
+def test_type1_olivine_high():
+    label, weight = parse_category("Type 1 olivine (High)")
+    np.testing.assert_array_almost_equal(label, [1, 0, 0, 0, 0, 0])
+    assert weight == 1.0
+
+def test_type2_olivine_moderate():
+    label, weight = parse_category("Type 2 olivine (Moderate)")
+    np.testing.assert_array_almost_equal(label, [0, 1, 0, 0, 0, 0])
+    assert weight == 0.5
+
+def test_lcp_high():
+    label, weight = parse_category("lcp (High)")
+    np.testing.assert_array_almost_equal(label, [0, 0, 1, 0, 0, 0])
+    assert weight == 1.0
+
+def test_hcp_low():
+    label, weight = parse_category("hcp (Low)")
+    np.testing.assert_array_almost_equal(label, [0, 0, 0, 1, 0, 0])
+    assert weight == 0.25
+
+def test_plagioclase_moderate():
+    label, weight = parse_category("plagioclase (Moderate)")
+    np.testing.assert_array_almost_equal(label, [0, 0, 0, 0, 1, 0])
+    assert weight == 0.5
+
+def test_other_high():
+    label, weight = parse_category("Other (High)")
+    np.testing.assert_array_almost_equal(label, [0, 0, 0, 0, 0, 1])
+    assert weight == 1.0
+
+def test_hcp_plus_olivine():
+    label, weight = parse_category("hcp + olivine (High)")
+    np.testing.assert_array_almost_equal(label, [0.5, 0.5, 0, 1, 0, 0])
+    assert weight == 1.0
+
+def test_olivine_plus_plagioclase():
+    label, weight = parse_category("olivine + plagioclase (Low)")
+    np.testing.assert_array_almost_equal(label, [0.5, 0.5, 0, 0, 1, 0])
+    assert weight == 0.25
+
+def test_hcp_plus_lcp():
+    label, weight = parse_category("hcp + lcp (Moderate)")
+    np.testing.assert_array_almost_equal(label, [0, 0, 1, 1, 0, 0])
+    assert weight == 0.5
+
+def test_alteration_plus_olivine():
+    label, weight = parse_category("alteration + olivine (Low)")
+    np.testing.assert_array_almost_equal(label, [0.5, 0.5, 0, 0, 0, 0])
+    assert weight == 0.25
+
+def test_alteration_plus_plagioclase():
+    label, weight = parse_category("alteration + plagioclase (Low)")
+    np.testing.assert_array_almost_equal(label, [0, 0, 0, 0, 1, 0])
+    assert weight == 0.25
+
+def test_lcp_plus_hcp_plus_olivine():
+    label, weight = parse_category("hcp + lcp + olivine (Moderate)")
+    assert label[2] == 1.0   # lcp
+    assert label[3] == 1.0   # hcp
+    assert label[0] == pytest.approx(0.5)  # olivine_t1
+    assert label[1] == pytest.approx(0.5)  # olivine_t2
+
+def test_unknown_category_returns_zeros():
+    label, weight = parse_category("spinel (Low)")
+    np.testing.assert_array_almost_equal(label, [0, 0, 0, 0, 0, 0])
+    assert weight == 0.25
+
+def test_returns_numpy_array():
+    label, weight = parse_category("lcp (High)")
+    assert isinstance(label, np.ndarray)
+    assert label.dtype == np.float32
