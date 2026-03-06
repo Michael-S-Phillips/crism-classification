@@ -1,7 +1,8 @@
 """
-PyTorch Dataset classes and sklearn array loaders for the pixel dataset.
+PyTorch Dataset classes and sklearn array loaders for the CRISM pixel dataset.
 """
-from typing import Dict, Tuple
+from typing import Dict
+
 import numpy as np
 import pandas as pd
 import torch
@@ -10,6 +11,7 @@ import rasterio
 
 LABEL_COLS = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']
 BAND_COLS = [f'b{i}' for i in range(60)]
+NODATA_VALUE = 65535
 
 
 class CRISMPixelDataset(Dataset):
@@ -70,22 +72,26 @@ class CRISMPatchDataset(Dataset):
         c1 = min(src.width, pc + h + 1)
 
         window = rasterio.windows.Window(c0, r0, c1 - c0, r1 - r0)
-        patch = src.read(window=window).astype(np.float32)  # (bands, h, w)
+        chunk = src.read(window=window).astype(np.float32)  # (bands, h, w)
 
-        # Replace NODATA
-        patch[patch >= 65535] = 0.0
-        patch = np.nan_to_num(patch, nan=0.0)
+        # Replace nodata and NaN with 0
+        chunk[chunk >= NODATA_VALUE] = 0.0
+        chunk = np.nan_to_num(chunk, nan=0.0)
 
-        # Pad to patch_size x patch_size if near border
+        # Place chunk into zero-padded full patch
         full = np.zeros((src.count, self.patch_size, self.patch_size), dtype=np.float32)
-        full[:, h - (pr - r0):h - (pr - r0) + patch.shape[1],
-                h - (pc - c0):h - (pc - c0) + patch.shape[2]] = patch
+        dst_r = h - (pr - r0)  # offset in output array (= max(0, h - pr) at borders)
+        dst_c = h - (pc - c0)
+        full[:, dst_r:dst_r + chunk.shape[1], dst_c:dst_c + chunk.shape[2]] = chunk
 
         return torch.tensor(full, dtype=torch.float32), self.labels[idx], self.weights[idx]
 
     def __del__(self):
         for src in self._handles.values():
-            src.close()
+            try:
+                src.close()
+            except Exception:
+                pass
 
 
 def load_sklearn_arrays(parquet_path: str):
