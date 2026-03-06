@@ -1,6 +1,7 @@
 """
 PyTorch Dataset classes and sklearn array loaders for the CRISM pixel dataset.
 """
+import os
 from typing import Dict
 
 import numpy as np
@@ -32,8 +33,13 @@ class CRISMPixelDataset(Dataset):
 class CRISMPatchDataset(Dataset):
     """
     Spatial patch dataset for CNN and ViT.
-    Extracts a (patch_size x patch_size x 60) neighbourhood around each pixel
-    from the corresponding mrrsu raster at runtime.
+
+    Extracts a (bands × patch_size × patch_size) neighbourhood around each
+    pixel from the corresponding mrrsu raster at runtime. Border pixels are
+    zero-padded. File handles are cached per tile and re-opened safely after
+    DataLoader fork (detected via os.getpid() comparison).
+
+    Call close() when done, or use as a context manager.
     """
 
     def __init__(
@@ -43,27 +49,51 @@ class CRISMPatchDataset(Dataset):
         patch_size: int = 7,
     ):
         assert patch_size % 2 == 1, "patch_size must be odd"
-        self.df = df.reset_index(drop=True)
+        df = df.reset_index(drop=True)
         self.mrrsu_map = mrrsu_map
         self.patch_size = patch_size
         self.half = patch_size // 2
         self.labels = torch.tensor(df[LABEL_COLS].values, dtype=torch.float32)
         self.weights = torch.tensor(df['confidence_weight'].values, dtype=torch.float32)
-
-        # Cache open rasterio file handles per tile
+        # Extract hot-path columns as arrays to avoid per-item DataFrame overhead
+        self._tile_ids = df['tile_id'].values
+        self._pixel_rows = df['pixel_row'].values.astype(np.int64)
+        self._pixel_cols = df['pixel_col'].values.astype(np.int64)
+        self._n = len(df)
+        # File handles cached per tile; cleared on DataLoader fork (pid check)
         self._handles: Dict[str, rasterio.DatasetReader] = {}
+        self._pid = os.getpid()
 
     def __len__(self):
-        return len(self.df)
+        return self._n
 
     def __getitem__(self, idx):
-        row = self.df.iloc[idx]
-        tile_id = row['tile_id']
-        pr, pc = int(row['pixel_row']), int(row['pixel_col'])
+        # Re-open handles if we've been forked into a DataLoader worker
+        current_pid = os.getpid()
+        if current_pid != self._pid:
+            self._handles.clear()
+            self._pid = current_pid
+
+        tile_id = self._tile_ids[idx]
+        pr = int(self._pixel_rows[idx])
+        pc = int(self._pixel_cols[idx])
 
         if tile_id not in self._handles:
-            self._handles[tile_id] = rasterio.open(self.mrrsu_map[tile_id])
+            if tile_id not in self.mrrsu_map:
+                raise KeyError(
+                    f"tile_id {tile_id!r} not found in mrrsu_map. "
+                    f"Available tiles (first 5): {sorted(self.mrrsu_map)[:5]}"
+                )
+            try:
+                self._handles[tile_id] = rasterio.open(self.mrrsu_map[tile_id])
+            except Exception as e:
+                raise OSError(f"Failed to open raster for tile {tile_id!r}: {e}") from e
         src = self._handles[tile_id]
+
+        if src.count != len(BAND_COLS):
+            raise ValueError(
+                f"Tile {tile_id!r} has {src.count} bands, expected {len(BAND_COLS)}"
+            )
 
         h = self.half
         r0 = max(0, pr - h)
@@ -79,19 +109,31 @@ class CRISMPatchDataset(Dataset):
         chunk = np.nan_to_num(chunk, nan=0.0)
 
         # Place chunk into zero-padded full patch
-        full = np.zeros((src.count, self.patch_size, self.patch_size), dtype=np.float32)
+        full = np.zeros((len(BAND_COLS), self.patch_size, self.patch_size), dtype=np.float32)
         dst_r = h - (pr - r0)  # offset in output array (= max(0, h - pr) at borders)
         dst_c = h - (pc - c0)
         full[:, dst_r:dst_r + chunk.shape[1], dst_c:dst_c + chunk.shape[2]] = chunk
 
-        return torch.tensor(full, dtype=torch.float32), self.labels[idx], self.weights[idx]
+        return torch.from_numpy(full), self.labels[idx], self.weights[idx]
 
-    def __del__(self):
-        for src in self._handles.values():
+    def close(self):
+        """Close all open rasterio file handles."""
+        for src in getattr(self, '_handles', {}).values():
             try:
                 src.close()
             except Exception:
                 pass
+        if hasattr(self, '_handles'):
+            self._handles.clear()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def __del__(self):
+        self.close()
 
 
 def load_sklearn_arrays(parquet_path: str):
