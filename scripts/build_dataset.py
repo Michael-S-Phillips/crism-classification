@@ -87,22 +87,21 @@ def main():
     with open(cfg_path) as f:
         cfg = yaml.safe_load(f)
 
-    gpkg_dir = cfg['gpkg_dir']
-    data_root = cfg['data_root']
-    output_dir = cfg['output_dir']
-    other_max = cfg.get('other_max_polygons', 400)
-    seed = cfg['split']['random_seed']
-
-    # Validate required config keys up front
+    # Validate required config keys before any access
     required_keys = [('gpkg_dir',), ('data_root',), ('output_dir',),
-                     ('other_max_polygons',), ('split', 'train'), ('split', 'val'),
-                     ('split', 'random_seed')]
+                     ('split', 'train'), ('split', 'val'), ('split', 'random_seed')]
     for key_path in required_keys:
         node = cfg
         for k in key_path:
             if not isinstance(node, dict) or k not in node:
                 raise KeyError(f"Missing required config key: {'.'.join(str(k) for k in key_path)}")
             node = node[k]
+
+    gpkg_dir = cfg['gpkg_dir']
+    data_root = cfg['data_root']
+    output_dir = cfg['output_dir']
+    other_max = cfg.get('other_max_polygons', 400)  # optional; defaults to 400
+    seed = cfg['split']['random_seed']
 
     os.makedirs(output_dir, exist_ok=True)
 
