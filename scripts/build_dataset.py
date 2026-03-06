@@ -26,12 +26,15 @@ logger = logging.getLogger(__name__)
 
 def assign_tile_splits(tile_ids, train_frac=0.70, val_frac=0.15, seed=42):
     """Assign each tile_id to 'train', 'val', or 'test'."""
+    assert train_frac + val_frac < 1.0, "train_frac + val_frac must be < 1.0"
     rng = random.Random(seed)
     shuffled = list(tile_ids)
     rng.shuffle(shuffled)
     n = len(shuffled)
     n_train = int(n * train_frac)
     n_val = int(n * val_frac)
+    n_test = n - n_train - n_val
+    assert n_test >= 0, f"n_test={n_test} < 0; check split fractions"
     split_map = {}
     for i, tid in enumerate(shuffled):
         if i < n_train:
@@ -43,16 +46,20 @@ def assign_tile_splits(tile_ids, train_frac=0.70, val_frac=0.15, seed=42):
     return split_map
 
 
-def sample_other_polygon_ids(pairs, max_polygons, seed=42):
+def sample_other_polygon_ids(gdfs, max_polygons, seed=42):
     """
     Randomly select up to max_polygons 'Other' polygon indices across all tiles.
+
+    Parameters
+    ----------
+    gdfs : dict, tile_id -> GeoDataFrame (pre-loaded, native CRS)
+    max_polygons : int
 
     Returns dict: tile_id -> set of polygon indices to include.
     Tiles not in the returned dict have no sampled Other polygons.
     """
     all_other = []  # list of (tile_id, poly_idx)
-    for tile_id, gpkg_path, _ in pairs:
-        gdf = gpd.read_file(gpkg_path)
+    for tile_id, gdf in gdfs.items():
         for idx, row in gdf.iterrows():
             cat = row.get('Category', '')
             if cat and 'other' in str(cat).lower():
@@ -86,11 +93,31 @@ def main():
     other_max = cfg.get('other_max_polygons', 400)
     seed = cfg['split']['random_seed']
 
+    # Validate required config keys up front
+    required_keys = [('gpkg_dir',), ('data_root',), ('output_dir',),
+                     ('other_max_polygons',), ('split', 'train'), ('split', 'val'),
+                     ('split', 'random_seed')]
+    for key_path in required_keys:
+        node = cfg
+        for k in key_path:
+            if not isinstance(node, dict) or k not in node:
+                raise KeyError(f"Missing required config key: {'.'.join(str(k) for k in key_path)}")
+            node = node[k]
+
     os.makedirs(output_dir, exist_ok=True)
 
     logger.info("Finding tile pairs...")
     pairs = find_tile_pairs(gpkg_dir, data_root)
     logger.info(f"Found {len(pairs)} tile pairs")
+    if not pairs:
+        raise RuntimeError(f"No tile pairs found. Check gpkg_dir={gpkg_dir!r} and data_root={data_root!r}")
+
+    # Pre-load all gpkgs once to avoid double-reads (sample_other_polygon_ids
+    # and extract_pixels_from_pair would both read each file otherwise)
+    logger.info("Pre-loading GeoPackages...")
+    gdfs = {}
+    for tile_id, gpkg_path, _ in tqdm(pairs, desc="Loading gpkgs"):
+        gdfs[tile_id] = gpd.read_file(gpkg_path)
 
     tile_ids = [p[0] for p in pairs]
     split_map = assign_tile_splits(
@@ -105,11 +132,10 @@ def main():
     logger.info(f"Tile split: {n_train} train / {n_val} val / {n_test} test")
 
     logger.info("Sampling 'Other' polygons...")
-    other_ids = sample_other_polygon_ids(pairs, other_max, seed=seed)
+    other_ids = sample_other_polygon_ids(gdfs, other_max, seed=seed)
 
     all_records = []
     for tile_id, gpkg_path, mrrsu_path in tqdm(pairs, desc="Extracting pixels"):
-        # Pass sampled Other set; empty set for tiles with no sampled Others
         tile_other_ids = other_ids.get(tile_id, set())
         records = extract_pixels_from_pair(
             tile_id=tile_id,
@@ -117,6 +143,7 @@ def main():
             gpkg_path=gpkg_path,
             n_bands=60,
             other_polygon_ids=tile_other_ids,
+            gdf=gdfs[tile_id],
         )
         split = split_map[tile_id]
         for r in records:

@@ -23,7 +23,7 @@ def test_no_nodata_in_features():
     df = pd.read_parquet(PARQUET_PATH)
     band_cols = [f'b{i}' for i in range(60)]
     assert not df[band_cols].isnull().any().any()
-    assert (df[band_cols] < 65535).all().all()
+    assert (df[band_cols] != 65535).all().all()
 
 
 def test_split_values():

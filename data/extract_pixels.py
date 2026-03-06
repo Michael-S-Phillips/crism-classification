@@ -56,6 +56,7 @@ def extract_pixels_from_pair(
     gpkg_path: str,
     n_bands: int = 60,
     other_polygon_ids: Optional[Set] = None,
+    gdf=None,
 ) -> List[Dict[str, Any]]:
     """
     Extract per-pixel records from one (gpkg, mrrsu) pair.
@@ -76,6 +77,8 @@ def extract_pixels_from_pair(
         If provided, only 'Other' polygons whose index is in this set are included.
         Pass an empty set to exclude all 'Other' polygons.
         Pass None to include all 'Other' polygons (no filtering).
+    gdf : GeoDataFrame, optional
+        Pre-loaded GeoDataFrame for gpkg_path. If None, the file is read from disk.
 
     Returns
     -------
@@ -89,7 +92,8 @@ def extract_pixels_from_pair(
         height, width = src.height, src.width
         actual_bands = min(n_bands, src.count)
 
-        gdf = gpd.read_file(gpkg_path)
+        if gdf is None:
+            gdf = gpd.read_file(gpkg_path)
         if gdf.crs != raster_crs:
             gdf = gdf.to_crs(raster_crs)
 
