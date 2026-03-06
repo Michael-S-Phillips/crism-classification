@@ -43,6 +43,9 @@ def find_tile_pairs(
         if not matches:
             logger.warning(f"No mrrsu file found for {tile_id}, skipping.")
             continue
+        matches = sorted(matches)
+        if len(matches) > 1:
+            logger.warning(f"Multiple mrrsu files for {tile_id}, using: {matches[0]}")
         pairs.append((tile_id, gpkg_path, matches[0]))
     return pairs
 
