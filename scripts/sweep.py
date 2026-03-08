@@ -25,11 +25,8 @@ LOG_DIR = os.path.join(PROJ, 'logs')
 # Checkpoint: {CKPT_DIR}/{run_name}_best.pt  (sklearn: {run_name}_model.pkl)
 # ---------------------------------------------------------------------------
 SWEEP_CONFIGS = [
-    # --- lgbm: one best-bet config (deeper trees, more estimators) ---
-    # Skipped the other 3 lgbm + all 4 xgb: each takes ~60-90 min on 726k samples.
-    # Neural models are where the real gains are after adding dropout + pos_weight.
-    dict(model='lgbm', run_name='lgbm_sw2',
-         n_estimators=500, learning_rate=0.03, num_leaves=127),
+    # Sklearn configs dropped — each takes 60-90 min on 726k samples × 6 classes.
+    # Neural models (MLP, CNN, ViT) are the priority with dropout + pos_weight fixes.
 
     # --- MLP variants (baseline: mAP=0.613, hidden=(256,128), dropout=0.3, lr=1e-3) ---
     dict(model='mlp', run_name='mlp_sw1',
