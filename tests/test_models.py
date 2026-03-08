@@ -31,3 +31,17 @@ def test_vit_output_shape():
     x = torch.randn(4, 60, 7, 7)
     out = model(x)
     assert out.shape == (4, 6)
+
+def test_cnn_dropout_parameter():
+    """CNN should accept a dropout parameter and apply it."""
+    from models.cnn import SpectralSpatialCNN
+    model = SpectralSpatialCNN(n_bands=60, n_classes=6, patch_size=7, dropout=0.5)
+    model.train()
+    x = torch.randn(4, 60, 7, 7)
+    out1 = model(x)
+    out2 = model(x)
+    assert not torch.allclose(out1, out2), "Dropout should cause stochastic outputs in train mode"
+    model.eval()
+    out3 = model(x)
+    out4 = model(x)
+    assert torch.allclose(out3, out4), "No dropout in eval mode"
