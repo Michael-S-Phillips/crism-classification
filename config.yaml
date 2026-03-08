@@ -1,34 +1,30 @@
-project_root: /mnt/crism/MRDR/crism_classification
-data_root: /mnt/crism/MRDR
-gpkg_dir: /mnt/crism/MRDR/categorized_mineral_units
-output_dir: /mnt/crism/MRDR/crism_classification/data
-predictions_dir: /mnt/crism/MRDR/crism_classification/predictions
-checkpoints_dir: /mnt/crism/MRDR/crism_classification/checkpoints
-reports_dir: /mnt/crism/MRDR/crism_classification/reports
-
+checkpoints_dir: /mnt/gigas/CRISM/MRDR/crism_classification/checkpoints
 classes:
-  - olivine_t1
-  - olivine_t2
-  - lcp
-  - hcp
-  - plagioclase
-  - other
-
+- olivine_t1
+- olivine_t2
+- lcp
+- hcp
+- plagioclase
+- other
 confidence_weights:
   High: 1.0
-  Moderate: 0.5
   Low: 0.25
-
-other_max_polygons: 400
-patch_size: 7
+  Moderate: 0.5
+data_root: /mnt/gigas/CRISM/MRDR
+gpkg_dir: /mnt/gigas/CRISM/MRDR/categorized_mineral_units
 nodata_value: 65535
-
+other_max_polygons: 400
+output_dir: /mnt/gigas/CRISM/MRDR/crism_classification/data
+patch_cache_dir: /mnt/gigas/CRISM/MRDR/crism_classification/data/patch_cache
+patch_size: 7
+predictions_dir: /mnt/gigas/CRISM/MRDR/crism_classification/predictions
+project_root: /mnt/gigas/CRISM/MRDR/crism_classification
+reports_dir: /mnt/gigas/CRISM/MRDR/crism_classification/reports
 split:
-  train: 0.70
-  val: 0.15
-  test: 0.15
   random_seed: 42
-
+  test: 0.15
+  train: 0.7
+  val: 0.15
 wandb:
-  project: crism-mineral-classification
   entity: null
+  project: crism-mineral-classification
