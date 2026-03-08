@@ -1,22 +1,27 @@
 import torch
 import torch.nn as nn
+from typing import Optional
 
 
 class WeightedBCEWithLogitsLoss(nn.Module):
     """
     Binary cross-entropy with logits, weighted per sample by confidence weight.
     Averages over classes first, then takes confidence-weighted mean over samples.
+
+    Optional pos_weight: (n_classes,) tensor of positive class weights.
+    pos_weight[c] = n_neg[c] / n_pos[c] upweights rare positive classes.
     """
 
     def forward(
         self,
-        logits: torch.Tensor,   # (batch, n_classes)
-        targets: torch.Tensor,  # (batch, n_classes)
-        weights: torch.Tensor,  # (batch,)
+        logits: torch.Tensor,                       # (batch, n_classes)
+        targets: torch.Tensor,                      # (batch, n_classes)
+        weights: torch.Tensor,                      # (batch,)
+        pos_weight: Optional[torch.Tensor] = None,  # (n_classes,)
     ) -> torch.Tensor:
         # Per-sample, per-class BCE: shape (batch, n_classes)
         bce = nn.functional.binary_cross_entropy_with_logits(
-            logits, targets, reduction='none'
+            logits, targets, pos_weight=pos_weight, reduction='none'
         )
         # Mean over classes: shape (batch,)
         bce_per_sample = bce.mean(dim=1)

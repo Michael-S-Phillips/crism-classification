@@ -2,7 +2,7 @@
 Training loop for PyTorch models (MLP, CNN, ViT).
 """
 import os, sys, copy, logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import numpy as np
 import pandas as pd
 import torch
@@ -28,6 +28,9 @@ def train_torch_model(
     checkpoint_dir: Optional[str] = None,
     mrrsu_map: Optional[Dict[str, str]] = None,
     patch_size: int = 7,
+    cache_dir: Optional[str] = None,
+    use_pos_weight: bool = False,
+    weight_decay: float = 1e-4,
     device: Optional[str] = None,
     **wandb_config
 ) -> Dict[str, Any]:
@@ -52,10 +55,22 @@ def train_torch_model(
 
     use_patches = mrrsu_map is not None
 
+    # Compute pos_weight from training label prevalence (caps at 20x for stability)
+    pos_weight = None
+    if use_pos_weight:
+        from data.dataset import LABEL_COLS
+        train_sub = df[df['split'] == 'train']
+        y_tr = train_sub[LABEL_COLS].values.astype('float32')
+        n_pos = (y_tr > 0.4).sum(axis=0).clip(min=1)
+        n_neg = len(y_tr) - n_pos
+        pw = (n_neg / n_pos).clip(max=20.0)
+        pos_weight = torch.tensor(pw, dtype=torch.float32).to(device)
+
     def make_dataset(split):
         sub = df[df['split'] == split]
         if use_patches:
-            return CRISMPatchDataset(sub, mrrsu_map, patch_size=patch_size)
+            return CRISMPatchDataset(sub, mrrsu_map, patch_size=patch_size,
+                                     cache_dir=cache_dir, split=split)
         return CRISMPixelDataset(sub)
 
     train_ds = make_dataset('train')
@@ -65,7 +80,7 @@ def train_torch_model(
     val_loader = DataLoader(val_ds, batch_size=batch_size * 2, shuffle=False, num_workers=0)
 
     model = model.to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs)
     loss_fn = WeightedBCEWithLogitsLoss()
 
@@ -86,7 +101,7 @@ def train_torch_model(
             weights = weights.to(device)
             optimizer.zero_grad()
             logits = model(features)
-            loss = loss_fn(logits, labels, weights)
+            loss = loss_fn(logits, labels, weights, pos_weight=pos_weight)
             loss.backward()
             optimizer.step()
             train_losses.append(loss.item())
