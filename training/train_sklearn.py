@@ -37,6 +37,7 @@ def _build_model(model_type: str, **kwargs):
             n_estimators=kwargs.get('n_estimators', 200),
             max_depth=kwargs.get('max_depth', 6),
             learning_rate=kwargs.get('learning_rate', 0.1),
+            subsample=kwargs.get('subsample', 1.0),
             eval_metric='logloss',
             tree_method='hist',
             random_state=42
@@ -46,7 +47,9 @@ def _build_model(model_type: str, **kwargs):
         return LGBMClassifier(
             n_estimators=kwargs.get('n_estimators', 200),
             max_depth=kwargs.get('max_depth', -1),
+            num_leaves=kwargs.get('num_leaves', 31),
             learning_rate=kwargs.get('learning_rate', 0.1),
+            subsample=kwargs.get('subsample', 1.0),
             random_state=42, n_jobs=-1, verbose=-1
         )
     else:
@@ -64,6 +67,7 @@ def train_and_evaluate_sklearn(
     confidence_tiers_val: list = None,
     use_wandb: bool = True,
     checkpoint_dir: str = None,
+    run_name: str = None,
     **model_kwargs
 ) -> Dict[str, Any]:
     """
@@ -72,11 +76,12 @@ def train_and_evaluate_sklearn(
     For multi-label targets (y shape n x 6), XGB/LGBM train one model per class.
     LogReg/SVC/RF use MultiOutputClassifier.
     """
+    effective_name = run_name or model_type
     if use_wandb:
         import wandb
         wandb.init(
             project='crism-mineral-classification',
-            name=f'{model_type}',
+            name=effective_name,
             config={'model': model_type, **model_kwargs}
         )
 
@@ -118,13 +123,13 @@ def train_and_evaluate_sklearn(
     # Save checkpoint
     if checkpoint_dir:
         os.makedirs(checkpoint_dir, exist_ok=True)
-        ckpt_path = os.path.join(checkpoint_dir, f'{model_type}_model.pkl')
+        ckpt_path = os.path.join(checkpoint_dir, f'{effective_name}_model.pkl')
         with open(ckpt_path, 'wb') as f:
             pickle.dump(models, f)
         logger.info(f"Saved checkpoint to {ckpt_path}")
         if use_wandb:
             import wandb
-            artifact = wandb.Artifact(f'{model_type}-model', type='model')
+            artifact = wandb.Artifact(f'{effective_name}-model', type='model')
             artifact.add_file(ckpt_path)
             wandb.log_artifact(artifact)
 
@@ -140,11 +145,10 @@ def _predict_proba(models, X, model_type, n_classes):
     if model_type in ('xgb', 'lgbm'):
         scores = np.stack([m.predict_proba(X)[:, 1] for m in models], axis=1)
     elif model_type == 'svc':
-        # LinearSVC has no predict_proba — use decision_function
+        # LinearSVC has no predict_proba — use decision_function per estimator
+        # (MultiOutputClassifier does not proxy decision_function)
         m = models[0]
-        raw = m.decision_function(X)
-        if raw.ndim == 1:
-            raw = raw[:, np.newaxis]
+        raw = np.stack([e.decision_function(X) for e in m.estimators_], axis=1)
         scores = 1 / (1 + np.exp(-raw))
     else:
         m = models[0]
