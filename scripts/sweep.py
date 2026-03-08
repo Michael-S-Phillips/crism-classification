@@ -25,25 +25,11 @@ LOG_DIR = os.path.join(PROJ, 'logs')
 # Checkpoint: {CKPT_DIR}/{run_name}_best.pt  (sklearn: {run_name}_model.pkl)
 # ---------------------------------------------------------------------------
 SWEEP_CONFIGS = [
-    # --- lgbm variants (baseline: mAP=0.616, num_leaves=31, lr=0.05, n_est=300) ---
-    dict(model='lgbm', run_name='lgbm_sw1',
-         n_estimators=500, learning_rate=0.05, num_leaves=63),
+    # --- lgbm: one best-bet config (deeper trees, more estimators) ---
+    # Skipped the other 3 lgbm + all 4 xgb: each takes ~60-90 min on 726k samples.
+    # Neural models are where the real gains are after adding dropout + pos_weight.
     dict(model='lgbm', run_name='lgbm_sw2',
          n_estimators=500, learning_rate=0.03, num_leaves=127),
-    dict(model='lgbm', run_name='lgbm_sw3',
-         n_estimators=300, learning_rate=0.1,  num_leaves=63, subsample=0.8),
-    dict(model='lgbm', run_name='lgbm_sw4',
-         n_estimators=500, learning_rate=0.05, num_leaves=31, subsample=0.8),
-
-    # --- xgb variants (baseline: mAP=0.609, max_depth=6, lr=0.05, n_est=300) ---
-    dict(model='xgb', run_name='xgb_sw1',
-         n_estimators=500, learning_rate=0.05, max_depth=4),
-    dict(model='xgb', run_name='xgb_sw2',
-         n_estimators=500, learning_rate=0.05, max_depth=8),
-    dict(model='xgb', run_name='xgb_sw3',
-         n_estimators=300, learning_rate=0.1,  max_depth=6, subsample=0.8),
-    dict(model='xgb', run_name='xgb_sw4',
-         n_estimators=500, learning_rate=0.03, max_depth=6),
 
     # --- MLP variants (baseline: mAP=0.613, hidden=(256,128), dropout=0.3, lr=1e-3) ---
     dict(model='mlp', run_name='mlp_sw1',
