@@ -2,7 +2,7 @@
 PyTorch Dataset classes and sklearn array loaders for the CRISM pixel dataset.
 """
 import os
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -47,6 +47,8 @@ class CRISMPatchDataset(Dataset):
         df: pd.DataFrame,
         mrrsu_map: Dict[str, str],
         patch_size: int = 7,
+        cache_dir: Optional[str] = None,
+        split: Optional[str] = None,
     ):
         assert patch_size % 2 == 1, "patch_size must be odd"
         df = df.reset_index(drop=True)
@@ -63,11 +65,24 @@ class CRISMPatchDataset(Dataset):
         # File handles cached per tile; cleared on DataLoader fork (pid check)
         self._handles: Dict[str, rasterio.DatasetReader] = {}
         self._pid = os.getpid()
+        # Load memmap cache if available — bypasses rasterio reads at item time
+        self._cache = None
+        if cache_dir and split:
+            cache_file = os.path.join(cache_dir, f'{split}_patches_p{patch_size}.npy')
+            if os.path.exists(cache_file):
+                self._cache = np.memmap(
+                    cache_file, dtype='float32', mode='r',
+                    shape=(self._n, len(BAND_COLS), patch_size, patch_size)
+                )
 
     def __len__(self):
         return self._n
 
     def __getitem__(self, idx):
+        if self._cache is not None:
+            patch = torch.from_numpy(self._cache[idx].copy())
+            return patch, self.labels[idx], self.weights[idx]
+
         # Re-open handles if we've been forked into a DataLoader worker
         current_pid = os.getpid()
         if current_pid != self._pid:

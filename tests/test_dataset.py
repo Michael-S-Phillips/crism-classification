@@ -42,6 +42,44 @@ def test_load_sklearn_no_nan():
     assert not np.isnan(X_tr).any()
     assert not np.isnan(y_tr).any()
 
+def test_patch_dataset_uses_cache(tmp_path):
+    """CRISMPatchDataset loads from memmap cache instead of rasterio when available."""
+    import torch
+    from data.dataset import CRISMPatchDataset, BAND_COLS
+
+    n = 4
+    patch_size = 7
+    n_bands = len(BAND_COLS)
+
+    data = {f'b{i}': np.zeros(n, dtype=np.float32) for i in range(n_bands)}
+    for col in ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']:
+        data[col] = np.zeros(n, dtype=np.float32)
+    data['confidence_weight'] = np.ones(n, dtype=np.float32)
+    data['confidence_tier'] = ['High'] * n
+    data['tile_id'] = ['t0001'] * n
+    data['pixel_row'] = [0] * n
+    data['pixel_col'] = [0] * n
+    data['split'] = ['train'] * n
+    df = pd.DataFrame(data)
+
+    sentinel = np.arange(n * n_bands * patch_size * patch_size,
+                         dtype=np.float32).reshape(n, n_bands, patch_size, patch_size)
+    cache_file = tmp_path / 'train_patches_p7.npy'
+    fp = np.memmap(str(cache_file), dtype='float32', mode='w+',
+                   shape=(n, n_bands, patch_size, patch_size))
+    fp[:] = sentinel
+    fp.flush()
+    del fp
+
+    ds = CRISMPatchDataset(df, mrrsu_map={}, patch_size=7,
+                           cache_dir=str(tmp_path), split='train')
+    patch, labels, weight = ds[0]
+
+    assert patch.shape == (n_bands, patch_size, patch_size)
+    assert patch.dtype == torch.float32
+    np.testing.assert_allclose(patch.numpy(), sentinel[0])
+
+
 def test_patch_dataset_shape(small_df):
     from data.dataset import CRISMPatchDataset
     import yaml, os
