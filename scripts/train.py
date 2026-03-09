@@ -75,6 +75,8 @@ def main():
     parser.add_argument('--aug_noise_std', type=float, default=0.005)
     parser.add_argument('--aug_band_dropout', type=float, default=0.10)
     parser.add_argument('--aug_shift_std', type=float, default=0.005)
+    parser.add_argument('--pretrain_ckpt', type=str, default=None,
+                        help='Path to MAE pretrain checkpoint; loads encoder into spectral_vit')
     args = parser.parse_args()
 
     cfg_path = os.path.join(
@@ -204,6 +206,14 @@ def main():
                     embed_dim=args.embed_dim, n_heads=args.n_heads,
                     n_layers=args.n_layers, dropout=dropout,
                 )
+                if args.pretrain_ckpt:
+                    import logging as _log
+                    ckpt = torch.load(args.pretrain_ckpt, map_location='cpu')
+                    missing, unexpected = model.load_encoder_state_dict(ckpt['encoder_state'])
+                    _log.getLogger(__name__).info(
+                        f"Loaded MAE encoder from {args.pretrain_ckpt}. "
+                        f"Missing: {missing}, Unexpected: {unexpected}"
+                    )
 
             metrics = train_torch_model(
                 model=model, df=df_mrral, model_name=run_name,
