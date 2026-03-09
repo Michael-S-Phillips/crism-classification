@@ -1,5 +1,7 @@
 import torch
 import pytest
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def test_mlp_output_shape():
     from models.mlp import MLP
@@ -45,3 +47,34 @@ def test_cnn_dropout_parameter():
     out3 = model(x)
     out4 = model(x)
     assert torch.allclose(out3, out4), "No dropout in eval mode"
+
+
+def test_spectral_cnn1d_forward_shape():
+    from models.spectral_cnn import SpectralCNN1D
+    model = SpectralCNN1D(n_bands=59, n_classes=6)
+    x = torch.randn(4, 59)
+    out = model(x)
+    assert out.shape == (4, 6)
+
+
+def test_spectral_cnn1d_dropout_parameter():
+    from models.spectral_cnn import SpectralCNN1D
+    m = SpectralCNN1D(n_bands=59, n_classes=6, dropout=0.4)
+    assert m is not None
+
+
+def test_spectral_transformer_forward_shape():
+    from models.spectral_transformer import SpectralTransformer
+    model = SpectralTransformer(n_bands=59, n_classes=6, embed_dim=64, n_heads=4, n_layers=4)
+    x = torch.randn(4, 59)
+    out = model(x)
+    assert out.shape == (4, 6)
+
+
+def test_spectral_transformer_mask_token():
+    from models.spectral_transformer import SpectralTransformer
+    model = SpectralTransformer(n_bands=59, n_classes=6)
+    x = torch.randn(2, 59)
+    x[:, 10:20] = 0.0   # simulate masked bands
+    out = model(x)
+    assert out.shape == (2, 6)

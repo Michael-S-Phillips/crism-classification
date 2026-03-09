@@ -27,3 +27,34 @@ class WeightedBCEWithLogitsLoss(nn.Module):
         bce_per_sample = bce.mean(dim=1)
         # Weighted mean over samples
         return (bce_per_sample * weights).sum() / (weights.sum() + 1e-8)
+
+
+class FocalBCEWithLogitsLoss(nn.Module):
+    """
+    Focal binary cross-entropy, weighted per sample.
+
+    Applies focal modulation (1 - p_t)^gamma to standard BCE, down-weighting
+    easy examples and focusing training on hard/rare ones (e.g. plagioclase).
+
+    gamma=2.0 is standard; gamma=0.0 reduces to weighted BCE.
+    """
+
+    def __init__(self, gamma: float = 2.0):
+        super().__init__()
+        self.gamma = gamma
+
+    def forward(
+        self,
+        logits: torch.Tensor,                       # (batch, n_classes)
+        targets: torch.Tensor,                      # (batch, n_classes)
+        weights: torch.Tensor,                      # (batch,)
+        pos_weight: Optional[torch.Tensor] = None,  # (n_classes,)
+    ) -> torch.Tensor:
+        bce = nn.functional.binary_cross_entropy_with_logits(
+            logits, targets, pos_weight=pos_weight, reduction='none'
+        )
+        p = torch.sigmoid(logits)
+        p_t = p * targets + (1 - p) * (1 - targets)
+        focal_weight = (1 - p_t) ** self.gamma
+        loss = (focal_weight * bce).mean(dim=1)
+        return (loss * weights).sum() / (weights.sum() + 1e-8)

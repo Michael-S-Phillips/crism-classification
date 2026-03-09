@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 SKLEARN_MODELS = {'logreg', 'svc', 'rf', 'xgb', 'lgbm'}
-TORCH_MODELS = {'mlp', 'cnn', 'vit'}
+TORCH_MODELS = {'mlp', 'cnn', 'vit', 'spectral_cnn', 'spectral_vit'}
 
 def load_config(config_path):
     with open(config_path) as f:
@@ -64,6 +64,17 @@ def main():
                         help='CosineAnnealingLR T_max (default: 50)')
     parser.add_argument('--high_conf_only', action='store_true',
                         help='Train on High-confidence pixels only')
+    parser.add_argument('--focal_loss', action='store_true',
+                        help='Use focal loss instead of BCE')
+    parser.add_argument('--focal_gamma', type=float, default=2.0,
+                        help='Focal loss gamma (default: 2.0)')
+    parser.add_argument('--balanced_sampling', action='store_true',
+                        help='Use class-balanced WeightedRandomSampler')
+    parser.add_argument('--spectral_aug', action='store_true',
+                        help='Apply spectral augmentation during training')
+    parser.add_argument('--aug_noise_std', type=float, default=0.005)
+    parser.add_argument('--aug_band_dropout', type=float, default=0.10)
+    parser.add_argument('--aug_shift_std', type=float, default=0.005)
     args = parser.parse_args()
 
     cfg_path = os.path.join(
@@ -120,6 +131,13 @@ def main():
                 warmup_epochs=args.warmup_epochs,
                 lr_t_max=args.lr_t_max,
                 high_conf_only=args.high_conf_only,
+                use_focal_loss=args.focal_loss,
+                focal_gamma=args.focal_gamma,
+                use_balanced_sampling=args.balanced_sampling,
+                use_spectral_aug=args.spectral_aug,
+                aug_noise_std=args.aug_noise_std,
+                aug_band_dropout=args.aug_band_dropout,
+                aug_shift_std=args.aug_shift_std,
             )
 
         elif args.model in ('cnn', 'vit'):
@@ -161,6 +179,49 @@ def main():
                 warmup_epochs=args.warmup_epochs,
                 lr_t_max=args.lr_t_max,
                 high_conf_only=args.high_conf_only,
+                use_focal_loss=args.focal_loss,
+                focal_gamma=args.focal_gamma,
+                use_balanced_sampling=args.balanced_sampling,
+                use_spectral_aug=args.spectral_aug,
+                aug_noise_std=args.aug_noise_std,
+                aug_band_dropout=args.aug_band_dropout,
+                aug_shift_std=args.aug_shift_std,
+            )
+
+        elif args.model in ('spectral_cnn', 'spectral_vit'):
+            mrral_parquet = os.path.join(os.path.dirname(parquet_path), 'mrral_pixels.parquet')
+            df_mrral = pd.read_parquet(mrral_parquet)
+            dropout = args.dropout if args.dropout is not None else 0.3
+
+            if args.model == 'spectral_cnn':
+                from models.spectral_cnn import SpectralCNN1D
+                model = SpectralCNN1D(n_bands=59, n_classes=6, dropout=dropout)
+            else:
+                from models.spectral_transformer import SpectralTransformer
+                dropout = args.dropout if args.dropout is not None else 0.1
+                model = SpectralTransformer(
+                    n_bands=59, n_classes=6,
+                    embed_dim=args.embed_dim, n_heads=args.n_heads,
+                    n_layers=args.n_layers, dropout=dropout,
+                )
+
+            metrics = train_torch_model(
+                model=model, df=df_mrral, model_name=run_name,
+                max_epochs=args.epochs, batch_size=args.batch_size,
+                lr=args.lr, patience=args.patience,
+                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir,
+                use_pos_weight=args.use_pos_weight,
+                weight_decay=args.weight_decay,
+                warmup_epochs=args.warmup_epochs,
+                lr_t_max=args.lr_t_max,
+                high_conf_only=args.high_conf_only,
+                use_focal_loss=args.focal_loss,
+                focal_gamma=args.focal_gamma,
+                use_balanced_sampling=args.balanced_sampling,
+                use_spectral_aug=args.spectral_aug,
+                aug_noise_std=args.aug_noise_std,
+                aug_band_dropout=args.aug_band_dropout,
+                aug_shift_std=args.aug_shift_std,
             )
 
     print(f"\n=== {run_name if args.model in TORCH_MODELS else args.model} Results ===")

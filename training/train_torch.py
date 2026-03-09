@@ -16,6 +16,28 @@ from evaluation.metrics import compute_full_metrics
 logger = logging.getLogger(__name__)
 
 
+def build_class_balanced_weights(df: pd.DataFrame) -> np.ndarray:
+    """
+    Build per-pixel sampling weights to oversample rare-class positives.
+
+    Each pixel receives weight = max imbalance ratio of any class it is
+    positive for. Plagioclase/HCP pixels get ~20–50x the weight of common
+    olivine pixels.
+    """
+    from data.dataset import LABEL_COLS
+    labels = df[LABEL_COLS].values.astype('float32')
+    n_pos = (labels > 0.4).sum(axis=0).clip(min=1)
+    n_neg = len(labels) - n_pos
+    imbalance = n_neg / n_pos  # higher = rarer class
+
+    pixel_weights = np.ones(len(labels), dtype=np.float32)
+    is_pos = labels > 0.4  # (n, 6)
+    for i in range(len(labels)):
+        if is_pos[i].any():
+            pixel_weights[i] = float(imbalance[is_pos[i]].max())
+    return pixel_weights
+
+
 def train_torch_model(
     model: torch.nn.Module,
     df: pd.DataFrame,
@@ -34,6 +56,13 @@ def train_torch_model(
     warmup_epochs: int = 0,
     lr_t_max: int = 50,
     high_conf_only: bool = False,
+    use_focal_loss: bool = False,
+    focal_gamma: float = 2.0,
+    use_balanced_sampling: bool = False,
+    use_spectral_aug: bool = False,
+    aug_noise_std: float = 0.005,
+    aug_band_dropout: float = 0.10,
+    aug_shift_std: float = 0.005,
     device: Optional[str] = None,
     **wandb_config
 ) -> Dict[str, Any]:
@@ -89,7 +118,13 @@ def train_torch_model(
     train_ds = make_dataset(train_df, 'train')
     val_ds = make_dataset(val_df, 'val')
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
+    if use_balanced_sampling:
+        from torch.utils.data import WeightedRandomSampler
+        pw = build_class_balanced_weights(train_df)
+        sampler = WeightedRandomSampler(pw, num_samples=len(pw), replacement=True)
+        train_loader = DataLoader(train_ds, batch_size=batch_size, sampler=sampler, num_workers=0)
+    else:
+        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=batch_size * 2, shuffle=False, num_workers=0)
 
     model = model.to(device)
@@ -106,7 +141,20 @@ def train_torch_model(
     else:
         scheduler = cosine
 
-    loss_fn = WeightedBCEWithLogitsLoss()
+    if use_focal_loss:
+        from training.losses import FocalBCEWithLogitsLoss
+        loss_fn = FocalBCEWithLogitsLoss(gamma=focal_gamma)
+    else:
+        loss_fn = WeightedBCEWithLogitsLoss()
+
+    augment = None
+    if use_spectral_aug:
+        from training.augmentations import SpectralAugmentation
+        augment = SpectralAugmentation(
+            noise_std=aug_noise_std,
+            band_dropout=aug_band_dropout,
+            shift_std=aug_shift_std,
+        ).to(device)
 
     val_sub = df[df['split'] == 'val']
     best_val_map = -1.0
@@ -121,6 +169,9 @@ def train_torch_model(
         train_losses = []
         for features, labels, weights in train_loader:
             features = features.to(device)
+            if augment is not None:
+                augment.train()
+                features = augment(features)
             labels = labels.to(device)
             weights = weights.to(device)
             optimizer.zero_grad()
