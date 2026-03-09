@@ -20,6 +20,15 @@ logger = logging.getLogger(__name__)
 NODATA_VALUE = 65535
 
 
+# GPKGs that cover multiple tiles (not tile-specific) — skip in find_*_pairs
+_REGION_GPKG_PREFIXES = ('north_hellas',)
+
+
+def _is_region_gpkg(fname: str) -> bool:
+    """Return True for region-wide GPKGs that don't map 1:1 to a tile."""
+    return any(fname.lower().startswith(p) for p in _REGION_GPKG_PREFIXES)
+
+
 def find_tile_pairs(
     gpkg_dir: str,
     data_root: str
@@ -33,6 +42,8 @@ def find_tile_pairs(
     pairs = []
     for fname in sorted(os.listdir(gpkg_dir)):
         if not fname.endswith('.gpkg'):
+            continue
+        if _is_region_gpkg(fname):
             continue
         tile_id = fname.replace('.gpkg', '').lower()
         gpkg_path = os.path.join(gpkg_dir, fname)
@@ -65,6 +76,8 @@ def find_mrral_pairs(
     pairs = []
     for fname in sorted(os.listdir(gpkg_dir)):
         if not fname.endswith('.gpkg'):
+            continue
+        if _is_region_gpkg(fname):
             continue
         tile_id = fname.replace('.gpkg', '').lower()
         gpkg_path = os.path.join(gpkg_dir, fname)
@@ -284,6 +297,145 @@ def extract_pixels_from_pair(
                 }
                 for b_idx in range(actual_bands):
                     record[f'b{b_idx}'] = float(pixel_vals[b_idx])
+                for cls_idx, cls_name in enumerate(CLASSES):
+                    record[cls_name] = float(label[cls_idx])
+                record['confidence_weight'] = float(conf_weight)
+                record['confidence_tier'] = conf_tier
+                records.append(record)
+
+    return records
+
+
+def load_hellas_gdf(hellas_gpkg: str, category_col: str = 'Interpreta') -> gpd.GeoDataFrame:
+    """
+    Load and validate the Hellas region GPKG.
+
+    The file uses an "Undefined geographic SRS" with WGS84 parameters, but the
+    coordinates are actually Mars geographic (lon/lat). The CRS metadata is
+    deliberately left unset here — callers must assign the Mars geographic CRS
+    for each target tile via set_crs(tile_crs.geodetic_crs, allow_override=True).
+
+    Returns the GeoDataFrame with a 'Category' column synthesised from
+    the Interpreta field with default '(Moderate)' confidence appended.
+    """
+    gdf = gpd.read_file(hellas_gpkg)
+    if category_col not in gdf.columns:
+        raise ValueError(
+            f"Expected column '{category_col}' in {hellas_gpkg}. "
+            f"Available: {list(gdf.columns)}"
+        )
+    # Synthesise a Category string matching the existing label_parser format.
+    # - No type distinction for olivine → parse_category maps 'Olivine' to
+    #   olivine_t1=0.5, olivine_t2=0.5 (soft label for both types).
+    # - No confidence metadata → default Moderate (weight=0.5, tier='Moderate').
+    gdf = gdf[gdf[category_col].notna() & (gdf[category_col] != '')].copy()
+    gdf['Category'] = gdf[category_col].astype(str) + ' (Moderate)'
+    return gdf
+
+
+def extract_hellas_pixels_from_tile(
+    tile_id: str,
+    mrral_path: str,
+    hellas_gdf: gpd.GeoDataFrame,
+) -> List[Dict[str, Any]]:
+    """
+    Extract mrral pixels from Hellas region polygons that intersect one tile.
+
+    The Hellas GPKG coordinates are Mars geographic (lon/lat) stored with an
+    incorrect "Undefined geographic SRS" WKT. We fix this by overriding the
+    CRS to the Mars geographic base CRS derived from the tile's projected CRS,
+    then reprojecting to the tile's coordinate system.
+
+    Parameters
+    ----------
+    tile_id : str
+        Tile identifier string (used for record metadata).
+    mrral_path : str
+        Path to the mrral .img file for this tile.
+    hellas_gdf : GeoDataFrame
+        Loaded from load_hellas_gdf(). Must have a 'Category' column.
+    """
+    from shapely.geometry import box
+
+    records = []
+
+    with rasterio.open(mrral_path) as src:
+        raster_crs = src.crs
+        if raster_crs is None:
+            logger.warning(f"Tile {tile_id} has no CRS — skipping Hellas extraction.")
+            return records
+
+        transform = src.transform
+        height, width = src.height, src.width
+        actual_bands = min(MRRAL_N_BANDS, src.count)
+
+        # The Hellas GPKG has Mars geographic coordinates stored with a wrong
+        # "Undefined geographic SRS" CRS definition. Override with the actual
+        # Mars geographic CRS (the base geographic CRS of this tile).
+        # rasterio.CRS doesn't have geodetic_crs; use pyproj.CRS for that.
+        from pyproj import CRS as ProjCRS
+        mars_geog_crs = ProjCRS.from_wkt(raster_crs.to_wkt()).geodetic_crs
+        try:
+            tile_gdf = hellas_gdf.set_crs(mars_geog_crs, allow_override=True).to_crs(raster_crs)
+        except Exception as e:
+            logger.warning(f"CRS reprojection failed for tile {tile_id}: {e}")
+            return records
+
+        # Spatial filter: keep only polygons that intersect this tile's extent
+        tile_box = box(*src.bounds)
+        tile_gdf = tile_gdf[tile_gdf.intersects(tile_box)]
+        if len(tile_gdf) == 0:
+            return records
+
+        logger.info(f"  {tile_id}: {len(tile_gdf)} Hellas polygons intersect tile")
+
+        for poly_idx, row in tile_gdf.iterrows():
+            category = row.get('Category', '')
+            if not category or isinstance(category, float):
+                continue
+            try:
+                label, conf_weight = parse_category(str(category))
+            except ValueError:
+                logger.warning(f"Could not parse {category!r} in {tile_id}, skipping.")
+                continue
+            conf_tier = get_confidence_tier(str(category))
+            geom = row.geometry
+            if geom is None or geom.is_empty:
+                continue
+            try:
+                mask = rasterize(
+                    [(geom, 1)], out_shape=(height, width),
+                    transform=transform, fill=0, dtype=np.uint8
+                ).astype(bool)
+            except Exception as e:
+                logger.warning(f"Rasterize failed polygon {poly_idx} in {tile_id}: {e}")
+                continue
+
+            pixel_rows, pixel_cols = np.where(mask)
+            if len(pixel_rows) == 0:
+                continue
+
+            row_min, row_max = int(pixel_rows.min()), int(pixel_rows.max()) + 1
+            col_min, col_max = int(pixel_cols.min()), int(pixel_cols.max()) + 1
+            window = rasterio.windows.Window(
+                col_min, row_min, col_max - col_min, row_max - row_min
+            )
+            chunk = src.read(list(range(1, actual_bands + 1)), window=window)
+
+            for r, c in zip(pixel_rows, pixel_cols):
+                pixel_vals = chunk[:, r - row_min, c - col_min]
+                if np.any(pixel_vals >= NODATA_VALUE):
+                    continue
+                if np.any(np.isnan(pixel_vals)):
+                    pixel_vals = np.nan_to_num(pixel_vals, nan=0.0)
+                record: Dict[str, Any] = {
+                    'tile_id': tile_id,
+                    'polygon_id': int(poly_idx),
+                    'pixel_row': int(r),
+                    'pixel_col': int(c),
+                }
+                for b_idx in range(actual_bands):
+                    record[f'm{b_idx}'] = float(pixel_vals[b_idx])
                 for cls_idx, cls_name in enumerate(CLASSES):
                     record[cls_name] = float(label[cls_idx])
                 record['confidence_weight'] = float(conf_weight)
