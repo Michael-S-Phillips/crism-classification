@@ -58,6 +58,12 @@ def main():
                         help='AdamW weight decay for torch models')
     parser.add_argument('--run_name', type=str, default=None,
                         help='Custom wandb run name and checkpoint prefix (default: model name)')
+    parser.add_argument('--warmup_epochs', type=int, default=0,
+                        help='Linear LR warmup epochs before cosine annealing (default: 0)')
+    parser.add_argument('--lr_t_max', type=int, default=50,
+                        help='CosineAnnealingLR T_max (default: 50)')
+    parser.add_argument('--high_conf_only', action='store_true',
+                        help='Train on High-confidence pixels only')
     args = parser.parse_args()
 
     cfg_path = os.path.join(
@@ -111,6 +117,9 @@ def main():
                 use_wandb=use_wandb, checkpoint_dir=checkpoint_dir,
                 use_pos_weight=args.use_pos_weight,
                 weight_decay=args.weight_decay,
+                warmup_epochs=args.warmup_epochs,
+                lr_t_max=args.lr_t_max,
+                high_conf_only=args.high_conf_only,
             )
 
         elif args.model in ('cnn', 'vit'):
@@ -149,6 +158,9 @@ def main():
                 cache_dir=cache_dir,
                 use_pos_weight=args.use_pos_weight,
                 weight_decay=args.weight_decay,
+                warmup_epochs=args.warmup_epochs,
+                lr_t_max=args.lr_t_max,
+                high_conf_only=args.high_conf_only,
             )
 
     print(f"\n=== {run_name if args.model in TORCH_MODELS else args.model} Results ===")

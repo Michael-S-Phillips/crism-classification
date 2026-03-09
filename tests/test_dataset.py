@@ -1,9 +1,10 @@
+import os
 import numpy as np
 import pytest
 import pandas as pd
 from data.dataset import CRISMPixelDataset, load_sklearn_arrays
 
-PARQUET = '/mnt/crism/MRDR/crism_classification/data/pixels.parquet'
+PARQUET = '/mnt/gigas/CRISM/MRDR/crism_classification/data/pixels.parquet'
 
 @pytest.fixture
 def small_df():
@@ -83,7 +84,7 @@ def test_patch_dataset_uses_cache(tmp_path):
 def test_patch_dataset_shape(small_df):
     from data.dataset import CRISMPatchDataset
     import yaml, os
-    cfg_path = '/mnt/crism/MRDR/crism_classification/config.yaml'
+    cfg_path = '/mnt/gigas/CRISM/MRDR/crism_classification/config.yaml'
     with open(cfg_path) as f:
         cfg = yaml.safe_load(f)
     from data.extract_pixels import find_tile_pairs
@@ -92,3 +93,50 @@ def test_patch_dataset_shape(small_df):
     ds = CRISMPatchDataset(small_df, mrrsu_map, patch_size=7)
     patch, labels, weight = ds[0]
     assert patch.shape == (60, 7, 7)
+
+
+# --- CRISMSpectralDataset tests ---
+
+MRRAL_PARQUET = '/mnt/gigas/CRISM/MRDR/crism_classification/data/mrral_pixels.parquet'
+
+
+@pytest.fixture
+def small_mrral_df():
+    if not os.path.exists(MRRAL_PARQUET):
+        pytest.skip("mrral_pixels.parquet not yet built — run scripts/build_mrral_dataset.py")
+    df = pd.read_parquet(MRRAL_PARQUET)
+    return df[df['split'] == 'train'].head(200)
+
+
+def test_crism_spectral_dataset_shape(small_mrral_df):
+    import torch
+    from data.dataset import CRISMSpectralDataset
+    ds = CRISMSpectralDataset(small_mrral_df)
+    feat, label, weight = ds[0]
+    assert feat.shape == (59,), f"Expected (59,), got {feat.shape}"
+    assert label.shape == (6,)
+    assert weight.shape == ()
+    assert feat.dtype == torch.float32
+
+
+def test_crism_spectral_dataset_len(small_mrral_df):
+    from data.dataset import CRISMSpectralDataset
+    ds = CRISMSpectralDataset(small_mrral_df)
+    assert len(ds) == 200
+
+
+def test_crism_spectral_dataset_raises_on_missing_columns():
+    from data.dataset import CRISMSpectralDataset
+    df = pd.DataFrame({'olivine_t1': [0.0], 'confidence_weight': [1.0]})
+    with pytest.raises(ValueError, match="missing columns"):
+        CRISMSpectralDataset(df)
+
+
+def test_crism_spectral_dataset_high_conf_filtering(small_mrral_df):
+    from data.dataset import CRISMSpectralDataset
+    high_df = small_mrral_df[small_mrral_df['confidence_tier'] == 'High']
+    if len(high_df) == 0:
+        pytest.skip("No High-confidence pixels in sample")
+    ds_all = CRISMSpectralDataset(small_mrral_df)
+    ds_high = CRISMSpectralDataset(high_df)
+    assert len(ds_high) <= len(ds_all)

@@ -12,6 +12,7 @@ import rasterio
 
 LABEL_COLS = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']
 BAND_COLS = [f'b{i}' for i in range(60)]
+MRRAL_BAND_COLS = [f'm{i}' for i in range(59)]  # 59 bands, 410-2457 nm (< 2500 nm cutoff)
 NODATA_VALUE = 65535
 
 
@@ -20,6 +21,32 @@ class CRISMPixelDataset(Dataset):
 
     def __init__(self, df: pd.DataFrame):
         self.features = torch.tensor(df[BAND_COLS].values, dtype=torch.float32)
+        self.labels = torch.tensor(df[LABEL_COLS].values, dtype=torch.float32)
+        self.weights = torch.tensor(df['confidence_weight'].values, dtype=torch.float32)
+
+    def __len__(self):
+        return len(self.features)
+
+    def __getitem__(self, idx):
+        return self.features[idx], self.labels[idx], self.weights[idx]
+
+
+class CRISMSpectralDataset(Dataset):
+    """
+    Per-pixel dataset using mrral 59-band reflectance spectra (m0..m58).
+    Used by all mrral-based models: SpectralCNN1D, SpectralTransformer, MAE.
+
+    Requires mrral_pixels.parquet — run scripts/build_mrral_dataset.py first.
+    """
+
+    def __init__(self, df: pd.DataFrame):
+        missing = [c for c in MRRAL_BAND_COLS if c not in df.columns]
+        if missing:
+            raise ValueError(
+                f"mrral parquet missing columns: {missing[:5]}... "
+                "Run scripts/build_mrral_dataset.py first."
+            )
+        self.features = torch.tensor(df[MRRAL_BAND_COLS].values, dtype=torch.float32)
         self.labels = torch.tensor(df[LABEL_COLS].values, dtype=torch.float32)
         self.weights = torch.tensor(df['confidence_weight'].values, dtype=torch.float32)
 
