@@ -121,7 +121,7 @@ def main():
             hidden_dims = tuple(int(x) for x in args.hidden_dims.split(',')) \
                 if args.hidden_dims else (256, 128)
             dropout = args.dropout if args.dropout is not None else 0.3
-            model = MLP(n_features=60, n_classes=6,
+            model = MLP(n_features=60, n_classes=5,
                         hidden_dims=hidden_dims, dropout=dropout)
             metrics = train_torch_model(
                 model=model, df=df, model_name=run_name,
@@ -159,12 +159,12 @@ def main():
             dropout = args.dropout if args.dropout is not None else 0.3
             if args.model == 'cnn':
                 from models.cnn import SpectralSpatialCNN
-                model = SpectralSpatialCNN(n_bands=60, n_classes=6,
+                model = SpectralSpatialCNN(n_bands=60, n_classes=5,
                                            patch_size=patch_size, dropout=dropout)
             else:
                 from models.vit import SpectralViT
                 model = SpectralViT(
-                    n_bands=60, n_classes=6, patch_size=patch_size,
+                    n_bands=60, n_classes=5, patch_size=patch_size,
                     embed_dim=args.embed_dim, n_heads=args.n_heads,
                     n_layers=args.n_layers, dropout=dropout,
                 )
@@ -197,12 +197,12 @@ def main():
 
             if args.model == 'spectral_cnn':
                 from models.spectral_cnn import SpectralCNN1D
-                model = SpectralCNN1D(n_bands=59, n_classes=6, dropout=dropout)
+                model = SpectralCNN1D(n_bands=59, n_classes=5, dropout=dropout)
             else:
                 from models.spectral_transformer import SpectralTransformer
                 dropout = args.dropout if args.dropout is not None else 0.1
                 model = SpectralTransformer(
-                    n_bands=59, n_classes=6,
+                    n_bands=59, n_classes=5,
                     embed_dim=args.embed_dim, n_heads=args.n_heads,
                     n_layers=args.n_layers, dropout=dropout,
                 )

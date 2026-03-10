@@ -29,16 +29,16 @@ def load_model_from_checkpoint(ckpt_path: str, device):
     name = os.path.basename(ckpt_path)
     if 'scnn' in name or 'spectral_cnn' in name:
         from models.spectral_cnn import SpectralCNN1D
-        model = SpectralCNN1D(n_bands=59, n_classes=6)
+        model = SpectralCNN1D(n_bands=59, n_classes=5)
     elif 'svit' in name or 'spectral_vit' in name:
         from models.spectral_transformer import SpectralTransformer
-        model = SpectralTransformer(n_bands=59, n_classes=6)
+        model = SpectralTransformer(n_bands=59, n_classes=5)
     elif 'cnn' in name:
         from models.cnn import SpectralSpatialCNN
-        model = SpectralSpatialCNN(n_bands=60, n_classes=6, patch_size=7)
+        model = SpectralSpatialCNN(n_bands=60, n_classes=5, patch_size=7)
     elif 'mlp' in name:
         from models.mlp import MLP
-        model = MLP(n_features=60, n_classes=6)
+        model = MLP(n_features=60, n_classes=5)
     else:
         raise ValueError(f"Cannot infer model type from filename: {name}")
     model.load_state_dict(ckpt['model_state'])

@@ -22,7 +22,7 @@ class SpectralTransformer(nn.Module):
     def __init__(
         self,
         n_bands: int = 59,
-        n_classes: int = 6,
+        n_classes: int = 5,
         embed_dim: int = 128,
         n_heads: int = 4,
         n_layers: int = 4,

@@ -24,8 +24,8 @@ def build_class_balanced_weights(df: pd.DataFrame) -> np.ndarray:
     positive for. Plagioclase/HCP pixels get ~20–50x the weight of common
     olivine pixels.
     """
-    from data.dataset import LABEL_COLS
-    labels = df[LABEL_COLS].values.astype('float32')
+    from data.dataset import LABEL_COLS, _collapse_labels
+    labels = _collapse_labels(df)[LABEL_COLS].values.astype('float32')
     n_pos = (labels > 0.4).sum(axis=0).clip(min=1)
     n_neg = len(labels) - n_pos
     imbalance = n_neg / n_pos  # higher = rarer class
@@ -86,6 +86,10 @@ def train_torch_model(
         )
 
     use_patches = mrrsu_map is not None
+
+    # Collapse olivine_t1/t2 → olivine and set uniform confidence weights
+    from data.dataset import _collapse_labels
+    df = _collapse_labels(df)
 
     # Split dataframes — train optionally filtered to High-confidence only
     train_df = df[df['split'] == 'train']

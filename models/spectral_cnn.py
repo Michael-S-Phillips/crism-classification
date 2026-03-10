@@ -18,7 +18,7 @@ class SpectralCNN1D(nn.Module):
         spectrum → unsqueeze → Conv1d stack → global avg pool → dropout → linear
     """
 
-    def __init__(self, n_bands: int = 59, n_classes: int = 6, dropout: float = 0.3):
+    def __init__(self, n_bands: int = 59, n_classes: int = 5, dropout: float = 0.3):
         super().__init__()
         self.features = nn.Sequential(
             # Block 1: local spectral patterns (kernel 5 covers ~100nm)
