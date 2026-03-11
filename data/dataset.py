@@ -196,6 +196,56 @@ class CRISMPatchDataset(Dataset):
         self.close()
 
 
+class CRISMCombinedDataset(Dataset):
+    """
+    Per-pixel dataset combining mrral 59-band reflectance with mrrsu 60-band
+    summary parameters into a single 119-dim feature vector.
+
+    Requires a merged DataFrame with both m0..m58 (mrral) and b0..b59 (mrrsu)
+    columns present. Build via:
+
+        mrral_df = pd.read_parquet('data/mrral_pixels.parquet')
+        mrrsu_df = pd.read_parquet('data/pixels.parquet')
+        MERGE_KEYS = ['tile_id', 'polygon_id', 'pixel_row', 'pixel_col']
+        combined = mrral_df.merge(mrrsu_df[MERGE_KEYS + BAND_COLS], on=MERGE_KEYS, how='inner')
+
+    Features layout: features[:59] = mrral bands, features[59:] = mrrsu bands.
+    This layout matches SpectralHybridClassifier.forward() which splits on dim 59.
+    """
+
+    N_MRRAL = 59
+    N_MRRSU = 60
+    N_FEATURES = N_MRRAL + N_MRRSU  # 119
+
+    def __init__(self, df: pd.DataFrame):
+        missing_mrral = [c for c in MRRAL_BAND_COLS if c not in df.columns]
+        if missing_mrral:
+            raise ValueError(
+                f"DataFrame missing mrral columns: {missing_mrral[:5]}... "
+                "Merge mrral_pixels.parquet with pixels.parquet first."
+            )
+        missing_mrrsu = [c for c in BAND_COLS if c not in df.columns]
+        if missing_mrrsu:
+            raise ValueError(
+                f"DataFrame missing mrrsu columns: {missing_mrrsu[:5]}... "
+                "Merge mrral_pixels.parquet with pixels.parquet first."
+            )
+        df = _collapse_labels(df)
+        mrral = df[MRRAL_BAND_COLS].values.astype('float32')
+        mrrsu = df[BAND_COLS].values.astype('float32')
+        self.features = torch.tensor(
+            np.concatenate([mrral, mrrsu], axis=1), dtype=torch.float32
+        )
+        self.labels = torch.tensor(df[LABEL_COLS].values, dtype=torch.float32)
+        self.weights = torch.tensor(df['confidence_weight'].values, dtype=torch.float32)
+
+    def __len__(self):
+        return len(self.features)
+
+    def __getitem__(self, idx):
+        return self.features[idx], self.labels[idx], self.weights[idx]
+
+
 def load_sklearn_arrays(parquet_path: str):
     """
     Load train/val/test arrays for sklearn models.

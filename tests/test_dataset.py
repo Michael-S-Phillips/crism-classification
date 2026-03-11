@@ -132,6 +132,67 @@ def test_crism_spectral_dataset_raises_on_missing_columns():
         CRISMSpectralDataset(df)
 
 
+@pytest.fixture
+def combined_df():
+    """Synthetic dataframe with both mrral and mrrsu columns for unit tests."""
+    import numpy as np
+    n = 40
+    rng = np.random.default_rng(99)
+    data = {
+        'tile_id': ['t0001'] * n,
+        'polygon_id': list(range(n)),
+        'pixel_row': list(range(n)),
+        'pixel_col': [0] * n,
+        **{f'm{i}': rng.random(n).astype('float32') for i in range(59)},
+        **{f'b{i}': rng.random(n).astype('float32') for i in range(60)},
+        'olivine_t1': rng.integers(0, 2, n).astype('float32'),
+        'olivine_t2': rng.integers(0, 2, n).astype('float32'),
+        'lcp':         rng.integers(0, 2, n).astype('float32'),
+        'hcp':         rng.integers(0, 2, n).astype('float32'),
+        'plagioclase': rng.integers(0, 2, n).astype('float32'),
+        'other':       rng.integers(0, 2, n).astype('float32'),
+        'confidence_weight': np.ones(n, dtype='float32'),
+        'confidence_tier': ['High'] * n,
+        'split': ['train'] * 30 + ['val'] * 10,
+    }
+    return pd.DataFrame(data)
+
+
+def test_combined_dataset_feature_shape(combined_df):
+    import torch
+    from data.dataset import CRISMCombinedDataset
+    ds = CRISMCombinedDataset(combined_df)
+    feat, label, weight = ds[0]
+    assert feat.shape == (119,), f"Expected (119,), got {feat.shape}"
+    assert label.shape == (5,), f"Expected (5,) classes, got {label.shape}"
+    assert feat.dtype == torch.float32
+
+
+def test_combined_dataset_splits_correctly(combined_df):
+    import numpy as np
+    from data.dataset import CRISMCombinedDataset, MRRAL_BAND_COLS, BAND_COLS
+    ds = CRISMCombinedDataset(combined_df)
+    feat, _, _ = ds[0]
+    expected_mrral = combined_df[MRRAL_BAND_COLS].iloc[0].values
+    expected_mrrsu = combined_df[BAND_COLS].iloc[0].values
+    np.testing.assert_allclose(feat[:59].numpy(), expected_mrral, rtol=1e-5)
+    np.testing.assert_allclose(feat[59:].numpy(), expected_mrrsu, rtol=1e-5)
+
+
+def test_combined_dataset_raises_on_missing_mrral(combined_df):
+    from data.dataset import CRISMCombinedDataset
+    df_no_mrral = combined_df.drop(columns=[f'm{i}' for i in range(59)])
+    with pytest.raises(ValueError, match="mrral"):
+        CRISMCombinedDataset(df_no_mrral)
+
+
+def test_combined_dataset_raises_on_missing_mrrsu(combined_df):
+    from data.dataset import CRISMCombinedDataset
+    df_no_mrrsu = combined_df.drop(columns=[f'b{i}' for i in range(60)])
+    with pytest.raises(ValueError, match="mrrsu"):
+        CRISMCombinedDataset(df_no_mrrsu)
+
+
 def test_crism_spectral_dataset_high_conf_filtering(small_mrral_df):
     from data.dataset import CRISMSpectralDataset
     high_df = small_mrral_df[small_mrral_df['confidence_tier'] == 'High']
