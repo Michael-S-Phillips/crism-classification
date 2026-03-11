@@ -92,6 +92,37 @@ def make_fake_mrral_df(n=120):
     return pd.DataFrame(data)
 
 
+def test_train_hybrid_model_e2e():
+    """SpectralHybridClassifier should train end-to-end through train_torch_model."""
+    from models.hybrid_classifier import SpectralHybridClassifier
+    rng = np.random.default_rng(2)
+    n = 120
+    df = pd.DataFrame({
+        **{f'm{i}': rng.random(n).astype('float32') for i in range(59)},
+        **{f'b{i}': rng.random(n).astype('float32') for i in range(60)},
+        'olivine_t1': rng.integers(0, 2, n).astype('float32'),
+        'olivine_t2': rng.integers(0, 2, n).astype('float32'),
+        'lcp':  rng.integers(0, 2, n).astype('float32'),
+        'hcp':  rng.integers(0, 2, n).astype('float32'),
+        'plagioclase': rng.integers(0, 2, n).astype('float32'),
+        'other': rng.integers(0, 2, n).astype('float32'),
+        'confidence_weight': np.ones(n, dtype='float32'),
+        'confidence_tier': ['High'] * n,
+        'split': ['train'] * 80 + ['val'] * 40,
+    })
+    model = SpectralHybridClassifier(
+        n_mrral=59, n_mrrsu=60, n_classes=5,
+        embed_dim=32, n_heads=2, n_layers=2,
+    )
+    metrics = train_torch_model(
+        model=model, df=df, model_name='test_hybrid',
+        max_epochs=2, batch_size=32, lr=3e-4,
+        patience=5, use_wandb=False, checkpoint_dir=None,
+        use_asl_loss=True,
+    )
+    assert 'val_mAP' in metrics
+
+
 def test_train_with_asl_loss():
     """Training loop should run without error when use_asl_loss=True."""
     from models.spectral_transformer import SpectralTransformer

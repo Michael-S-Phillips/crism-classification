@@ -117,11 +117,15 @@ def train_torch_model(
         pos_weight = torch.tensor(pw, dtype=torch.float32).to(device)
 
     def make_dataset(sub_df, split_name='train'):
-        from data.dataset import MRRAL_BAND_COLS, CRISMSpectralDataset
+        from data.dataset import MRRAL_BAND_COLS, BAND_COLS, CRISMSpectralDataset, CRISMCombinedDataset
         if use_patches:
             return CRISMPatchDataset(sub_df, mrrsu_map, patch_size=patch_size,
                                      cache_dir=cache_dir, split=split_name)
-        if MRRAL_BAND_COLS[0] in sub_df.columns:
+        has_mrral = MRRAL_BAND_COLS[0] in sub_df.columns
+        has_mrrsu = BAND_COLS[0] in sub_df.columns
+        if has_mrral and has_mrrsu:
+            return CRISMCombinedDataset(sub_df)
+        if has_mrral:
             return CRISMSpectralDataset(sub_df)
         return CRISMPixelDataset(sub_df)
 

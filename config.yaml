@@ -1,4 +1,4 @@
-checkpoints_dir: /mnt/gigas/CRISM/MRDR/crism_classification/checkpoints
+checkpoints_dir: /mnt/mrdr/crism_classification/checkpoints
 classes:
 - olivine_t1
 - olivine_t2
@@ -10,16 +10,16 @@ confidence_weights:
   High: 1.0
   Low: 0.25
   Moderate: 0.5
-data_root: /mnt/gigas/CRISM/MRDR
-gpkg_dir: /mnt/gigas/CRISM/MRDR/categorized_mineral_units
+data_root: /mnt/mrdr
+gpkg_dir: /mnt/mrdr/categorized_mineral_units
 nodata_value: 65535
 other_max_polygons: 400
-output_dir: /mnt/gigas/CRISM/MRDR/crism_classification/data
-patch_cache_dir: /mnt/gigas/CRISM/MRDR/crism_classification/data/patch_cache
+output_dir: /mnt/mrdr/crism_classification/data
+patch_cache_dir: /mnt/mrdr/crism_classification/data/patch_cache
 patch_size: 7
-predictions_dir: /mnt/gigas/CRISM/MRDR/crism_classification/predictions
-project_root: /mnt/gigas/CRISM/MRDR/crism_classification
-reports_dir: /mnt/gigas/CRISM/MRDR/crism_classification/reports
+predictions_dir: /mnt/mrdr/crism_classification/predictions
+project_root: /mnt/mrdr/crism_classification
+reports_dir: /mnt/mrdr/crism_classification/reports
 split:
   random_seed: 42
   test: 0.15

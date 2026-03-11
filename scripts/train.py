@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 SKLEARN_MODELS = {'logreg', 'svc', 'rf', 'xgb', 'lgbm'}
-TORCH_MODELS = {'mlp', 'cnn', 'vit', 'spectral_cnn', 'spectral_vit'}
+TORCH_MODELS = {'mlp', 'cnn', 'vit', 'spectral_cnn', 'spectral_vit', 'spectral_hybrid'}
 
 def load_config(config_path):
     with open(config_path) as f:
@@ -225,6 +225,63 @@ def main():
 
             metrics = train_torch_model(
                 model=model, df=df_mrral, model_name=run_name,
+                max_epochs=args.epochs, batch_size=args.batch_size,
+                lr=args.lr, patience=args.patience,
+                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir,
+                use_pos_weight=args.use_pos_weight,
+                weight_decay=args.weight_decay,
+                warmup_epochs=args.warmup_epochs,
+                lr_t_max=args.lr_t_max,
+                high_conf_only=args.high_conf_only,
+                use_focal_loss=args.focal_loss,
+                focal_gamma=args.focal_gamma,
+                use_asl_loss=args.asl_loss,
+                asl_gamma_neg=args.asl_gamma_neg,
+                asl_gamma_pos=args.asl_gamma_pos,
+                asl_clip=args.asl_clip,
+                use_balanced_sampling=args.balanced_sampling,
+                use_spectral_aug=args.spectral_aug,
+                aug_noise_std=args.aug_noise_std,
+                aug_band_dropout=args.aug_band_dropout,
+                aug_shift_std=args.aug_shift_std,
+                encoder_lr_scale=args.encoder_lr_scale,
+            )
+
+        elif args.model == 'spectral_hybrid':
+            from models.hybrid_classifier import SpectralHybridClassifier
+            from data.dataset import BAND_COLS
+            mrral_parquet = os.path.join(os.path.dirname(parquet_path), 'mrral_pixels.parquet')
+            mrrsu_parquet = parquet_path  # pixels.parquet has b0..b59
+
+            df_mrral = pd.read_parquet(mrral_parquet)
+            df_mrrsu = pd.read_parquet(mrrsu_parquet)
+            MERGE_KEYS = ['tile_id', 'polygon_id', 'pixel_row', 'pixel_col']
+            df_combined = df_mrral.merge(
+                df_mrrsu[MERGE_KEYS + BAND_COLS],
+                on=MERGE_KEYS,
+                how='inner',
+            )
+            logging.info(
+                f"Combined dataset: {len(df_combined)} pixels "
+                f"({len(df_mrral)} mrral ∩ {len(df_mrrsu)} mrrsu)"
+            )
+
+            dropout = args.dropout if args.dropout is not None else 0.1
+            model = SpectralHybridClassifier(
+                n_mrral=59, n_mrrsu=60, n_classes=5,
+                embed_dim=args.embed_dim, n_heads=args.n_heads,
+                n_layers=args.n_layers, dropout=dropout,
+            )
+            if args.pretrain_ckpt:
+                ckpt = torch.load(args.pretrain_ckpt, map_location='cpu')
+                missing, unexpected = model.load_encoder_state_dict(ckpt['encoder_state'])
+                logging.info(
+                    f"Loaded MAE encoder from {args.pretrain_ckpt}. "
+                    f"Missing: {missing}, Unexpected: {unexpected}"
+                )
+
+            metrics = train_torch_model(
+                model=model, df=df_combined, model_name=run_name,
                 max_epochs=args.epochs, batch_size=args.batch_size,
                 lr=args.lr, patience=args.patience,
                 use_wandb=use_wandb, checkpoint_dir=checkpoint_dir,
