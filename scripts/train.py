@@ -82,6 +82,9 @@ def main():
     parser.add_argument('--aug_shift_std', type=float, default=0.005)
     parser.add_argument('--pretrain_ckpt', type=str, default=None,
                         help='Path to MAE pretrain checkpoint; loads encoder into spectral_vit')
+    parser.add_argument('--encoder_lr_scale', type=float, default=None,
+                        help='LR multiplier for pretrained encoder (e.g. 0.1 → 10× slower than head). '
+                             'Only effective when --pretrain_ckpt is set and model has get_param_groups.')
     args = parser.parse_args()
 
     cfg_path = os.path.join(
@@ -241,6 +244,7 @@ def main():
                 aug_noise_std=args.aug_noise_std,
                 aug_band_dropout=args.aug_band_dropout,
                 aug_shift_std=args.aug_shift_std,
+                encoder_lr_scale=args.encoder_lr_scale,
             )
 
     print(f"\n=== {run_name if args.model in TORCH_MODELS else args.model} Results ===")

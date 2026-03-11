@@ -71,6 +71,51 @@ def test_spectral_transformer_forward_shape():
     assert out.shape == (4, 6)
 
 
+def test_spectral_transformer_get_param_groups():
+    from models.spectral_transformer import SpectralTransformer
+    model = SpectralTransformer(n_bands=59, n_classes=5, embed_dim=64, n_heads=2, n_layers=2)
+    groups = model.get_param_groups(head_lr=3e-4, encoder_lr=3e-5)
+    assert len(groups) == 2
+    assert groups[0]['lr'] == 3e-5, "encoder group should get slow LR"
+    assert groups[1]['lr'] == 3e-4, "head group should get fast LR"
+    head_param_ids = {id(p) for p in model.head.parameters()}
+    encoder_param_ids = {id(p) for p in groups[0]['params']}
+    assert not (head_param_ids & encoder_param_ids), "head params must not appear in encoder group"
+    all_group_ids = encoder_param_ids | {id(p) for p in groups[1]['params']}
+    all_model_ids = {id(p) for p in model.parameters()}
+    assert all_group_ids == all_model_ids, "All parameters must be in exactly one group"
+
+
+def test_train_torch_differential_lr():
+    """Training with encoder_lr_scale should not raise and should produce valid metrics."""
+    import pandas as pd, numpy as np
+    from training.train_torch import train_torch_model
+    from models.spectral_transformer import SpectralTransformer
+    rng = np.random.default_rng(1)
+    n = 120
+    df = pd.DataFrame({
+        **{f'm{i}': rng.random(n).astype('float32') for i in range(59)},
+        'olivine_t1': rng.integers(0, 2, n).astype('float32'),
+        'olivine_t2': rng.integers(0, 2, n).astype('float32'),
+        'lcp':  rng.integers(0, 2, n).astype('float32'),
+        'hcp':  rng.integers(0, 2, n).astype('float32'),
+        'plagioclase': rng.integers(0, 2, n).astype('float32'),
+        'other': rng.integers(0, 2, n).astype('float32'),
+        'confidence_weight': np.ones(n, dtype='float32'),
+        'confidence_tier': ['High'] * n,
+        'split': ['train'] * 80 + ['val'] * 40,
+    })
+    model = SpectralTransformer(n_bands=59, n_classes=5, embed_dim=32, n_heads=2, n_layers=2)
+    metrics = train_torch_model(
+        model=model, df=df, model_name='test_diffr',
+        max_epochs=2, batch_size=32, lr=3e-4,
+        patience=5, use_wandb=False, checkpoint_dir=None,
+        encoder_lr_scale=0.1,
+    )
+    assert 'val_mAP' in metrics
+    assert 0.0 <= metrics['val_mAP'] <= 1.0
+
+
 def test_spectral_transformer_mask_token():
     from models.spectral_transformer import SpectralTransformer
     model = SpectralTransformer(n_bands=59, n_classes=6)

@@ -67,6 +67,7 @@ def train_torch_model(
     aug_noise_std: float = 0.005,
     aug_band_dropout: float = 0.10,
     aug_shift_std: float = 0.005,
+    encoder_lr_scale: Optional[float] = None,
     device: Optional[str] = None,
     **wandb_config
 ) -> Dict[str, Any]:
@@ -137,7 +138,14 @@ def train_torch_model(
     val_loader = DataLoader(val_ds, batch_size=batch_size * 2, shuffle=False, num_workers=0)
 
     model = model.to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    if encoder_lr_scale is not None and hasattr(model, 'get_param_groups'):
+        param_groups = model.get_param_groups(
+            head_lr=lr,
+            encoder_lr=lr * encoder_lr_scale,
+        )
+        optimizer = torch.optim.AdamW(param_groups, weight_decay=weight_decay)
+    else:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=lr_t_max)
     if warmup_epochs > 0:

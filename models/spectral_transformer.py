@@ -65,6 +65,27 @@ class SpectralTransformer(nn.Module):
         cls_out = self.norm(out[:, 0])             # CLS token
         return self.head(cls_out)
 
+    def get_param_groups(self, head_lr: float, encoder_lr: float) -> list:
+        """
+        Return two optimizer param groups for differential LR fine-tuning.
+
+        When loaded from a MAE checkpoint, the encoder (band_embed, pos_embed,
+        cls_token, encoder layers, norm) has pretrained weights that should be
+        fine-tuned gently. The classification head is randomly initialized and
+        can use a higher LR.
+
+        Returns:
+            [{'params': encoder_params, 'lr': encoder_lr},
+             {'params': head_params,    'lr': head_lr}]
+        """
+        head_params = list(self.head.parameters())
+        head_param_ids = {id(p) for p in head_params}
+        encoder_params = [p for p in self.parameters() if id(p) not in head_param_ids]
+        return [
+            {'params': encoder_params, 'lr': encoder_lr},
+            {'params': head_params,    'lr': head_lr},
+        ]
+
     def load_encoder_state_dict(self, state: dict):
         """
         Load encoder weights from a pre-trained SpectralMAE.
