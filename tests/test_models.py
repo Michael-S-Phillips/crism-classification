@@ -123,3 +123,55 @@ def test_spectral_transformer_mask_token():
     x[:, 10:20] = 0.0   # simulate masked bands
     out = model(x)
     assert out.shape == (2, 6)
+
+
+def test_hybrid_classifier_output_shape():
+    from models.hybrid_classifier import SpectralHybridClassifier
+    model = SpectralHybridClassifier(
+        n_mrral=59, n_mrrsu=60, n_classes=5,
+        embed_dim=64, n_heads=2, n_layers=2,
+    )
+    x = torch.randn(4, 119)
+    out = model(x)
+    assert out.shape == (4, 5), f"Expected (4, 5), got {out.shape}"
+
+
+def test_hybrid_classifier_get_param_groups():
+    from models.hybrid_classifier import SpectralHybridClassifier
+    model = SpectralHybridClassifier(
+        n_mrral=59, n_mrrsu=60, n_classes=5, embed_dim=64, n_heads=2, n_layers=2,
+    )
+    groups = model.get_param_groups(head_lr=3e-4, encoder_lr=3e-5)
+    assert len(groups) == 2
+    assert groups[0]['lr'] == 3e-5
+    assert groups[1]['lr'] == 3e-4
+    all_group_ids = set()
+    for g in groups:
+        ids = {id(p) for p in g['params']}
+        assert not (ids & all_group_ids), "Param groups must not overlap"
+        all_group_ids |= ids
+    all_model_ids = {id(p) for p in model.parameters()}
+    assert all_group_ids == all_model_ids
+
+
+def test_hybrid_classifier_load_encoder_state_dict():
+    """load_encoder_state_dict should load pretrained encoder weights without error."""
+    from models.hybrid_classifier import SpectralHybridClassifier
+    m1 = SpectralHybridClassifier(n_mrral=59, n_mrrsu=60, n_classes=5, embed_dim=32, n_heads=2, n_layers=2)
+    m2 = SpectralHybridClassifier(n_mrral=59, n_mrrsu=60, n_classes=5, embed_dim=32, n_heads=2, n_layers=2)
+    encoder_state = {k: v for k, v in m1.encoder.state_dict().items()
+                     if not k.startswith('head.')}
+    missing, unexpected = m2.load_encoder_state_dict(encoder_state)
+    assert len(missing) == 0, f"Unexpected missing keys: {missing}"
+    for k, v in m1.encoder.state_dict().items():
+        if not k.startswith('head.'):
+            assert torch.allclose(m2.encoder.state_dict()[k], v), f"Weight {k} not loaded"
+
+
+def test_hybrid_classifier_returns_logits_not_probs():
+    from models.hybrid_classifier import SpectralHybridClassifier
+    model = SpectralHybridClassifier(n_mrral=59, n_mrrsu=60, n_classes=5, embed_dim=32, n_heads=2, n_layers=2)
+    model.eval()
+    x = torch.zeros(2, 119)
+    out = model(x)
+    assert not torch.allclose(out, torch.full_like(out, 0.5))
