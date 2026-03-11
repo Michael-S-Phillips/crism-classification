@@ -68,6 +68,11 @@ def main():
                         help='Use focal loss instead of BCE')
     parser.add_argument('--focal_gamma', type=float, default=2.0,
                         help='Focal loss gamma (default: 2.0)')
+    parser.add_argument('--asl_loss', action='store_true',
+                        help='Use asymmetric loss (Wang et al. 2021) instead of focal/BCE')
+    parser.add_argument('--asl_gamma_neg', type=float, default=4.0)
+    parser.add_argument('--asl_gamma_pos', type=float, default=0.0)
+    parser.add_argument('--asl_clip', type=float, default=0.05)
     parser.add_argument('--balanced_sampling', action='store_true',
                         help='Use class-balanced WeightedRandomSampler')
     parser.add_argument('--spectral_aug', action='store_true',
@@ -227,6 +232,10 @@ def main():
                 high_conf_only=args.high_conf_only,
                 use_focal_loss=args.focal_loss,
                 focal_gamma=args.focal_gamma,
+                use_asl_loss=args.asl_loss,
+                asl_gamma_neg=args.asl_gamma_neg,
+                asl_gamma_pos=args.asl_gamma_pos,
+                asl_clip=args.asl_clip,
                 use_balanced_sampling=args.balanced_sampling,
                 use_spectral_aug=args.spectral_aug,
                 aug_noise_std=args.aug_noise_std,

@@ -58,6 +58,10 @@ def train_torch_model(
     high_conf_only: bool = False,
     use_focal_loss: bool = False,
     focal_gamma: float = 2.0,
+    use_asl_loss: bool = False,
+    asl_gamma_neg: float = 4.0,
+    asl_gamma_pos: float = 0.0,
+    asl_clip: float = 0.05,
     use_balanced_sampling: bool = False,
     use_spectral_aug: bool = False,
     aug_noise_std: float = 0.005,
@@ -82,7 +86,8 @@ def train_torch_model(
             project='crism-mineral-classification',
             name=model_name,
             config={'model': model_name, 'lr': lr, 'batch_size': batch_size,
-                    'max_epochs': max_epochs, **wandb_config}
+                    'max_epochs': max_epochs, 'use_asl_loss': use_asl_loss,
+                    'asl_gamma_neg': asl_gamma_neg, **wandb_config}
         )
 
     use_patches = mrrsu_map is not None
@@ -145,7 +150,10 @@ def train_torch_model(
     else:
         scheduler = cosine
 
-    if use_focal_loss:
+    if use_asl_loss:
+        from training.losses import AsymmetricLoss
+        loss_fn = AsymmetricLoss(gamma_neg=asl_gamma_neg, gamma_pos=asl_gamma_pos, clip=asl_clip)
+    elif use_focal_loss:
         from training.losses import FocalBCEWithLogitsLoss
         loss_fn = FocalBCEWithLogitsLoss(gamma=focal_gamma)
     else:
