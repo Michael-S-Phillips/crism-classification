@@ -51,6 +51,63 @@ def test_focal_loss_same_as_bce_when_gamma_zero():
     assert abs(bce.item() - focal0.item()) < 1e-5
 
 
+def test_asl_output_is_scalar():
+    from training.losses import AsymmetricLoss
+    loss_fn = AsymmetricLoss(gamma_neg=4.0, gamma_pos=0.0, clip=0.05)
+    logits = torch.randn(8, 5)
+    targets = torch.randint(0, 2, (8, 5)).float()
+    weights = torch.ones(8)
+    val = loss_fn(logits, targets, weights)
+    assert val.shape == (), f"Expected scalar, got {val.shape}"
+    assert val.item() > 0
+
+
+def test_asl_accepts_pos_weight_kwarg():
+    """ASL must accept pos_weight= kwarg for API compatibility with training loop."""
+    from training.losses import AsymmetricLoss
+    loss_fn = AsymmetricLoss()
+    logits = torch.randn(4, 5)
+    targets = torch.zeros(4, 5)
+    weights = torch.ones(4)
+    val = loss_fn(logits, targets, weights, pos_weight=torch.ones(5))
+    assert val.item() >= 0
+
+
+def test_asl_clip_zeroes_easy_negatives():
+    """With clip=0.5, confident negatives (p << 0.5) should incur near-zero loss."""
+    from training.losses import AsymmetricLoss
+    loss_fn = AsymmetricLoss(gamma_neg=0.0, gamma_pos=0.0, clip=0.5)
+    logits = torch.full((4, 5), -10.0)
+    targets = torch.zeros(4, 5)
+    weights = torch.ones(4)
+    val = loss_fn(logits, targets, weights)
+    assert val.item() < 0.01, f"Expected near-zero loss for confident negatives, got {val.item()}"
+
+
+def test_asl_higher_gamma_neg_suppresses_negatives():
+    """Higher gamma_neg should reduce loss on easy negatives more than lower gamma_neg."""
+    from training.losses import AsymmetricLoss
+    torch.manual_seed(0)
+    logits = torch.full((8, 5), -2.0)
+    targets = torch.zeros(8, 5)
+    weights = torch.ones(8)
+    loss_low  = AsymmetricLoss(gamma_neg=1.0, gamma_pos=0.0, clip=0.0)(logits, targets, weights)
+    loss_high = AsymmetricLoss(gamma_neg=4.0, gamma_pos=0.0, clip=0.0)(logits, targets, weights)
+    assert loss_high < loss_low, "Higher gamma_neg should down-weight easy negatives more"
+
+
+def test_asl_gamma_zero_clip_zero_equals_bce():
+    """ASL with gamma_neg=0, gamma_pos=0, clip=0 should equal WeightedBCE."""
+    from training.losses import AsymmetricLoss, WeightedBCEWithLogitsLoss
+    torch.manual_seed(42)
+    logits = torch.randn(8, 5)
+    targets = (torch.randn(8, 5) > 0).float()
+    weights = torch.ones(8)
+    bce = WeightedBCEWithLogitsLoss()(logits, targets, weights)
+    asl = AsymmetricLoss(gamma_neg=0.0, gamma_pos=0.0, clip=0.0)(logits, targets, weights)
+    assert abs(bce.item() - asl.item()) < 1e-4, f"Expected BCE≈ASL(γ=0,clip=0): {bce.item()} vs {asl.item()}"
+
+
 def test_build_class_balanced_weights():
     import numpy as np
     import pandas as pd
