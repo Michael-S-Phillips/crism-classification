@@ -13,3 +13,4 @@ checkpoints/
 wandb/
 *.pt
 *.pkl
+.worktrees/
