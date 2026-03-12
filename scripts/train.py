@@ -94,6 +94,7 @@ def main():
     cfg = load_config(cfg_path)
     parquet_path = os.path.join(cfg['output_dir'], 'pixels.parquet')
     checkpoint_dir = cfg['checkpoints_dir']
+    wandb_entity = cfg.get('wandb', {}).get('entity') or None
     use_wandb = not args.no_wandb
 
     if args.model in SKLEARN_MODELS:
@@ -135,7 +136,7 @@ def main():
                 model=model, df=df, model_name=run_name,
                 max_epochs=args.epochs, batch_size=args.batch_size,
                 lr=args.lr, patience=args.patience,
-                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir,
+                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir, wandb_entity=wandb_entity,
                 use_pos_weight=args.use_pos_weight,
                 weight_decay=args.weight_decay,
                 warmup_epochs=args.warmup_epochs,
@@ -181,7 +182,7 @@ def main():
                 model=model, df=df, model_name=run_name,
                 max_epochs=args.epochs, batch_size=args.batch_size,
                 lr=args.lr, patience=args.patience,
-                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir,
+                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir, wandb_entity=wandb_entity,
                 mrrsu_map=mrrsu_map, patch_size=patch_size,
                 cache_dir=cache_dir,
                 use_pos_weight=args.use_pos_weight,
@@ -227,7 +228,7 @@ def main():
                 model=model, df=df_mrral, model_name=run_name,
                 max_epochs=args.epochs, batch_size=args.batch_size,
                 lr=args.lr, patience=args.patience,
-                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir,
+                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir, wandb_entity=wandb_entity,
                 use_pos_weight=args.use_pos_weight,
                 weight_decay=args.weight_decay,
                 warmup_epochs=args.warmup_epochs,
@@ -284,7 +285,7 @@ def main():
                 model=model, df=df_combined, model_name=run_name,
                 max_epochs=args.epochs, batch_size=args.batch_size,
                 lr=args.lr, patience=args.patience,
-                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir,
+                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir, wandb_entity=wandb_entity,
                 use_pos_weight=args.use_pos_weight,
                 weight_decay=args.weight_decay,
                 warmup_epochs=args.warmup_epochs,
