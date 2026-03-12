@@ -49,6 +49,7 @@ def train_torch_model(
     use_wandb: bool = True,
     checkpoint_dir: Optional[str] = None,
     mrrsu_map: Optional[Dict[str, str]] = None,
+    mrral_map: Optional[Dict[str, str]] = None,
     patch_size: int = 7,
     cache_dir: Optional[str] = None,
     use_pos_weight: bool = False,
@@ -118,6 +119,9 @@ def train_torch_model(
 
     def make_dataset(sub_df, split_name='train'):
         from data.dataset import MRRAL_BAND_COLS, BAND_COLS, CRISMSpectralDataset, CRISMCombinedDataset
+        if mrral_map is not None:
+            from data.dataset import CRISMSpectralPatchDataset
+            return CRISMSpectralPatchDataset(sub_df, mrral_map, patch_size=patch_size)
         if use_patches:
             return CRISMPatchDataset(sub_df, mrrsu_map, patch_size=patch_size,
                                      cache_dir=cache_dir, split=split_name)

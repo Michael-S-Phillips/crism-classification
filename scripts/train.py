@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 SKLEARN_MODELS = {'logreg', 'svc', 'rf', 'xgb', 'lgbm'}
-TORCH_MODELS = {'mlp', 'cnn', 'vit', 'spectral_cnn', 'spectral_vit', 'spectral_hybrid'}
+TORCH_MODELS = {'mlp', 'cnn', 'vit', 'spectral_cnn', 'spectral_vit', 'spectral_hybrid', 'spatial_vit'}
 
 def load_config(config_path):
     with open(config_path) as f:
@@ -121,7 +121,9 @@ def main():
     elif args.model in TORCH_MODELS:
         import torch
         from training.train_torch import train_torch_model
-        df = pd.read_parquet(parquet_path)
+        # spatial_vit loads mrral_pixels.parquet directly; skip pixels.parquet
+        if args.model != 'spatial_vit':
+            df = pd.read_parquet(parquet_path)
         run_name = args.run_name or args.model
 
         if args.model == 'mlp':
@@ -301,6 +303,55 @@ def main():
                 aug_noise_std=args.aug_noise_std,
                 aug_band_dropout=args.aug_band_dropout,
                 aug_shift_std=args.aug_shift_std,
+                encoder_lr_scale=args.encoder_lr_scale,
+            )
+
+
+        elif args.model == 'spatial_vit':
+            import glob as _glob
+            mrral_hdrs = sorted(_glob.glob('/mnt/crism/MRDR/mc*/t*mrral*.hdr'))
+            mrral_map = {}
+            for hdr in mrral_hdrs:
+                tid = os.path.basename(hdr).split('_mrral_')[0]
+                mrral_map[tid] = hdr.replace('.hdr', '.img')
+            logging.info(f'mrral_map: {len(mrral_map)} tiles found')
+
+            mrral_parquet = '/mnt/crism/MRDR/crism_classification/data/mrral_pixels.parquet'
+            df_mrral = pd.read_parquet(mrral_parquet)
+            dropout = args.dropout if args.dropout is not None else 0.1
+
+            from models.spatial_spectral_transformer import SpatialSpectralClassifier
+            model = SpatialSpectralClassifier(
+                n_bands=59, patch_size=args.patch_size, n_classes=5,
+                embed_dim=args.embed_dim, n_heads=args.n_heads,
+                n_layers=args.n_layers, dropout=dropout,
+            )
+            if args.pretrain_ckpt:
+                ckpt = torch.load(args.pretrain_ckpt, map_location='cpu', weights_only=False)
+                missing, unexpected = model.load_encoder_state_dict(ckpt['encoder_state'])
+                logging.info(
+                    f'Loaded spatial MAE encoder from {args.pretrain_ckpt}. '
+                    f'Missing: {missing}, Unexpected: {unexpected}'
+                )
+
+            metrics = train_torch_model(
+                model=model, df=df_mrral, model_name=run_name,
+                max_epochs=args.epochs, batch_size=args.batch_size,
+                lr=args.lr, patience=args.patience,
+                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir,
+                mrral_map=mrral_map, patch_size=args.patch_size,
+                use_pos_weight=args.use_pos_weight,
+                weight_decay=args.weight_decay,
+                warmup_epochs=args.warmup_epochs,
+                lr_t_max=args.lr_t_max,
+                high_conf_only=args.high_conf_only,
+                use_focal_loss=args.focal_loss,
+                focal_gamma=args.focal_gamma,
+                use_asl_loss=args.asl_loss,
+                asl_gamma_neg=args.asl_gamma_neg,
+                asl_gamma_pos=args.asl_gamma_pos,
+                asl_clip=args.asl_clip,
+                use_balanced_sampling=args.balanced_sampling,
                 encoder_lr_scale=args.encoder_lr_scale,
             )
 
