@@ -265,3 +265,89 @@ def load_sklearn_arrays(parquet_path: str):
         return X, y, w
 
     return (*_split('train'), *_split('val'), *_split('test'))
+
+
+class CRISMSpectralPatchDataset(Dataset):
+    """
+    Spatial patch dataset for SpatialSpectralClassifier fine-tuning.
+
+    Reads 7×7×59 mrral reflectance patches around labeled pixel centers.
+    Applies the same normalization as CRISMGlobalPatchDataset (clip to [0, 0.5]).
+    Border pixels are zero-padded. File handles are cached per tile, pid-safe.
+    """
+
+    CLIP_MAX = 0.5
+    NODATA = 65535.0
+
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        mrral_map: Dict[str, str],
+        patch_size: int = 7,
+    ):
+        assert patch_size % 2 == 1, "patch_size must be odd"
+        df = _collapse_labels(df).reset_index(drop=True)
+        self.mrral_map = mrral_map
+        self.patch_size = patch_size
+        self.half = patch_size // 2
+        self.labels = torch.tensor(df[LABEL_COLS].values, dtype=torch.float32)
+        self.weights = torch.tensor(df['confidence_weight'].values, dtype=torch.float32)
+        self._tile_ids = df['tile_id'].values
+        self._pixel_rows = df['pixel_row'].values.astype(np.int64)
+        self._pixel_cols = df['pixel_col'].values.astype(np.int64)
+        self._n = len(df)
+        self._handles: Dict[str, rasterio.DatasetReader] = {}
+        self._pid = os.getpid()
+
+    def __len__(self):
+        return self._n
+
+    def __getitem__(self, idx):
+        current_pid = os.getpid()
+        if current_pid != self._pid:
+            self._handles.clear()
+            self._pid = current_pid
+
+        tile_id = self._tile_ids[idx]
+        pr = int(self._pixel_rows[idx])
+        pc = int(self._pixel_cols[idx])
+
+        if tile_id not in self._handles:
+            if tile_id not in self.mrral_map:
+                raise KeyError(f"tile_id {tile_id!r} not found in mrral_map")
+            self._handles[tile_id] = rasterio.open(self.mrral_map[tile_id])
+        src = self._handles[tile_id]
+
+        h = self.half
+        r0 = max(0, pr - h);  r1 = min(src.height, pr + h + 1)
+        c0 = max(0, pc - h);  c1 = min(src.width,  pc + h + 1)
+        window = rasterio.windows.Window(c0, r0, c1 - c0, r1 - r0)
+
+        # Read first 59 bands (1-indexed for rasterio)
+        chunk = src.read(list(range(1, 60)), window=window).astype(np.float32)  # (59, h, w)
+
+        # Zero-pad to (59, patch_size, patch_size)
+        patch = np.zeros((59, self.patch_size, self.patch_size), dtype=np.float32)
+        dr0 = pr - h - max(0, pr - h) + (max(0, pr - h) - (pr - h))
+        dc0 = pc - h - max(0, pc - h) + (max(0, pc - h) - (pc - h))
+        # Simplified: pad offset is how far the actual window start is from intended
+        dr0 = max(0, h - pr)
+        dc0 = max(0, h - pc)
+        ph, pw = chunk.shape[1], chunk.shape[2]
+        patch[:, dr0:dr0 + ph, dc0:dc0 + pw] = chunk
+
+        # Handle nodata
+        patch[(patch == self.NODATA) | ~np.isfinite(patch)] = 0.0
+
+        # Normalize: clip to [0, CLIP_MAX]
+        patch = np.clip(patch, 0.0, self.CLIP_MAX)
+
+        # (59, 7, 7) → (7, 7, 59)
+        patch = patch.transpose(1, 2, 0)
+
+        return torch.from_numpy(patch.copy()), self.labels[idx], self.weights[idx]
+
+    def close(self):
+        for src in self._handles.values():
+            src.close()
+        self._handles.clear()
