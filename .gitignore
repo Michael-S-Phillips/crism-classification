@@ -10,6 +10,8 @@ htmlcov/
 predictions/
 checkpoints/
 .env
+config.local.yaml
 wandb/
 *.pt
 *.pkl
+.worktrees/

@@ -62,8 +62,8 @@ def main():
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         args.config
     )
-    with open(cfg_path) as f:
-        cfg = yaml.safe_load(f)
+    from config_loader import load_config
+    cfg = load_config(cfg_path)
 
     parquet_path = os.path.join(cfg['output_dir'], 'pixels.parquet')
     cache_dir = cfg['patch_cache_dir']

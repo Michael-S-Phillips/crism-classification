@@ -6,11 +6,11 @@ from typing import Dict, List
 import numpy as np
 from sklearn.metrics import average_precision_score
 
-from data.label_parser import CLASSES
+from data.dataset import LABEL_COLS as CLASSES
 
 
 def compute_map(y_true: np.ndarray, y_score: np.ndarray) -> float:
-    """Mean Average Precision across all 6 classes. Skips classes with no positives."""
+    """Mean Average Precision across all classes. Skips classes with no positives."""
     aps = []
     for i in range(y_true.shape[1]):
         if y_true[:, i].sum() > 0:
@@ -46,8 +46,8 @@ def compute_metrics_by_confidence_tier(
 
     Parameters
     ----------
-    y_true : (n, 6)
-    y_score : (n, 6)
+    y_true : (n, n_classes)
+    y_score : (n, n_classes)
     confidence_tiers : list of str, length n, values in {'High','Moderate','Low'}
     """
     tiers = np.array(confidence_tiers)

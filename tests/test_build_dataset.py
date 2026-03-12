@@ -1,8 +1,11 @@
 import pandas as pd
 import pytest
 import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config_loader import load_config
 
-PARQUET_PATH = '/mnt/crism/MRDR/crism_classification/data/pixels.parquet'
+PARQUET_PATH = os.path.join(load_config()['output_dir'], 'pixels.parquet')
 
 
 def test_parquet_exists():

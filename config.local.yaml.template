@@ -1,0 +1,18 @@
+# Machine-local config overrides — copy to config.local.yaml and edit.
+# config.local.yaml is gitignored; never commit it.
+#
+# Typically you only need to set data_root. All derived paths
+# (output_dir, checkpoints_dir, gpkg_dir, etc.) are recomputed automatically.
+#
+# Examples by machine:
+#   /mnt/mrdr              (primary workstation)
+#   /mnt/gigas/CRISM/MRDR  (older workstation)
+#   /mnt/crism/MRDR        (server)
+
+data_root: /mnt/mrdr
+
+# Optional: override individual paths if your layout differs from the default
+# project_root:    /mnt/mrdr/crism_classification
+# output_dir:      /mnt/mrdr/crism_classification/data
+# checkpoints_dir: /mnt/mrdr/crism_classification/checkpoints
+# gpkg_dir:        /mnt/mrdr/categorized_mineral_units

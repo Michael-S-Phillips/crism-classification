@@ -7,10 +7,9 @@ def test_predict_tile_produces_geotiffs(tmp_path):
     import glob
 
     # Use first test tile
-    import pandas as pd, yaml
-    cfg_path = '/mnt/crism/MRDR/crism_classification/config.yaml'
-    with open(cfg_path) as f:
-        cfg = yaml.safe_load(f)
+    import pandas as pd
+    from config_loader import load_config
+    cfg = load_config()
 
     df = pd.read_parquet(os.path.join(cfg['output_dir'], 'pixels.parquet'))
     test_tile = df[df['split'] == 'test']['tile_id'].iloc[0]

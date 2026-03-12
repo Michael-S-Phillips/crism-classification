@@ -21,8 +21,8 @@ SKLEARN_MODELS = {'logreg', 'svc', 'rf', 'xgb', 'lgbm'}
 TORCH_MODELS = {'mlp', 'cnn', 'vit', 'spectral_cnn', 'spectral_vit', 'spectral_hybrid'}
 
 def load_config(config_path):
-    with open(config_path) as f:
-        return yaml.safe_load(f)
+    from config_loader import load_config as _load
+    return _load(config_path)
 
 def main():
     parser = argparse.ArgumentParser(description="Train a mineral classification model.")
