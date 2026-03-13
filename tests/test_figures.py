@@ -95,3 +95,33 @@ class TestClassSpectra:
             m.main()
 
         assert (tmp_path / 'fig_class_spectra_v2.png').exists()
+
+
+def _make_pixels_df():
+    """Minimal pixels.parquet fixture — 60 rows with 6-class labels before collapse."""
+    rng = np.random.default_rng(42)
+    n = 60
+    data = {}
+    for cls in ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']:
+        data[cls] = np.where(rng.random(n) > 0.6, 1.0, 0.0).astype('float32')
+    data['split']           = ['train'] * 40 + ['val'] * 10 + ['test'] * 10
+    data['confidence_tier'] = ['High'] * 20 + ['Moderate'] * 20 + ['Low'] * 20
+    return pd.DataFrame(data)
+
+
+class TestDatasetStats:
+    def test_creates_png(self, tmp_path, monkeypatch):
+        import scripts.plot_dataset_stats as m
+        from unittest.mock import patch
+
+        monkeypatch.setattr(m, 'REPORTS_DIR', str(tmp_path))
+
+        df = _make_pixels_df()
+        parquet_path = tmp_path / 'pixels.parquet'
+        df.to_parquet(parquet_path)
+
+        cfg = {'output_dir': str(tmp_path)}
+        with patch('scripts.plot_dataset_stats.load_config', return_value=cfg):
+            m.main()
+
+        assert (tmp_path / 'fig_dataset_stats.png').exists()
