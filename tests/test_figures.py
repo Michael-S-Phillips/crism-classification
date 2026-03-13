@@ -45,3 +45,11 @@ class TestModelProgression:
         monkeypatch.setattr(m, 'REPORTS_DIR', str(tmp_path))
         m.main()
         assert (tmp_path / 'fig_model_progression.png').exists()
+
+
+class TestHeatmap:
+    def test_creates_png(self, tmp_path, monkeypatch):
+        import scripts.plot_per_class_heatmap as m
+        monkeypatch.setattr(m, 'REPORTS_DIR', str(tmp_path))
+        m.main()
+        assert (tmp_path / 'fig_per_class_heatmap.png').exists()
