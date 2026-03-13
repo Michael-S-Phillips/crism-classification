@@ -37,3 +37,11 @@ class TestFigStyle:
         assert not ax.spines['top'].get_visible()
         assert not ax.spines['right'].get_visible()
         plt.close(fig)
+
+
+class TestModelProgression:
+    def test_creates_png(self, tmp_path, monkeypatch):
+        import scripts.plot_model_progression as m
+        monkeypatch.setattr(m, 'REPORTS_DIR', str(tmp_path))
+        m.main()
+        assert (tmp_path / 'fig_model_progression.png').exists()
