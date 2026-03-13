@@ -87,9 +87,11 @@ def test_olivine_low_weight(synthetic_tile, synthetic_gpkg):
         assert r['confidence_tier'] == 'Low'
 
 def test_find_tile_pairs_finds_existing():
+    from config_loader import load_config
+    cfg = load_config()
     pairs = find_tile_pairs(
-        gpkg_dir='/mnt/crism/MRDR/categorized_mineral_units',
-        data_root='/mnt/crism/MRDR'
+        gpkg_dir=cfg['gpkg_dir'],
+        data_root=cfg['data_root']
     )
     assert len(pairs) >= 1
     t_id, gpkg_path, mrrsu_path = pairs[0]
@@ -98,7 +100,9 @@ def test_find_tile_pairs_finds_existing():
     assert t_id.startswith('t0')
 
 def test_find_tile_pairs_sorted():
-    pairs = find_tile_pairs('/mnt/crism/MRDR/categorized_mineral_units', '/mnt/crism/MRDR')
+    from config_loader import load_config
+    cfg = load_config()
+    pairs = find_tile_pairs(cfg['gpkg_dir'], cfg['data_root'])
     ids = [p[0] for p in pairs]
     assert ids == sorted(ids)
 

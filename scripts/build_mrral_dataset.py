@@ -8,7 +8,6 @@ Usage:
 import os
 import sys
 import logging
-import yaml
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -18,7 +17,8 @@ PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def main():
-    cfg = yaml.safe_load(open(os.path.join(PROJ, 'config.yaml')))
+    from config_loader import load_config
+    cfg = load_config()
     from data.extract_pixels import find_mrral_pairs, extract_mrral_pixels_from_pair
 
     pairs = find_mrral_pairs(cfg['gpkg_dir'], cfg['data_root'])

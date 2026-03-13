@@ -26,5 +26,5 @@ split:
   train: 0.7
   val: 0.15
 wandb:
-  entity: null
+  entity: space-imagery-center
   project: crism-mineral-classification

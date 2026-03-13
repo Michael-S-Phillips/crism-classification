@@ -68,7 +68,8 @@ def main():
     parser.add_argument('--split', default='test', choices=['val', 'test'])
     args = parser.parse_args()
 
-    cfg = yaml.safe_load(open(os.path.join(PROJ, 'config.yaml')))
+    from config_loader import load_config
+    cfg = load_config()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Load data (prefer mrral if available)

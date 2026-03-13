@@ -3,8 +3,10 @@ import numpy as np
 import pytest
 import pandas as pd
 from data.dataset import CRISMPixelDataset, load_sklearn_arrays
+from config_loader import load_config
 
-PARQUET = '/mnt/gigas/CRISM/MRDR/crism_classification/data/pixels.parquet'
+_CFG = load_config()
+PARQUET = os.path.join(_CFG['output_dir'], 'pixels.parquet')
 
 @pytest.fixture
 def small_df():
@@ -84,9 +86,8 @@ def test_patch_dataset_uses_cache(tmp_path):
 def test_patch_dataset_shape(small_df):
     from data.dataset import CRISMPatchDataset
     import yaml, os
-    cfg_path = '/mnt/gigas/CRISM/MRDR/crism_classification/config.yaml'
-    with open(cfg_path) as f:
-        cfg = yaml.safe_load(f)
+    from config_loader import load_config
+    cfg = load_config()
     from data.extract_pixels import find_tile_pairs
     pairs = find_tile_pairs(cfg['gpkg_dir'], cfg['data_root'])
     mrrsu_map = {tid: p for tid, _, p in pairs}
@@ -97,7 +98,7 @@ def test_patch_dataset_shape(small_df):
 
 # --- CRISMSpectralDataset tests ---
 
-MRRAL_PARQUET = '/mnt/gigas/CRISM/MRDR/crism_classification/data/mrral_pixels.parquet'
+MRRAL_PARQUET = os.path.join(_CFG['output_dir'], 'mrral_pixels.parquet')
 
 
 @pytest.fixture

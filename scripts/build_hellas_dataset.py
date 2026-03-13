@@ -46,7 +46,8 @@ def main():
                         help='Count intersecting tiles without extracting pixels')
     args = parser.parse_args()
 
-    cfg = yaml.safe_load(open(os.path.join(PROJ, 'config.yaml')))
+    from config_loader import load_config
+    cfg = load_config()
     gpkg_dir = cfg['gpkg_dir']
     data_root = cfg['data_root']
     out_parquet = os.path.join(cfg['output_dir'], 'mrral_pixels.parquet')

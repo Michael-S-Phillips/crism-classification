@@ -34,8 +34,8 @@ def main():
     parser.add_argument('--no_wandb', action='store_true')
     args = parser.parse_args()
 
-    import yaml
-    cfg = yaml.safe_load(open(os.path.join(PROJ, 'config.yaml')))
+    from config_loader import load_config
+    cfg = load_config()
     parquet = os.path.join(cfg['output_dir'], 'mrral_pixels.parquet')
     ckpt_dir = cfg['checkpoints_dir']
 

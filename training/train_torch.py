@@ -69,6 +69,7 @@ def train_torch_model(
     aug_shift_std: float = 0.005,
     encoder_lr_scale: Optional[float] = None,
     device: Optional[str] = None,
+    wandb_entity: Optional[str] = None,
     **wandb_config
 ) -> Dict[str, Any]:
     """
@@ -85,6 +86,7 @@ def train_torch_model(
         import wandb as wb
         wb.init(
             project='crism-mineral-classification',
+            entity=wandb_entity or None,
             name=model_name,
             config={'model': model_name, 'lr': lr, 'batch_size': batch_size,
                     'max_epochs': max_epochs, 'use_asl_loss': use_asl_loss,

@@ -169,13 +169,12 @@ def main():
     parser.add_argument('--patch_size', type=int, default=7)
     args = parser.parse_args()
 
-    import yaml
     cfg_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         args.config
     )
-    with open(cfg_path) as f:
-        cfg = yaml.safe_load(f)
+    from config_loader import load_config
+    cfg = load_config(cfg_path)
 
     from data.extract_pixels import find_tile_pairs
     pairs = find_tile_pairs(cfg['gpkg_dir'], cfg['data_root'])

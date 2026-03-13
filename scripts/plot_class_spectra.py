@@ -94,7 +94,8 @@ def main():
                         help='Divide each class spectrum by the grand mean of all labeled pixels')
     args = parser.parse_args()
 
-    cfg = yaml.safe_load(open(os.path.join(PROJ, 'config.yaml')))
+    from config_loader import load_config
+    cfg = load_config()
     parquet = os.path.join(cfg['output_dir'], 'mrral_pixels.parquet')
     print(f'Loading {parquet}...')
     df = pd.read_parquet(parquet)
