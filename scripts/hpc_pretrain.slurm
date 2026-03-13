@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=spatial_mae_pretrain
 #SBATCH --partition=gpu_standard
-#SBATCH --account=YOUR_PI_GROUP          # e.g. cscheid or your PI's group
-#SBATCH --gres=gpu:v100s:1              # 1× V100S (32 GB); change to gpu:1 for any GPU
+#SBATCH --account=sbyrne
+#SBATCH --gres=gpu:v100s:1              # 1× V100S (32 GB); or gpu:1 for any GPU
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=10             # 8 dataloader workers + 1 main + 1 wandb
 #SBATCH --mem=48gb                     # 8 workers × ~1.3 GB + model + OS headroom
@@ -14,11 +14,11 @@
 WORKDIR="/xdisk/${USER}/crism_classification"
 DATA_ROOT="/xdisk/${USER}/CRISM_MRDR"   # where mrral tiles live (mc##/ subdirs)
 
-# ── Environment ───────────────────────────────────────────────────────────────
-module load cuda/12.0
-module load conda
-
-conda activate crism
+# ── micromamba environment ─────────────────────────────────────────────────────
+export MAMBA_EXE='/opt/ohpc/pub/apps/micromamba/2.0.2-2/bin/micromamba'
+export MAMBA_ROOT_PREFIX='/groups/sbyrne/phillipsm/micromamba'
+eval "$($MAMBA_EXE shell hook --shell bash --root-prefix $MAMBA_ROOT_PREFIX)"
+micromamba activate crism
 
 # ── Machine-local config (creates if missing) ─────────────────────────────────
 cd "$WORKDIR"
