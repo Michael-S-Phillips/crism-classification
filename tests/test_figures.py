@@ -53,3 +53,43 @@ class TestHeatmap:
         monkeypatch.setattr(m, 'REPORTS_DIR', str(tmp_path))
         m.main()
         assert (tmp_path / 'fig_per_class_heatmap.png').exists()
+
+
+def _make_mrral_df():
+    """Minimal mrral_pixels.parquet fixture — 50 rows, 59 bands."""
+    rng = np.random.default_rng(42)
+    n = 50
+    data = {f'm{i}': rng.random(n).astype('float32') for i in range(59)}
+    for cls in ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']:
+        # ~30% positive per class
+        data[f'label_{cls}'] = np.where(rng.random(n) > 0.7, 1.0, 0.0).astype('float32')
+    data['split'] = ['train'] * 30 + ['val'] * 10 + ['test'] * 10
+    data['confidence_tier'] = ['High'] * 20 + ['Moderate'] * 20 + ['Low'] * 10
+    data['tile_id']    = ['t001'] * n
+    data['polygon_id'] = list(range(n))
+    data['pixel_row']  = list(range(n))
+    data['pixel_col']  = list(range(n))
+    return pd.DataFrame(data)
+
+
+class TestClassSpectra:
+    def test_creates_png(self, tmp_path, monkeypatch):
+        import scripts.plot_class_spectra_v2 as m
+        from unittest.mock import patch
+
+        monkeypatch.setattr(m, 'REPORTS_DIR', str(tmp_path))
+
+        # Write fixture parquet to tmp_path
+        df = _make_mrral_df()
+        parquet_path = tmp_path / 'mrral_pixels.parquet'
+        df.to_parquet(parquet_path)
+
+        cfg = {'output_dir': str(tmp_path), 'data_root': str(tmp_path)}
+        fixed_wavelengths = np.linspace(410, 2457, 59)
+
+        with patch('scripts.plot_class_spectra_v2.load_config', return_value=cfg), \
+             patch('scripts.plot_class_spectra_v2.get_wavelengths',
+                   return_value=fixed_wavelengths):
+            m.main()
+
+        assert (tmp_path / 'fig_class_spectra_v2.png').exists()
