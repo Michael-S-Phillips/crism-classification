@@ -30,16 +30,6 @@ CLIP_MAX = 0.5        # reflectance clip — covers P99 with headroom
 MIN_VALID_FRAC = 0.8  # fraction of patch pixels that must be non-NaN/nodata
 
 
-def _tile_shape(hdr_path: str):
-    """Return (height, width) of a tile without loading data."""
-    img_path = hdr_path.replace('.hdr', '.img')
-    try:
-        with rasterio.open(img_path) as src:
-            return src.height, src.width
-    except Exception:
-        return 0, 0
-
-
 class CRISMGlobalPatchDataset(IterableDataset):
     """
     Infinite stream of (patch_size, patch_size, N_BANDS) float32 tensors.
@@ -67,16 +57,10 @@ class CRISMGlobalPatchDataset(IterableDataset):
         self.min_valid_frac = min_valid_frac
         self.clip_max = clip_max
         self.max_retries = max_retries
-
-        # Precompute tile areas for weighted sampling (skip inaccessible tiles)
-        sizes = [_tile_shape(p) for p in self.hdr_paths]
-        areas = [float(h * w) for h, w in sizes]
-        total = sum(areas) or 1.0
-        self._weights = np.array([a / total for a in areas], dtype=np.float64)
-        # Zero out tiles with zero area (inaccessible)
-        self._weights[self._weights == 0] = 0.0
-        if self._weights.sum() > 0:
-            self._weights /= self._weights.sum()
+        # Uniform tile weights — all mrral tiles are similar size (~1636x1340)
+        # Avoids opening all 1764 files at init time just to compute areas.
+        n = len(self.hdr_paths)
+        self._weights = np.ones(n, dtype=np.float64) / n if n > 0 else np.array([])
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
