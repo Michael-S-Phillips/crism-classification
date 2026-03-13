@@ -48,7 +48,8 @@ def main():
     ax_left.set_yticks(list(y_left))
     ax_left.set_yticklabels(LABEL_COLS)
     ax_left.set_xlabel('% of train pixels')
-    ax_left.set_xlim(0, max(percentages) * 1.3 if max(percentages) > 0 else 100)
+    max_pct = max(percentages) if percentages else 0
+    ax_left.set_xlim(0, max_pct * 1.3 if max_pct > 0 else 100)
     ax_left.set_title('Class Prevalence (train split)')
     despine(ax_left)
 

@@ -105,7 +105,8 @@ def _make_pixels_df():
     for cls in ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']:
         data[cls] = np.where(rng.random(n) > 0.6, 1.0, 0.0).astype('float32')
     data['split']           = ['train'] * 40 + ['val'] * 10 + ['test'] * 10
-    data['confidence_tier'] = ['High'] * 20 + ['Moderate'] * 20 + ['Low'] * 20
+    # Interleave tiers so every split contains multiple tiers (exercises stacking logic)
+    data['confidence_tier'] = ['High', 'Moderate', 'Low'] * 20
     return pd.DataFrame(data)
 
 
