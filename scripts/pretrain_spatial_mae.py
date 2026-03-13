@@ -31,7 +31,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MRRAL_GLOB = '/mnt/crism/MRDR/mc*/t*mrral*.hdr'
+# Glob candidates tried in order; first that finds files wins.
+# Pattern 1: local server layout  mc##/t*mrral*.hdr
+# Pattern 2: flat transfer layout  t*mrral*.hdr (all files in one dir)
+MRRAL_GLOB_CANDIDATES = [
+    '/mnt/crism/MRDR/mc*/t*mrral*.hdr',   # local: mc## subdirs
+    None,                                   # filled from config data_root below
+]
 PATCHES_PER_EPOCH = 1_000_000
 SAVE_EVERY = 50  # save periodic checkpoint every N epochs
 
@@ -59,7 +65,8 @@ def main():
 
     import yaml
     cfg_path = os.path.join(PROJ, 'config.yaml')
-    cfg = yaml.safe_load(open(cfg_path))
+    from config_loader import load_config
+    cfg = load_config(cfg_path)
     if args.ckpt_dir:
         ckpt_dir = args.ckpt_dir
     else:
@@ -75,10 +82,24 @@ def main():
     run_name = f'spatial_mae_{args.embed_dim}d_{args.n_layers}l'
 
     # ── Data ──────────────────────────────────────────────────────────────
-    hdr_files = sorted(glob.glob(MRRAL_GLOB))
+    # Build glob candidates from config data_root (supports flat and mc##/ layouts)
+    data_root = cfg.get('data_root', '')
+    globs_to_try = [
+        os.path.join(data_root, 'mc*', 't*mrral*.hdr'),   # mc## subdirs
+        os.path.join(data_root, 't*mrral*.hdr'),           # flat directory
+        '/mnt/crism/MRDR/mc*/t*mrral*.hdr',               # hardcoded fallback
+    ] if data_root else ['/mnt/crism/MRDR/mc*/t*mrral*.hdr']
+
+    hdr_files = []
+    for pattern in globs_to_try:
+        hdr_files = sorted(glob.glob(pattern))
+        if hdr_files:
+            log.info(f"Found {len(hdr_files)} mrral tiles via {pattern}")
+            break
     if not hdr_files:
-        raise FileNotFoundError(f"No mrral HDR files found at {MRRAL_GLOB}")
-    log.info(f"Found {len(hdr_files)} mrral tiles")
+        raise FileNotFoundError(
+            f"No mrral HDR files found. Tried:\n" + "\n".join(f"  {g}" for g in globs_to_try)
+        )
 
     from data.global_patch_dataset import CRISMGlobalPatchDataset
     ds = CRISMGlobalPatchDataset(hdr_files, patch_size=7, min_valid_frac=0.8)
@@ -131,8 +152,9 @@ def main():
     if use_wandb:
         try:
             import wandb
-            wandb.init(project='crism-mineral-classification', name=run_name,
-                       config=vars(args), resume='allow')
+            wandb_entity = cfg.get('wandb', {}).get('entity') or None
+            wandb.init(project='crism-mineral-classification', entity=wandb_entity,
+                       name=run_name, config=vars(args), resume='allow')
         except Exception as e:
             log.warning(f"wandb init failed ({e}), continuing without")
             use_wandb = False

@@ -12,7 +12,7 @@
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 WORKDIR="/groups/sbyrne/${USER}/crism_classification"
-DATA_ROOT="/groups/sbyrne/${USER}/CRISM_MRDR"   # where mrral tiles live (mc##/ subdirs)
+DATA_ROOT="/xdisk/sbyrne/${USER}/CRISM_MRDR"    # flat tile directory on xdisk
 
 # ── micromamba environment ─────────────────────────────────────────────────────
 export MAMBA_EXE='/opt/ohpc/pub/apps/micromamba/2.0.2-2/bin/micromamba'
