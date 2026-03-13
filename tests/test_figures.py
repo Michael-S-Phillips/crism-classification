@@ -61,8 +61,10 @@ def _make_mrral_df():
     n = 50
     data = {f'm{i}': rng.random(n).astype('float32') for i in range(59)}
     for cls in ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']:
-        # ~30% positive per class
-        data[f'label_{cls}'] = np.where(rng.random(n) > 0.7, 1.0, 0.0).astype('float32')
+        # ~30% positive per class; seed 42 guarantees ≥1 positive per class with n=50
+        labels = np.where(rng.random(n) > 0.7, 1.0, 0.0).astype('float32')
+        assert labels.sum() >= 1, f"Fixture seed produced 0 positives for {cls}"
+        data[f'label_{cls}'] = labels
     data['split'] = ['train'] * 30 + ['val'] * 10 + ['test'] * 10
     data['confidence_tier'] = ['High'] * 20 + ['Moderate'] * 20 + ['Low'] * 10
     data['tile_id']    = ['t001'] * n

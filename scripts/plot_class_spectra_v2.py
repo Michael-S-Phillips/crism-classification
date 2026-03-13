@@ -31,8 +31,11 @@ def get_wavelengths(data_root: str) -> np.ndarray:
             import spectral.io.envi as envi
             hdr = envi.read_envi_header(hdrs[0])
             return np.array(hdr['wavelength'], dtype=float)[:59]
-        except Exception:
-            pass
+        except (KeyError, ValueError, OSError) as exc:
+            import warnings
+            warnings.warn(
+                f"Could not parse wavelengths from {hdrs[0]!r}: {exc}; using fallback."
+            )
     return np.linspace(410, 2457, 59)
 
 
@@ -62,9 +65,12 @@ def main():
             continue
         color  = MINERAL_COLORS[cls]
         mean   = subset.mean(axis=0)
-        std    = subset.std(axis=0)
+        # ddof=1: sample std; for n=1 this yields NaN → fill_between draws nothing (safe)
+        std    = subset.std(axis=0, ddof=1) if n > 1 else np.zeros_like(mean)
         ax.plot(wavelengths, mean, color=color, linewidth=1.5)
-        ax.fill_between(wavelengths, mean - std, mean + std, color=color, alpha=0.25)
+        lo = np.clip(mean - std, 0, 1)
+        hi = np.clip(mean + std, 0, 1)
+        ax.fill_between(wavelengths, lo, hi, color=color, alpha=0.25)
 
     # Panel 5: all-class overlay
     ax5 = axes_flat[5]
@@ -75,6 +81,7 @@ def main():
             continue
         mean   = subset.mean(axis=0)
         ax5.plot(wavelengths, mean, color=MINERAL_COLORS[cls], label=cls, linewidth=1.5)
+    ax5.set_ylim(0, 1)
     ax5.set_title('All classes', fontsize=10)
     ax5.legend(loc='upper right', fontsize=8)
     ax5.set_xlabel('Wavelength (nm)', fontsize=9)
