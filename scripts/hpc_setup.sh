@@ -24,7 +24,7 @@ echo ""
 module load git 2>/dev/null || true
 if [ ! -d "$WORKDIR" ]; then
     git clone --branch feature/spatial-mae-pretraining \
-        YOUR_GIT_REMOTE_URL \
+        https://github.com/Michael-S-Phillips/crism-classification.git \
         "$WORKDIR"
     echo "Cloned repo to $WORKDIR"
 else
