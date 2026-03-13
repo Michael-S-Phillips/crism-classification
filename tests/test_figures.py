@@ -16,6 +16,13 @@ class TestFigStyle:
         from scripts.fig_style import LABEL_COLS
         assert LABEL_COLS == ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
 
+    def test_label_cols_matches_dataset(self):
+        from scripts.fig_style import LABEL_COLS as style_cols
+        from data.dataset import LABEL_COLS as dataset_cols
+        assert style_cols == dataset_cols, (
+            "fig_style.LABEL_COLS and data.dataset.LABEL_COLS have diverged"
+        )
+
     def test_dpi(self):
         from scripts.fig_style import DPI
         assert DPI == 300
