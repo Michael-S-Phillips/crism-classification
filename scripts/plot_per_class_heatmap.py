@@ -65,7 +65,7 @@ def main():
     ax_r.axis('off')
     ax_r.set_title('mAP', fontsize=10)
     for i, mval in enumerate(map_vals):
-        ax_r.text(0.1, i, f'{mval:.3f}', va='center', fontsize=9)
+        ax_r.text(0.1, i, f'{mval:.3f}', va='center', fontsize=10)
 
     plt.tight_layout()
     out = os.path.join(REPORTS_DIR, 'fig_per_class_heatmap.png')
