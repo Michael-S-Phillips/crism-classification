@@ -11,8 +11,8 @@
 #SBATCH --error=logs/pretrain_%j.log
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-WORKDIR="/xdisk/${USER}/crism_classification"
-DATA_ROOT="/xdisk/${USER}/CRISM_MRDR"   # where mrral tiles live (mc##/ subdirs)
+WORKDIR="/groups/sbyrne/${USER}/crism_classification"
+DATA_ROOT="/groups/sbyrne/${USER}/CRISM_MRDR"   # where mrral tiles live (mc##/ subdirs)
 
 # ── micromamba environment ─────────────────────────────────────────────────────
 export MAMBA_EXE='/opt/ohpc/pub/apps/micromamba/2.0.2-2/bin/micromamba'

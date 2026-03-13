@@ -12,9 +12,8 @@
 
 set -e
 
-XDISK="/xdisk/${USER}"
-WORKDIR="${XDISK}/crism_classification"
-DATA_ROOT="${XDISK}/CRISM_MRDR"
+WORKDIR="/groups/sbyrne/${USER}/crism_classification"
+DATA_ROOT="/groups/sbyrne/${USER}/CRISM_MRDR"
 
 echo "=== Setting up CRISM spatial MAE pre-training on UArizona HPC ==="
 echo "  User:      $USER"
