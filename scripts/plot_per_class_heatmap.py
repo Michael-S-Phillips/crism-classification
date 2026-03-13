@@ -44,23 +44,26 @@ def main():
     im = ax.imshow(ap_matrix, cmap='YlOrRd', vmin=0, vmax=1, aspect='auto')
 
     # Cell text
-    for i in range(5):
-        for j in range(5):
+    n_models, n_classes = ap_matrix.shape
+    for i in range(n_models):
+        for j in range(n_classes):
             val = ap_matrix[i, j]
             color = 'white' if val >= 0.6 else 'black'
             ax.text(j, i, f'{val:.2f}', ha='center', va='center',
                     fontsize=9, color=color)
 
-    ax.set_xticks(range(5))
+    ax.set_xticks(range(n_classes))
     ax.set_xticklabels(LABEL_COLS, fontsize=9)
-    ax.set_yticks(range(5))
+    ax.set_yticks(range(n_models))
     ax.set_yticklabels(model_names, fontsize=9)
     ax.set_title('Per-Class Average Precision (v6 models, ASL loss)')
     # No colorbar — the mAP sidebar and cell text provide sufficient value indication.
 
     # --- Right mAP column ---
-    # Copy imshow's y-axis limits (inverted: top row = low y value in display)
-    ax_r.set_ylim(ax.get_ylim())
+    # Derive y-limits from matrix shape to stay independent of axes state.
+    # imshow places row i at y=i with extent [i-0.5, i+0.5], so limits are [-0.5, n-0.5]
+    # inverted (top row = lowest y in display) → [n-0.5, -0.5].
+    ax_r.set_ylim(n_models - 0.5, -0.5)
     ax_r.set_xlim(0, 1)
     ax_r.axis('off')
     ax_r.set_title('mAP', fontsize=10)
