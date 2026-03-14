@@ -21,8 +21,12 @@ SKLEARN_MODELS = {'logreg', 'svc', 'rf', 'xgb', 'lgbm'}
 TORCH_MODELS = {'mlp', 'cnn', 'vit', 'spectral_cnn', 'spectral_vit', 'spectral_hybrid', 'spatial_vit'}
 
 def load_config(config_path):
-    with open(config_path) as f:
-        return yaml.safe_load(f)
+    try:
+        from config_loader import load_config as _load
+        return _load(config_path)
+    except ImportError:
+        with open(config_path) as f:
+            return yaml.safe_load(f)
 
 def main():
     parser = argparse.ArgumentParser(description="Train a mineral classification model.")
@@ -309,14 +313,23 @@ def main():
 
         elif args.model == 'spatial_vit':
             import glob as _glob
-            mrral_hdrs = sorted(_glob.glob('/mnt/crism/MRDR/mc*/t*mrral*.hdr'))
+            data_root = cfg.get('data_root', '/mnt/crism/MRDR')
+            globs_to_try = [
+                os.path.join(data_root, 'mc*', 't*mrral*.hdr'),
+                os.path.join(data_root, 't*mrral*.hdr'),
+            ]
+            mrral_hdrs = []
+            for pattern in globs_to_try:
+                mrral_hdrs = sorted(_glob.glob(pattern))
+                if mrral_hdrs:
+                    break
             mrral_map = {}
             for hdr in mrral_hdrs:
                 tid = os.path.basename(hdr).split('_mrral_')[0]
                 mrral_map[tid] = hdr.replace('.hdr', '.img')
             logging.info(f'mrral_map: {len(mrral_map)} tiles found')
 
-            mrral_parquet = '/mnt/crism/MRDR/crism_classification/data/mrral_pixels.parquet'
+            mrral_parquet = os.path.join(cfg['output_dir'], 'mrral_pixels.parquet')
             df_mrral = pd.read_parquet(mrral_parquet)
             dropout = args.dropout if args.dropout is not None else 0.1
 
@@ -334,12 +347,14 @@ def main():
                     f'Missing: {missing}, Unexpected: {unexpected}'
                 )
 
+            mrral_cache_dir = cfg.get('patch_cache_dir')
             metrics = train_torch_model(
                 model=model, df=df_mrral, model_name=run_name,
                 max_epochs=args.epochs, batch_size=args.batch_size,
                 lr=args.lr, patience=args.patience,
                 use_wandb=use_wandb, checkpoint_dir=checkpoint_dir,
                 mrral_map=mrral_map, patch_size=args.patch_size,
+                cache_dir=mrral_cache_dir,
                 use_pos_weight=args.use_pos_weight,
                 weight_decay=args.weight_decay,
                 warmup_epochs=args.warmup_epochs,

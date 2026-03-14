@@ -121,7 +121,8 @@ def train_torch_model(
         from data.dataset import MRRAL_BAND_COLS, BAND_COLS, CRISMSpectralDataset, CRISMCombinedDataset
         if mrral_map is not None:
             from data.dataset import CRISMSpectralPatchDataset
-            return CRISMSpectralPatchDataset(sub_df, mrral_map, patch_size=patch_size)
+            return CRISMSpectralPatchDataset(sub_df, mrral_map, patch_size=patch_size,
+                                             cache_dir=cache_dir, split=split_name)
         if use_patches:
             return CRISMPatchDataset(sub_df, mrrsu_map, patch_size=patch_size,
                                      cache_dir=cache_dir, split=split_name)

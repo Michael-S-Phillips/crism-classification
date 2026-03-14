@@ -284,6 +284,8 @@ class CRISMSpectralPatchDataset(Dataset):
         df: pd.DataFrame,
         mrral_map: Dict[str, str],
         patch_size: int = 7,
+        cache_dir: Optional[str] = None,
+        split: Optional[str] = None,
     ):
         assert patch_size % 2 == 1, "patch_size must be odd"
         df = _collapse_labels(df).reset_index(drop=True)
@@ -298,11 +300,24 @@ class CRISMSpectralPatchDataset(Dataset):
         self._n = len(df)
         self._handles: Dict[str, rasterio.DatasetReader] = {}
         self._pid = os.getpid()
+        # Load memmap cache if available — bypasses rasterio reads at item time
+        self._cache = None
+        if cache_dir and split:
+            cache_file = os.path.join(cache_dir, f'mrral_{split}_patches_p{patch_size}.npy')
+            if os.path.exists(cache_file):
+                self._cache = np.memmap(
+                    cache_file, dtype='float32', mode='r',
+                    shape=(self._n, patch_size, patch_size, 59)
+                )
 
     def __len__(self):
         return self._n
 
     def __getitem__(self, idx):
+        if self._cache is not None:
+            patch = torch.from_numpy(self._cache[idx].copy())
+            return patch, self.labels[idx], self.weights[idx]
+
         current_pid = os.getpid()
         if current_pid != self._pid:
             self._handles.clear()
