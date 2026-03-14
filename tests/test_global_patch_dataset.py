@@ -17,12 +17,23 @@ def test_dataset_yields_correct_shape():
     assert patch.dtype == torch.float32
 
 
-def test_dataset_values_clipped():
-    """Values should be in [0.0, 0.5] after normalization."""
+def test_dataset_values_normalized():
+    """With normalize=True (default), patches should have ~zero mean and ~unit std."""
     from data.global_patch_dataset import CRISMGlobalPatchDataset
-    ds = CRISMGlobalPatchDataset(HDR_FILES[:5], patch_size=7)
+    ds = CRISMGlobalPatchDataset(HDR_FILES[:5], patch_size=7, normalize=True)
     it = iter(ds)
-    for _ in range(20):
+    for _ in range(10):
+        patch = next(it)
+        assert abs(patch.mean().item()) < 0.5, f"Mean too far from 0: {patch.mean()}"
+        assert 0.1 < patch.std().item() < 5.0, f"Std unexpected: {patch.std()}"
+
+
+def test_dataset_values_clipped_no_normalize():
+    """With normalize=False, values should be in [0.0, 0.5]."""
+    from data.global_patch_dataset import CRISMGlobalPatchDataset
+    ds = CRISMGlobalPatchDataset(HDR_FILES[:5], patch_size=7, normalize=False)
+    it = iter(ds)
+    for _ in range(10):
         patch = next(it)
         assert patch.min().item() >= 0.0, f"Min below 0: {patch.min()}"
         assert patch.max().item() <= 0.5, f"Max above 0.5: {patch.max()}"

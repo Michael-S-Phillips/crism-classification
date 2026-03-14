@@ -49,6 +49,7 @@ class CRISMGlobalPatchDataset(IterableDataset):
         min_valid_frac: float = MIN_VALID_FRAC,
         clip_max: float = CLIP_MAX,
         max_retries: int = 20,
+        normalize: bool = True,
     ):
         assert patch_size % 2 == 1, "patch_size must be odd"
         self.hdr_paths = list(hdr_paths)
@@ -57,6 +58,7 @@ class CRISMGlobalPatchDataset(IterableDataset):
         self.min_valid_frac = min_valid_frac
         self.clip_max = clip_max
         self.max_retries = max_retries
+        self.normalize = normalize
         # Uniform tile weights — all mrral tiles are similar size (~1636x1340)
         # Avoids opening all 1764 files at init time just to compute areas.
         n = len(self.hdr_paths)
@@ -126,8 +128,20 @@ class CRISMGlobalPatchDataset(IterableDataset):
                 # Replace nodata/NaN with 0.0 (these positions are masked anyway)
                 patch[nodata_mask] = 0.0
 
-                # Normalize: clip to [0, clip_max]
+                # Clip to physical reflectance range
                 patch = np.clip(patch, 0.0, self.clip_max)
+
+                # Per-patch spectral normalization: zero mean, unit variance
+                # computed from valid pixels only; nodata positions reset to 0.0
+                if self.normalize:
+                    valid_pixels = ~any_nodata  # (7, 7)
+                    if valid_pixels.any():
+                        valid_vals = patch[:, valid_pixels]  # (59, n_valid)
+                        mu = float(valid_vals.mean())
+                        sigma = float(valid_vals.std())
+                        if sigma > 1e-6:
+                            patch = (patch - mu) / sigma
+                    patch[nodata_mask] = 0.0  # re-zero nodata after normalization
 
                 # (59, 7, 7) → (7, 7, 59) — spatial-first for transformer
                 patch = patch.transpose(1, 2, 0)

@@ -31,15 +31,15 @@ fi
 mkdir -p logs checkpoints
 
 python -u scripts/pretrain_spatial_mae.py \
-    --epochs 400 \
-    --patches_per_epoch 50000 \
+    --epochs 200 \
+    --patches_per_epoch 100000 \
     --batch_size 512 \
     --embed_dim 128 \
     --n_heads 4 \
     --n_layers 6 \
     --decoder_dim 64 \
-    --mask_ratio 0.75 \
-    --warmup 40 \
+    --mask_ratio 0.85 \
+    --warmup 20 \
     --num_workers 8
 
 echo "Pre-training finished. Best checkpoint: checkpoints/spatial_mae_128d_6l_best.pt"

@@ -38,20 +38,20 @@ MRRAL_GLOB_CANDIDATES = [
     '/mnt/crism/MRDR/mc*/t*mrral*.hdr',   # local: mc## subdirs
     None,                                   # filled from config data_root below
 ]
-PATCHES_PER_EPOCH = 1_000_000
+PATCHES_PER_EPOCH = 100_000
 SAVE_EVERY = 50  # save periodic checkpoint every N epochs
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--epochs',      type=int,   default=400)
+    parser.add_argument('--epochs',      type=int,   default=200)
     parser.add_argument('--batch_size',  type=int,   default=512)
     parser.add_argument('--embed_dim',   type=int,   default=128)
     parser.add_argument('--n_heads',     type=int,   default=4)
     parser.add_argument('--n_layers',    type=int,   default=6)
     parser.add_argument('--decoder_dim', type=int,   default=64)
-    parser.add_argument('--mask_ratio',  type=float, default=0.75)
-    parser.add_argument('--warmup',      type=int,   default=40)
+    parser.add_argument('--mask_ratio',  type=float, default=0.85)
+    parser.add_argument('--warmup',      type=int,   default=20)
     parser.add_argument('--num_workers',       type=int,   default=8)
     parser.add_argument('--patches_per_epoch', type=int,   default=PATCHES_PER_EPOCH,
                         help='Patches per epoch (default 1M; use smaller for smoke tests)')
