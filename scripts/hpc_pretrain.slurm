@@ -2,7 +2,7 @@
 #SBATCH --job-name=spatial_mae_pretrain
 #SBATCH --partition=gpu_standard
 #SBATCH --account=sbyrne
-#SBATCH --gres=gpu:v100s:1              # 1× V100S (32 GB); or gpu:1 for any GPU
+#SBATCH --gres=gpu:1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=10             # 8 dataloader workers + 1 main + 1 wandb
 #SBATCH --mem=48gb                     # 8 workers × ~1.3 GB + model + OS headroom
@@ -32,6 +32,7 @@ mkdir -p logs checkpoints
 
 python -u scripts/pretrain_spatial_mae.py \
     --epochs 400 \
+    --patches_per_epoch 50000 \
     --batch_size 512 \
     --embed_dim 128 \
     --n_heads 4 \
