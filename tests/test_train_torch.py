@@ -156,14 +156,37 @@ def make_fake_mrral_df_spatial(n=300):
     return pd.DataFrame(data)
 
 
+class _FakeEncoderModel(torch.nn.Module):
+    """Minimal model with encoder/head structure for freeze tests.
+    Accepts flat (B, n_features) input — avoids needing spatial patch data.
+    """
+    def __init__(self, n_in=59, n_out=5, hidden=16):
+        super().__init__()
+        self.encoder = torch.nn.Sequential(
+            torch.nn.Linear(n_in, hidden),
+            torch.nn.ReLU(),
+        )
+        self.head = torch.nn.Linear(hidden, n_out)
+
+    def forward(self, x):
+        return self.head(self.encoder(x))
+
+    def get_param_groups(self, head_lr, encoder_lr):
+        head_params = list(self.head.parameters())
+        head_ids = {id(p) for p in head_params}
+        enc_params = [p for p in self.parameters() if id(p) not in head_ids]
+        return [
+            {'params': enc_params, 'lr': encoder_lr},
+            {'params': head_params, 'lr': head_lr},
+        ]
+
+
 def test_freeze_encoder_optimizer_only_has_head_params():
     """When encoder is frozen, optimizer must not contain encoder params."""
-    from models.spatial_spectral_transformer import SpatialSpectralClassifier
     import unittest.mock as mock
     import torch.optim as _optim
 
-    model = SpatialSpectralClassifier(n_bands=59, patch_size=3, n_classes=5,
-                                      embed_dim=16, n_heads=2, n_layers=1)
+    model = _FakeEncoderModel()
     for p in model.encoder.parameters():
         p.requires_grad = False
 
@@ -190,9 +213,7 @@ def test_freeze_encoder_optimizer_only_has_head_params():
 
 def test_freeze_encoder_weights_unchanged():
     """Encoder weights must not change after training with freeze_encoder=True."""
-    from models.spatial_spectral_transformer import SpatialSpectralClassifier
-    model = SpatialSpectralClassifier(n_bands=59, patch_size=3, n_classes=5,
-                                      embed_dim=16, n_heads=2, n_layers=1)
+    model = _FakeEncoderModel()
     for p in model.encoder.parameters():
         p.requires_grad = False
     encoder_before = {k: v.clone() for k, v in model.encoder.state_dict().items()}
@@ -206,15 +227,13 @@ def test_freeze_encoder_weights_unchanged():
     )
 
     for k, v_before in encoder_before.items():
-        v_after = model.encoder.state_dict()[k]
+        v_after = model.encoder.state_dict()[k].cpu()
         assert torch.allclose(v_before, v_after), f"Encoder param {k} changed during frozen training"
 
 
 def test_freeze_encoder_head_params_do_change():
     """With encoder frozen, the head (linear layer) must still be trained."""
-    from models.spatial_spectral_transformer import SpatialSpectralClassifier
-    model = SpatialSpectralClassifier(n_bands=59, patch_size=3, n_classes=5,
-                                      embed_dim=16, n_heads=2, n_layers=1)
+    model = _FakeEncoderModel()
     for p in model.encoder.parameters():
         p.requires_grad = False
     head_before = {k: v.clone() for k, v in model.head.state_dict().items()}
@@ -228,7 +247,7 @@ def test_freeze_encoder_head_params_do_change():
     )
 
     any_changed = any(
-        not torch.allclose(head_before[k], model.head.state_dict()[k])
+        not torch.allclose(head_before[k], model.head.state_dict()[k].cpu())
         for k in head_before
     )
     assert any_changed, "Head params did not change — training may not have occurred"

@@ -56,16 +56,11 @@ class SpatialSpectralTransformer(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Full forward pass — all 49 spatial tokens visible.
-        x: (B, patch_size, patch_size, n_bands)  [normal path]
-           or (B, n_bands)  [1-D spectral path: spectrum is broadcast to all tokens]
+        x: (B, patch_size, patch_size, n_bands)
         Returns: (B, n_tokens+1, embed_dim)  — all embeddings after encoder+norm
         """
         B = x.shape[0]
-        if x.ndim == 2:
-            # 1-D spectral input: broadcast single spectrum across all spatial tokens
-            tokens_in = x.unsqueeze(1).expand(B, self.n_tokens, self.n_bands)
-        else:
-            tokens_in = x.reshape(B, self.n_tokens, self.n_bands)  # (B, 49, 59)
+        tokens_in = x.reshape(B, self.n_tokens, self.n_bands)  # (B, 49, 59)
         tokens = self.band_embed(tokens_in)                      # (B, 49, embed_dim)
         pos_ids = torch.arange(1, self.n_tokens + 1, device=x.device)
         tokens = tokens + self.pos_embed(pos_ids)

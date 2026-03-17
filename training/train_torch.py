@@ -274,9 +274,6 @@ def train_torch_model(
         import wandb as wb
         wb.finish()
 
-    # Return model to CPU so callers can inspect state_dict() tensors on CPU
-    model.to('cpu')
-
     return {'val_mAP': best_val_map, 'stopped_epoch': stopped_epoch, **_flatten_metrics(metrics)}
 
 
