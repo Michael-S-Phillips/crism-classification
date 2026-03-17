@@ -22,11 +22,8 @@ RUN_NAMES=("spvit_frozen" "spvit_lrscale0001" "spvit_lrscale001" "spvit_lrscale0
 # Intentionally unquoted on expansion so multi-word values word-split into separate argv tokens.
 LR_SCALE_ARGS=("--freeze_encoder" "--encoder_lr_scale 0.001" "--encoder_lr_scale 0.01" "--encoder_lr_scale 0.1")
 
-# ── micromamba environment ─────────────────────────────────────────────────────
-export MAMBA_EXE='/opt/ohpc/pub/apps/micromamba/2.0.2-2/bin/micromamba'
-export MAMBA_ROOT_PREFIX='/groups/sbyrne/phillipsm/micromamba'
-eval "$($MAMBA_EXE shell hook --shell bash --root-prefix $MAMBA_ROOT_PREFIX)"
-micromamba activate crism
+# ── Python from conda env (direct path avoids activation issues in SLURM batch) ─
+PYTHON=/groups/sbyrne/phillipsm/micromamba/envs/crism/bin/python
 
 cd "$WORK_DIR"
 
@@ -48,7 +45,7 @@ mkdir -p logs checkpoints
 
 # ── Training ─────────────────────────────────────────────────────────────────
 echo "=== LR scale ablation: ${RUN_NAMES[$SLURM_ARRAY_TASK_ID]} (task $SLURM_ARRAY_TASK_ID) ==="
-python -u scripts/train.py \
+${PYTHON} -u scripts/train.py \
     --model spatial_vit \
     --run_name "${RUN_NAMES[$SLURM_ARRAY_TASK_ID]}" \
     --epochs 50 \
