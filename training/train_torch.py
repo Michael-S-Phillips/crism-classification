@@ -69,6 +69,7 @@ def train_torch_model(
     aug_band_dropout: float = 0.10,
     aug_shift_std: float = 0.005,
     encoder_lr_scale: Optional[float] = None,
+    freeze_encoder: bool = False,
     device: Optional[str] = None,
     **wandb_config
 ) -> Dict[str, Any]:
@@ -89,7 +90,10 @@ def train_torch_model(
             name=model_name,
             config={'model': model_name, 'lr': lr, 'batch_size': batch_size,
                     'max_epochs': max_epochs, 'use_asl_loss': use_asl_loss,
-                    'asl_gamma_neg': asl_gamma_neg, **wandb_config}
+                    'asl_gamma_neg': asl_gamma_neg,
+                    'encoder_lr_scale': encoder_lr_scale,
+                    'freeze_encoder': freeze_encoder,
+                    **wandb_config}
         )
 
     use_patches = mrrsu_map is not None
@@ -154,7 +158,8 @@ def train_torch_model(
         )
         optimizer = torch.optim.AdamW(param_groups, weight_decay=weight_decay)
     else:
-        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+        trainable = [p for p in model.parameters() if p.requires_grad]
+        optimizer = torch.optim.AdamW(trainable, lr=lr, weight_decay=weight_decay)
 
     cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=lr_t_max)
     if warmup_epochs > 0:
@@ -207,6 +212,7 @@ def train_torch_model(
             logits = model(features)
             loss = loss_fn(logits, labels, weights, pos_weight=pos_weight)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             train_losses.append(loss.item())
         scheduler.step()
@@ -267,6 +273,9 @@ def train_torch_model(
     if use_wandb:
         import wandb as wb
         wb.finish()
+
+    # Return model to CPU so callers can inspect state_dict() tensors on CPU
+    model.to('cpu')
 
     return {'val_mAP': best_val_map, 'stopped_epoch': stopped_epoch, **_flatten_metrics(metrics)}
 

@@ -89,7 +89,14 @@ def main():
     parser.add_argument('--encoder_lr_scale', type=float, default=None,
                         help='LR multiplier for pretrained encoder (e.g. 0.1 → 10× slower than head). '
                              'Only effective when --pretrain_ckpt is set and model has get_param_groups.')
+    parser.add_argument('--freeze_encoder', action='store_true',
+                        help='Freeze encoder weights (requires_grad=False). '
+                             'Mutually exclusive with --encoder_lr_scale. '
+                             'Only effective when --pretrain_ckpt is set.')
     args = parser.parse_args()
+
+    if args.freeze_encoder and args.encoder_lr_scale is not None:
+        parser.error('--freeze_encoder and --encoder_lr_scale are mutually exclusive.')
 
     cfg_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -346,6 +353,10 @@ def main():
                     f'Loaded spatial MAE encoder from {args.pretrain_ckpt}. '
                     f'Missing: {missing}, Unexpected: {unexpected}'
                 )
+            if args.freeze_encoder:
+                for p in model.encoder.parameters():
+                    p.requires_grad = False
+                logging.info('Encoder frozen (requires_grad=False on all encoder params)')
 
             mrral_cache_dir = cfg.get('patch_cache_dir')
             metrics = train_torch_model(
@@ -368,6 +379,7 @@ def main():
                 asl_clip=args.asl_clip,
                 use_balanced_sampling=args.balanced_sampling,
                 encoder_lr_scale=args.encoder_lr_scale,
+                freeze_encoder=args.freeze_encoder,
             )
 
     print(f"\n=== {run_name if args.model in TORCH_MODELS else args.model} Results ===")
