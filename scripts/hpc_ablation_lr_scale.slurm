@@ -19,6 +19,7 @@ CACHE_DIR=${WORK_DIR}/data/patch_cache
 
 # ── Condition arrays (task ID 0-3) ───────────────────────────────────────────
 RUN_NAMES=("spvit_frozen" "spvit_lrscale0001" "spvit_lrscale001" "spvit_lrscale01")
+# Intentionally unquoted on expansion so multi-word values word-split into separate argv tokens.
 LR_SCALE_ARGS=("--freeze_encoder" "--encoder_lr_scale 0.001" "--encoder_lr_scale 0.01" "--encoder_lr_scale 0.1")
 
 # ── micromamba environment ─────────────────────────────────────────────────────
@@ -29,11 +30,13 @@ micromamba activate crism
 
 cd "$WORK_DIR"
 
-# ── Write config.local.yaml ──────────────────────────────────────────────────
-cat > config.local.yaml <<EOF
+# ── Write config.local.yaml (guard avoids concurrent-task race on array jobs) ─
+if [ ! -f config.local.yaml ]; then
+    cat > config.local.yaml <<EOF
 data_root: ${WORK_DIR}/data
 checkpoint_dir: ${CKPT_DIR}
 EOF
+fi
 
 # ── Patch cache guard ────────────────────────────────────────────────────────
 if [ ! -f "${CACHE_DIR}/mrral_train_patches_p7.npy" ]; then
