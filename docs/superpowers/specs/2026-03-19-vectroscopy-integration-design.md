@@ -202,14 +202,18 @@ for ci, mineral in enumerate(CLASS_NAMES):
     prob_2d = probs[:, :, ci].copy().astype(np.float32)
     t1, t2, t3 = thresholds_cfg['thresholds'][mineral]
 
-    # Step 1: median filter on raw float array BEFORE NaN-masking
-    # (scipy.ndimage.median_filter does not handle NaN; filter on valid-range floats first)
+    # Step 1: median filter on raw float array BEFORE NaN-masking.
+    # scipy.ndimage.median_filter does not handle NaN.
+    # probs outside valid_mask are finite floats (invalid pixels were set to 0.0 during
+    # tile loading in load_tile(), so inference on them produces finite sigmoid outputs,
+    # not NaN). Therefore prob_2d is guaranteed NaN-free here.
     for _ in range(median_iter):
         prob_2d = scipy.ndimage.median_filter(prob_2d, size=median_size)
 
     # Step 2: apply NaN mask for nodata pixels AFTER filtering
     prob_2d[~valid_mask] = np.nan
-    # prob_2d is now the median-filtered probability array used for all downstream steps.
+    # prob_2d is now the median-filtered probability array (NaN outside valid region)
+    # used for all downstream steps.
 
     # Step 3: vectorize via Vectroscopy
     gdf = vp_module.Vectroscopy.from_array(
@@ -233,11 +237,16 @@ for ci, mineral in enumerate(CLASS_NAMES):
     gdf['confidence'] = gdf['Threshold'].map(tier_map)
     gdf['mineral'] = mineral
 
-    # Step 6: zonal statistics computed from the median-filtered prob_2d (with NaN nodata).
+    # Step 6: zonal statistics computed from the median-filtered prob_2d.
+    # Pass the (H, W) float32 array directly (in-memory, no temp file).
+    # rasterstats.zonal_stats accepts float arrays with np.nan nodata via the nodata argument.
     stats = rasterstats.zonal_stats(
-        gdf.geometry, prob_2d,
-        affine=input_transform, stats=['mean', 'std', 'min', 'max', 'median', 'count'],
+        vectors=gdf.geometry,
+        raster=prob_2d,          # (H, W) float32 array, NaN outside valid_mask
+        affine=input_transform,  # rasterio Affine object
+        stats=['mean', 'std', 'min', 'max', 'median', 'count'],
         nodata=np.nan,
+        all_touched=False,
     )
     stats_df = pd.DataFrame(stats).rename(columns={
         'mean': 'mean_prob', 'std': 'std_prob', 'min': 'min_prob',
