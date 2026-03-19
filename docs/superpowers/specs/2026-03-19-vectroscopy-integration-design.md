@@ -117,6 +117,10 @@ Tier assignment in Stage 3: rank the unique Threshold values ascending → rank 
 }
 ```
 
+The `morphology` key is **documentation only** — it records the morphological parameter defaults
+used during the calibration run for reproducibility. Stage 3 reads morphological parameters
+exclusively from its own CLI arguments and does not read `morphology` from this JSON.
+
 The JSON is the sole calibration artefact. Re-running with more tiles updates it without changing
 any other code.
 
@@ -129,9 +133,9 @@ any other code.
 **CLI:**
 ```bash
 python scripts/vectorize_tile_minerals.py \
-    --tile /path/to/t0435_mrral_40s323_0327_4.img \
-    --probs /tmp/t0435_probs.npz \       # optional
-    --ckpt checkpoints/spvit_lrscale001_best.pt \  # required only if --probs absent
+    --tile /path/to/t0435_mrral_40s323_0327_4.img \  # always required
+    --probs /tmp/t0435_probs.npz \       # optional; if absent, runs inference inline
+    --ckpt checkpoints/spvit_lrscale001_best.pt \  # required only when --probs is absent
     --thresholds config/vectroscopy_thresholds.json \
     --out data/vector/t0435_mrral_40s323_0327_4_mineral_map.gpkg \
     --median_size 3 \
@@ -140,13 +144,28 @@ python scripts/vectorize_tile_minerals.py \
     --majority_iter 3
 ```
 
+`--tile` is **always required** (argparse `required=True`). It provides both the tile path for
+inline inference and the authoritative CRS/transform (falling back to the `.npz` fields only
+if the `.img` file is unavailable). `--ckpt` is required if and only if `--probs` is absent;
+the script validates this at startup and exits with a clear error message if violated.
+
 If `--probs` is absent, the script imports and calls `load_tile`, `load_classifier`, and
-`run_supervised` from `classify_tile_supervised` directly (not via subprocess). It requires
-`--tile` and `--ckpt` in that case. The inline probs are not saved to disk.
+`run_supervised` from `classify_tile_supervised` directly (not via subprocess). The inline
+probs are not saved to disk.
 
 **CRS and transform:**
-Loaded from the `.npz` file if present (keys `crs_wkt` and `transform`).
-If inference runs inline, loaded from `rasterio.open(tile_path)`.
+Always loaded from `rasterio.open(tile_path)` at script startup:
+```python
+with rasterio.open(tile_path) as src:
+    input_crs = src.crs                 # rasterio.crs.CRS
+    input_transform = src.transform     # rasterio.transform.Affine
+```
+If `--probs` is supplied, the `.npz` `transform` array (6 coefficients) is only used as a
+consistency check, not as the primary source. Reconstructing an Affine from the `.npz` if
+needed: `from rasterio.transform import Affine; t = Affine(*npz['transform'])` (rasterio
+coefficient order: `a, b, c, d, e, f` matching `(col_scale, col_shear, col_off, row_shear,
+row_scale, row_off)`).
+
 CRISM MRDR tiles use a projected equirectangular CRS in metres (Mars IAU 2000); simplify
 tolerance of 200 m in CRS units is correct for all MRDR tiles.
 
@@ -220,6 +239,10 @@ for ci, mineral in enumerate(CLASS_NAMES):
     keep = ['geometry', 'confidence', 'mineral', 'Threshold',
             'mean_prob', 'std_prob', 'min_prob', 'max_prob', 'median_prob', 'count_px']
     gdf = gdf[[c for c in keep if c in gdf.columns]].rename(columns={'Threshold': 'threshold'})
+
+    # Simplify geometry AFTER zonal stats so stored geometry matches the stats computed.
+    # 200 m tolerance in tile projected CRS (metres).
+    gdf['geometry'] = gdf['geometry'].simplify(tolerance=200, preserve_topology=True)
 
     gdf.to_file(out_gpkg, layer=mineral, driver='GPKG')
 ```
