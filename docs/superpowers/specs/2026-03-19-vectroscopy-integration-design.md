@@ -200,33 +200,43 @@ thresholds_cfg = json.load(open(thresholds_json))
 
 for ci, mineral in enumerate(CLASS_NAMES):
     prob_2d = probs[:, :, ci].copy().astype(np.float32)
-    prob_2d[~valid_mask] = np.nan
     t1, t2, t3 = thresholds_cfg['thresholds'][mineral]
 
-    gdf = Vectroscopy.from_array(
+    # Step 1: median filter on raw float array BEFORE NaN-masking
+    # (scipy.ndimage.median_filter does not handle NaN; filter on valid-range floats first)
+    for _ in range(median_iter):
+        prob_2d = scipy.ndimage.median_filter(prob_2d, size=median_size)
+
+    # Step 2: apply NaN mask for nodata pixels AFTER filtering
+    prob_2d[~valid_mask] = np.nan
+    # prob_2d is now the median-filtered probability array used for all downstream steps.
+
+    # Step 3: vectorize via Vectroscopy
+    gdf = vp_module.Vectroscopy.from_array(
         array=prob_2d, thresholds=[t1, t2, t3],
-        crs=crs, transform=transform, name=mineral,
+        crs=input_crs, transform=input_transform, name=mineral,
     ).vectorize()
 
     if gdf.empty:
         continue
 
-    # Reproject from Vectroscopy's default geographic CRS back to tile projected CRS
+    # Step 4: reproject back to tile projected CRS.
+    # Vectroscopy internally reprojects output to geographic CRS (CloneGeogCS of input CRS)
+    # by default. This step is a required reproject — not a guard — to restore the tile CRS.
     gdf = gdf.to_crs(input_crs)
 
-    # Map Vectroscopy 'Threshold' float column → confidence tier integer.
+    # Step 5: map Vectroscopy 'Threshold' float column → confidence tier integer.
     # 'Threshold' contains the actual float values from [t1, t2, t3].
-    # Map by rank (sorted ascending) to avoid floating-point equality issues:
+    # Map by rank (ascending) to avoid floating-point equality issues:
     unique_t = sorted(gdf['Threshold'].unique())
     tier_map = {v: i + 1 for i, v in enumerate(unique_t)}
     gdf['confidence'] = gdf['Threshold'].map(tier_map)
     gdf['mineral'] = mineral
 
-    # Zonal statistics: compute from prob_2d over each polygon
-    # Use rasterstats.zonal_stats with the prob_2d array and transform
+    # Step 6: zonal statistics computed from the median-filtered prob_2d (with NaN nodata).
     stats = rasterstats.zonal_stats(
         gdf.geometry, prob_2d,
-        affine=transform, stats=['mean', 'std', 'min', 'max', 'median', 'count'],
+        affine=input_transform, stats=['mean', 'std', 'min', 'max', 'median', 'count'],
         nodata=np.nan,
     )
     stats_df = pd.DataFrame(stats).rename(columns={
@@ -235,14 +245,14 @@ for ci, mineral in enumerate(CLASS_NAMES):
     })
     gdf = pd.concat([gdf.reset_index(drop=True), stats_df], axis=1)
 
-    # Drop Vectroscopy internal columns except geometry, keep our columns
+    # Step 7: simplify geometry AFTER zonal stats so stored geometry matches the stats computed.
+    # 200 m tolerance in tile projected CRS (metres).
+    gdf['geometry'] = gdf['geometry'].simplify(tolerance=200, preserve_topology=True)
+
+    # Step 8: select and rename final columns
     keep = ['geometry', 'confidence', 'mineral', 'Threshold',
             'mean_prob', 'std_prob', 'min_prob', 'max_prob', 'median_prob', 'count_px']
     gdf = gdf[[c for c in keep if c in gdf.columns]].rename(columns={'Threshold': 'threshold'})
-
-    # Simplify geometry AFTER zonal stats so stored geometry matches the stats computed.
-    # 200 m tolerance in tile projected CRS (metres).
-    gdf['geometry'] = gdf['geometry'].simplify(tolerance=200, preserve_topology=True)
 
     gdf.to_file(out_gpkg, layer=mineral, driver='GPKG')
 ```
