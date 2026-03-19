@@ -36,10 +36,11 @@ def test_save_probs_values_preserved(tmp_path):
     """Saved probs match input values exactly."""
     from scripts.classify_tile_supervised import save_probs
 
-    probs = np.array([[[[0.1, 0.9, 0.2, 0.05]]]], dtype=np.float32)  # (1,1,4)
+    probs = np.array([[[0.1, 0.9, 0.2, 0.05]]], dtype=np.float32)  # (1,1,4)
     mask = np.array([[True]])
     t = np.zeros(6)
     out = tmp_path / 'p.npz'
     save_probs(str(out), probs, mask, t, '')
-    data = np.load(str(out))
+    data = np.load(str(out), allow_pickle=True)
+    assert data['probs'].shape == (1, 1, 4)
     np.testing.assert_array_almost_equal(data['probs'], probs)
