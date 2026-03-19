@@ -144,6 +144,7 @@ def vectorize_mineral(
     filtered = apply_median_filter(prob_2d, size=median_size, iterations=median_iter)
 
     # Step 2: mask nodata pixels
+    # filtered is a copy (apply_median_filter returns arr.copy()); in-place NaN is safe here
     filtered[~valid_mask] = np.nan
 
     # Step 3: vectorize
@@ -232,9 +233,21 @@ def main():
                         help='Output GeoPackage path')
     parser.add_argument('--median_size', type=int, default=3)
     parser.add_argument('--median_iter', type=int, default=1)
-    parser.add_argument('--sieve_px', type=int, default=9)
-    parser.add_argument('--majority_iter', type=int, default=3)
+    parser.add_argument('--sieve_px', type=int, default=9,
+                        help='Min pixels for sieve filter (accepted for CLI compat; not yet wired to Vectroscopy from_array API)')
+    parser.add_argument('--majority_iter', type=int, default=3,
+                        help='Majority filter iterations (accepted for CLI compat; not yet wired to Vectroscopy from_array API)')
     args = parser.parse_args()
+
+    # Warn if non-default sieve/majority values are passed (Issue #1)
+    if args.sieve_px != 9 or args.majority_iter != 3:
+        import warnings
+        warnings.warn(
+            f"--sieve_px and --majority_iter are accepted for CLI compatibility but are not "
+            f"currently wired to the Vectroscopy from_array API. "
+            f"Values sieve_px={args.sieve_px}, majority_iter={args.majority_iter} will be ignored.",
+            UserWarning, stacklevel=2,
+        )
 
     # Validate probs/ckpt logic
     if args.probs is None and args.ckpt is None:
@@ -251,8 +264,9 @@ def main():
         probs, valid_mask, _, _ = load_probs_npz(args.probs)
     else:
         print('Running inference inline...')
-        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        from scripts.classify_tile_supervised import (
+        # scripts/__init__.py does not exist, so insert scripts/ dir directly
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from classify_tile_supervised import (
             load_tile, load_classifier, run_supervised
         )
         import torch
