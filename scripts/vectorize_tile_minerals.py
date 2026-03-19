@@ -88,18 +88,23 @@ def assign_confidence_tiers(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """Map Vectroscopy 'Threshold' float column to integer confidence tiers by rank.
 
     Vectroscopy stores the float threshold value in the 'Threshold' column.
-    We rank unique values ascending: lowest float → tier 1, next → tier 2, etc.
-    This avoids floating-point equality comparisons.
+    It also returns a Threshold=0.0 sentinel for background/catch-all polygons;
+    those are filtered out before ranking.
+
+    We rank unique non-zero threshold values ascending: lowest → tier 1, next → tier 2,
+    highest → tier 3.  This avoids floating-point equality comparisons.
 
     Args:
-        gdf: GeoDataFrame with 'Threshold' column (float values matching t1/t2/t3)
+        gdf: GeoDataFrame with 'Threshold' column (float values matching t1/t2/t3,
+             plus possibly 0.0 background sentinel)
 
     Returns:
-        gdf with new 'confidence' column (int 1-N, where N ≤ 3)
+        GeoDataFrame with background rows removed and new 'confidence' column (int 1–3).
     """
-    unique_t = sorted(gdf['Threshold'].unique())
+    # Drop background/sentinel polygons with Threshold == 0
+    result = gdf[gdf['Threshold'] > 0].copy()
+    unique_t = sorted(result['Threshold'].unique())
     tier_map = {v: i + 1 for i, v in enumerate(unique_t)}
-    result = gdf.copy()
     result['confidence'] = result['Threshold'].map(tier_map)
     return result
 
