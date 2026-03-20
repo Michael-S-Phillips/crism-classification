@@ -49,6 +49,7 @@ def train_torch_model(
     use_wandb: bool = True,
     checkpoint_dir: Optional[str] = None,
     mrrsu_map: Optional[Dict[str, str]] = None,
+    mrral_map: Optional[Dict[str, str]] = None,
     patch_size: int = 7,
     cache_dir: Optional[str] = None,
     use_pos_weight: bool = False,
@@ -68,8 +69,8 @@ def train_torch_model(
     aug_band_dropout: float = 0.10,
     aug_shift_std: float = 0.005,
     encoder_lr_scale: Optional[float] = None,
+    freeze_encoder: bool = False,
     device: Optional[str] = None,
-    wandb_entity: Optional[str] = None,
     **wandb_config
 ) -> Dict[str, Any]:
     """
@@ -86,11 +87,13 @@ def train_torch_model(
         import wandb as wb
         wb.init(
             project='crism-mineral-classification',
-            entity=wandb_entity or None,
             name=model_name,
             config={'model': model_name, 'lr': lr, 'batch_size': batch_size,
                     'max_epochs': max_epochs, 'use_asl_loss': use_asl_loss,
-                    'asl_gamma_neg': asl_gamma_neg, **wandb_config}
+                    'asl_gamma_neg': asl_gamma_neg,
+                    'encoder_lr_scale': encoder_lr_scale,
+                    'freeze_encoder': freeze_encoder,
+                    **wandb_config}
         )
 
     use_patches = mrrsu_map is not None
@@ -120,6 +123,10 @@ def train_torch_model(
 
     def make_dataset(sub_df, split_name='train'):
         from data.dataset import MRRAL_BAND_COLS, BAND_COLS, CRISMSpectralDataset, CRISMCombinedDataset
+        if mrral_map is not None:
+            from data.dataset import CRISMSpectralPatchDataset
+            return CRISMSpectralPatchDataset(sub_df, mrral_map, patch_size=patch_size,
+                                             cache_dir=cache_dir, split=split_name)
         if use_patches:
             return CRISMPatchDataset(sub_df, mrrsu_map, patch_size=patch_size,
                                      cache_dir=cache_dir, split=split_name)
@@ -151,7 +158,8 @@ def train_torch_model(
         )
         optimizer = torch.optim.AdamW(param_groups, weight_decay=weight_decay)
     else:
-        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+        trainable = [p for p in model.parameters() if p.requires_grad]
+        optimizer = torch.optim.AdamW(trainable, lr=lr, weight_decay=weight_decay)
 
     cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=lr_t_max)
     if warmup_epochs > 0:
@@ -204,6 +212,7 @@ def train_torch_model(
             logits = model(features)
             loss = loss_fn(logits, labels, weights, pos_weight=pos_weight)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             train_losses.append(loss.item())
         scheduler.step()

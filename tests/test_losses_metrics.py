@@ -40,14 +40,15 @@ def test_compute_map_range():
 
 def test_per_class_ap_keys():
     from data.dataset import LABEL_COLS
-    y_true = np.random.randint(0, 2, (50, len(LABEL_COLS))).astype(np.float32)
-    y_score = np.random.rand(50, len(LABEL_COLS)).astype(np.float32)
+    n = len(LABEL_COLS)
+    y_true = np.random.randint(0, 2, (50, n)).astype(np.float32)
+    y_score = np.random.rand(50, n).astype(np.float32)
     ap_dict = compute_per_class_ap(y_true, y_score)
     assert set(ap_dict.keys()) == set(LABEL_COLS)
 
 def test_metrics_by_confidence_tier():
-    y_true = np.random.randint(0, 2, (60, 5)).astype(np.float32)
-    y_score = np.random.rand(60, 5).astype(np.float32)
+    y_true = np.random.randint(0, 2, (60, 6)).astype(np.float32)
+    y_score = np.random.rand(60, 6).astype(np.float32)
     tiers = ['High'] * 20 + ['Moderate'] * 20 + ['Low'] * 20
     result = compute_metrics_by_confidence_tier(y_true, y_score, tiers)
     assert set(result.keys()) == {'High', 'Moderate', 'Low'}

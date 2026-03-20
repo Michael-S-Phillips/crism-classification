@@ -6,7 +6,7 @@ from typing import Dict, List
 import numpy as np
 from sklearn.metrics import average_precision_score
 
-from data.dataset import LABEL_COLS as CLASSES
+from data.dataset import LABEL_COLS
 
 
 def compute_map(y_true: np.ndarray, y_score: np.ndarray) -> float:
@@ -25,8 +25,10 @@ def compute_per_class_ap(
     y_score: np.ndarray
 ) -> Dict[str, float]:
     """Per-class Average Precision. Returns dict keyed by class name."""
+    n_classes = y_score.shape[1]
+    class_names = LABEL_COLS[:n_classes]
     result = {}
-    for i, cls in enumerate(CLASSES):
+    for i, cls in enumerate(class_names):
         if y_true[:, i].sum() > 0:
             result[cls] = float(average_precision_score(
                 (y_true[:, i] > 0.4).astype(int), y_score[:, i]
@@ -46,8 +48,8 @@ def compute_metrics_by_confidence_tier(
 
     Parameters
     ----------
-    y_true : (n, n_classes)
-    y_score : (n, n_classes)
+    y_true : (n, 6)
+    y_score : (n, 6)
     confidence_tiers : list of str, length n, values in {'High','Moderate','Low'}
     """
     tiers = np.array(confidence_tiers)

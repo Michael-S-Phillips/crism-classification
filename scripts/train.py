@@ -18,11 +18,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 SKLEARN_MODELS = {'logreg', 'svc', 'rf', 'xgb', 'lgbm'}
-TORCH_MODELS = {'mlp', 'cnn', 'vit', 'spectral_cnn', 'spectral_vit', 'spectral_hybrid'}
+TORCH_MODELS = {'mlp', 'cnn', 'vit', 'spectral_cnn', 'spectral_vit', 'spectral_hybrid', 'spatial_vit'}
 
 def load_config(config_path):
-    from config_loader import load_config as _load
-    return _load(config_path)
+    try:
+        from config_loader import load_config as _load
+        return _load(config_path)
+    except ImportError:
+        with open(config_path) as f:
+            return yaml.safe_load(f)
 
 def main():
     parser = argparse.ArgumentParser(description="Train a mineral classification model.")
@@ -85,7 +89,14 @@ def main():
     parser.add_argument('--encoder_lr_scale', type=float, default=None,
                         help='LR multiplier for pretrained encoder (e.g. 0.1 → 10× slower than head). '
                              'Only effective when --pretrain_ckpt is set and model has get_param_groups.')
+    parser.add_argument('--freeze_encoder', action='store_true',
+                        help='Freeze encoder weights (requires_grad=False). '
+                             'Mutually exclusive with --encoder_lr_scale. '
+                             'Only effective when --pretrain_ckpt is set.')
     args = parser.parse_args()
+
+    if args.freeze_encoder and args.encoder_lr_scale is not None:
+        parser.error('--freeze_encoder and --encoder_lr_scale are mutually exclusive.')
 
     cfg_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -94,7 +105,6 @@ def main():
     cfg = load_config(cfg_path)
     parquet_path = os.path.join(cfg['output_dir'], 'pixels.parquet')
     checkpoint_dir = cfg['checkpoints_dir']
-    wandb_entity = cfg.get('wandb', {}).get('entity') or None
     use_wandb = not args.no_wandb
 
     if args.model in SKLEARN_MODELS:
@@ -122,7 +132,9 @@ def main():
     elif args.model in TORCH_MODELS:
         import torch
         from training.train_torch import train_torch_model
-        df = pd.read_parquet(parquet_path)
+        # spatial_vit loads mrral_pixels.parquet directly; skip pixels.parquet
+        if args.model != 'spatial_vit':
+            df = pd.read_parquet(parquet_path)
         run_name = args.run_name or args.model
 
         if args.model == 'mlp':
@@ -136,7 +148,7 @@ def main():
                 model=model, df=df, model_name=run_name,
                 max_epochs=args.epochs, batch_size=args.batch_size,
                 lr=args.lr, patience=args.patience,
-                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir, wandb_entity=wandb_entity,
+                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir,
                 use_pos_weight=args.use_pos_weight,
                 weight_decay=args.weight_decay,
                 warmup_epochs=args.warmup_epochs,
@@ -182,7 +194,7 @@ def main():
                 model=model, df=df, model_name=run_name,
                 max_epochs=args.epochs, batch_size=args.batch_size,
                 lr=args.lr, patience=args.patience,
-                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir, wandb_entity=wandb_entity,
+                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir,
                 mrrsu_map=mrrsu_map, patch_size=patch_size,
                 cache_dir=cache_dir,
                 use_pos_weight=args.use_pos_weight,
@@ -228,7 +240,7 @@ def main():
                 model=model, df=df_mrral, model_name=run_name,
                 max_epochs=args.epochs, batch_size=args.batch_size,
                 lr=args.lr, patience=args.patience,
-                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir, wandb_entity=wandb_entity,
+                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir,
                 use_pos_weight=args.use_pos_weight,
                 weight_decay=args.weight_decay,
                 warmup_epochs=args.warmup_epochs,
@@ -285,7 +297,7 @@ def main():
                 model=model, df=df_combined, model_name=run_name,
                 max_epochs=args.epochs, batch_size=args.batch_size,
                 lr=args.lr, patience=args.patience,
-                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir, wandb_entity=wandb_entity,
+                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir,
                 use_pos_weight=args.use_pos_weight,
                 weight_decay=args.weight_decay,
                 warmup_epochs=args.warmup_epochs,
@@ -303,6 +315,71 @@ def main():
                 aug_band_dropout=args.aug_band_dropout,
                 aug_shift_std=args.aug_shift_std,
                 encoder_lr_scale=args.encoder_lr_scale,
+            )
+
+
+        elif args.model == 'spatial_vit':
+            import glob as _glob
+            data_root = cfg.get('data_root', '/mnt/crism/MRDR')
+            globs_to_try = [
+                os.path.join(data_root, 'mc*', 't*mrral*.hdr'),
+                os.path.join(data_root, 't*mrral*.hdr'),
+            ]
+            mrral_hdrs = []
+            for pattern in globs_to_try:
+                mrral_hdrs = sorted(_glob.glob(pattern))
+                if mrral_hdrs:
+                    break
+            mrral_map = {}
+            for hdr in mrral_hdrs:
+                tid = os.path.basename(hdr).split('_mrral_')[0]
+                mrral_map[tid] = hdr.replace('.hdr', '.img')
+            logging.info(f'mrral_map: {len(mrral_map)} tiles found')
+
+            mrral_parquet = os.path.join(cfg['output_dir'], 'mrral_pixels.parquet')
+            df_mrral = pd.read_parquet(mrral_parquet)
+            dropout = args.dropout if args.dropout is not None else 0.1
+
+            from models.spatial_spectral_transformer import SpatialSpectralClassifier
+            model = SpatialSpectralClassifier(
+                n_bands=59, patch_size=args.patch_size, n_classes=5,
+                embed_dim=args.embed_dim, n_heads=args.n_heads,
+                n_layers=args.n_layers, dropout=dropout,
+            )
+            if args.pretrain_ckpt:
+                ckpt = torch.load(args.pretrain_ckpt, map_location='cpu', weights_only=False)
+                missing, unexpected = model.load_encoder_state_dict(ckpt['encoder_state'])
+                logging.info(
+                    f'Loaded spatial MAE encoder from {args.pretrain_ckpt}. '
+                    f'Missing: {missing}, Unexpected: {unexpected}'
+                )
+            if args.freeze_encoder:
+                for p in model.encoder.parameters():
+                    p.requires_grad = False
+                logging.info('Encoder frozen (requires_grad=False on all encoder params)')
+
+            mrral_cache_dir = cfg.get('patch_cache_dir')
+            metrics = train_torch_model(
+                model=model, df=df_mrral, model_name=run_name,
+                max_epochs=args.epochs, batch_size=args.batch_size,
+                lr=args.lr, patience=args.patience,
+                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir,
+                mrral_map=mrral_map, patch_size=args.patch_size,
+                cache_dir=mrral_cache_dir,
+                use_pos_weight=args.use_pos_weight,
+                weight_decay=args.weight_decay,
+                warmup_epochs=args.warmup_epochs,
+                lr_t_max=args.lr_t_max,
+                high_conf_only=args.high_conf_only,
+                use_focal_loss=args.focal_loss,
+                focal_gamma=args.focal_gamma,
+                use_asl_loss=args.asl_loss,
+                asl_gamma_neg=args.asl_gamma_neg,
+                asl_gamma_pos=args.asl_gamma_pos,
+                asl_clip=args.asl_clip,
+                use_balanced_sampling=args.balanced_sampling,
+                encoder_lr_scale=args.encoder_lr_scale,
+                freeze_encoder=args.freeze_encoder,
             )
 
     print(f"\n=== {run_name if args.model in TORCH_MODELS else args.model} Results ===")

@@ -135,3 +135,119 @@ def test_train_with_asl_loss():
         use_asl_loss=True, asl_gamma_neg=4.0, asl_gamma_pos=0.0,
     )
     assert 'val_mAP' in metrics
+
+
+def make_fake_mrral_df_spatial(n=300):
+    """Minimal mrral-format DataFrame (m0..m58) for spatial_vit / freeze tests.
+
+    Named distinctly from the existing make_fake_mrral_df (mrrsu b0..b59 format)
+    to avoid shadowing it.
+    """
+    rng = np.random.default_rng(42)
+    data = {f'm{i}': rng.random(n).astype(np.float32) for i in range(59)}
+    for col in ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']:
+        data[col] = (rng.random(n) > 0.7).astype(np.float32)
+    data['confidence_weight'] = np.ones(n, dtype=np.float32)
+    data['confidence_tier'] = ['High'] * n
+    n_train = int(n * 0.67)
+    n_val = int(n * 0.165)
+    n_test = n - n_train - n_val
+    data['split'] = ['train'] * n_train + ['val'] * n_val + ['test'] * n_test
+    return pd.DataFrame(data)
+
+
+class _FakeEncoderModel(torch.nn.Module):
+    """Minimal model with encoder/head structure for freeze tests.
+    Accepts flat (B, n_features) input — avoids needing spatial patch data.
+    """
+    def __init__(self, n_in=59, n_out=5, hidden=16):
+        super().__init__()
+        self.encoder = torch.nn.Sequential(
+            torch.nn.Linear(n_in, hidden),
+            torch.nn.ReLU(),
+        )
+        self.head = torch.nn.Linear(hidden, n_out)
+
+    def forward(self, x):
+        return self.head(self.encoder(x))
+
+    def get_param_groups(self, head_lr, encoder_lr):
+        head_params = list(self.head.parameters())
+        head_ids = {id(p) for p in head_params}
+        enc_params = [p for p in self.parameters() if id(p) not in head_ids]
+        return [
+            {'params': enc_params, 'lr': encoder_lr},
+            {'params': head_params, 'lr': head_lr},
+        ]
+
+
+def test_freeze_encoder_optimizer_only_has_head_params():
+    """When encoder is frozen, optimizer must not contain encoder params."""
+    import unittest.mock as mock
+    import torch.optim as _optim
+
+    model = _FakeEncoderModel()
+    for p in model.encoder.parameters():
+        p.requires_grad = False
+
+    df = make_fake_mrral_df_spatial()
+
+    captured = {}
+    _orig_adamw = _optim.AdamW
+    def _mock_adamw(params, **kw):
+        captured['params'] = list(params)
+        return _orig_adamw(params, **kw)
+
+    with mock.patch('torch.optim.AdamW', side_effect=_mock_adamw):
+        train_torch_model(
+            model=model, df=df, model_name='test_freeze',
+            max_epochs=1, batch_size=32, lr=1e-3,
+            use_wandb=False, checkpoint_dir=None,
+            freeze_encoder=True,
+        )
+
+    assert captured, "AdamW was not called — optimizer was not constructed"
+    for p in captured['params']:
+        assert p.requires_grad, "Frozen param found in optimizer"
+
+
+def test_freeze_encoder_weights_unchanged():
+    """Encoder weights must not change after training with freeze_encoder=True."""
+    model = _FakeEncoderModel()
+    for p in model.encoder.parameters():
+        p.requires_grad = False
+    encoder_before = {k: v.clone() for k, v in model.encoder.state_dict().items()}
+
+    df = make_fake_mrral_df_spatial()
+    train_torch_model(
+        model=model, df=df, model_name='test_freeze_weights',
+        max_epochs=2, batch_size=32, lr=1e-3,
+        use_wandb=False, checkpoint_dir=None,
+        freeze_encoder=True,
+    )
+
+    for k, v_before in encoder_before.items():
+        v_after = model.encoder.state_dict()[k].cpu()
+        assert torch.allclose(v_before, v_after), f"Encoder param {k} changed during frozen training"
+
+
+def test_freeze_encoder_head_params_do_change():
+    """With encoder frozen, the head (linear layer) must still be trained."""
+    model = _FakeEncoderModel()
+    for p in model.encoder.parameters():
+        p.requires_grad = False
+    head_before = {k: v.clone() for k, v in model.head.state_dict().items()}
+
+    df = make_fake_mrral_df_spatial()
+    train_torch_model(
+        model=model, df=df, model_name='test_freeze_head_trains',
+        max_epochs=3, batch_size=32, lr=1e-2,
+        use_wandb=False, checkpoint_dir=None,
+        freeze_encoder=True,
+    )
+
+    any_changed = any(
+        not torch.allclose(head_before[k], model.head.state_dict()[k].cpu())
+        for k in head_before
+    )
+    assert any_changed, "Head params did not change — training may not have occurred"

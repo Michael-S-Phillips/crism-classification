@@ -2,11 +2,10 @@ import os
 import numpy as np
 import pytest
 import pandas as pd
+import torch
 from data.dataset import CRISMPixelDataset, load_sklearn_arrays
-from config_loader import load_config
 
-_CFG = load_config()
-PARQUET = os.path.join(_CFG['output_dir'], 'pixels.parquet')
+PARQUET = '/mnt/gigas/CRISM/MRDR/crism_classification/data/pixels.parquet'
 
 @pytest.fixture
 def small_df():
@@ -86,8 +85,9 @@ def test_patch_dataset_uses_cache(tmp_path):
 def test_patch_dataset_shape(small_df):
     from data.dataset import CRISMPatchDataset
     import yaml, os
-    from config_loader import load_config
-    cfg = load_config()
+    cfg_path = '/mnt/gigas/CRISM/MRDR/crism_classification/config.yaml'
+    with open(cfg_path) as f:
+        cfg = yaml.safe_load(f)
     from data.extract_pixels import find_tile_pairs
     pairs = find_tile_pairs(cfg['gpkg_dir'], cfg['data_root'])
     mrrsu_map = {tid: p for tid, _, p in pairs}
@@ -98,7 +98,7 @@ def test_patch_dataset_shape(small_df):
 
 # --- CRISMSpectralDataset tests ---
 
-MRRAL_PARQUET = os.path.join(_CFG['output_dir'], 'mrral_pixels.parquet')
+MRRAL_PARQUET = '/mnt/gigas/CRISM/MRDR/crism_classification/data/mrral_pixels.parquet'
 
 
 @pytest.fixture
@@ -202,3 +202,45 @@ def test_crism_spectral_dataset_high_conf_filtering(small_mrral_df):
     ds_all = CRISMSpectralDataset(small_mrral_df)
     ds_high = CRISMSpectralDataset(high_df)
     assert len(ds_high) <= len(ds_all)
+
+
+def test_spectral_patch_dataset_shape():
+    """CRISMSpectralPatchDataset should yield (7, 7, 59) float32 patches."""
+    import glob
+    from data.dataset import CRISMSpectralPatchDataset
+    import rasterio
+
+    mrral_files = sorted(glob.glob('/mnt/crism/MRDR/mc*/t*mrral*.hdr'))[:5]
+    mrral_map = {}
+    for hdr in mrral_files:
+        basename = os.path.basename(hdr)
+        tile_id = basename.split('_mrral_')[0]
+        mrral_map[tile_id] = hdr.replace('.hdr', '.img')
+
+    if not mrral_map:
+        pytest.skip("No mrral tiles found")
+
+    tile_id = list(mrral_map.keys())[0]
+    with rasterio.open(mrral_map[tile_id]) as src:
+        H, W = src.height, src.width
+
+    df = pd.DataFrame({
+        'tile_id': [tile_id] * 4,
+        'pixel_row': [H // 2] * 4,
+        'pixel_col': [W // 2] * 4,
+        'olivine_t1': [0.0] * 4, 'olivine_t2': [0.0] * 4,
+        'lcp': [1.0] * 4, 'hcp': [0.0] * 4,
+        'plagioclase': [0.0] * 4, 'other': [0.0] * 4,
+        'confidence_weight': [1.0] * 4,
+        'confidence_tier': ['High'] * 4,
+        'split': ['train'] * 4,
+    })
+
+    ds = CRISMSpectralPatchDataset(df, mrral_map, patch_size=7)
+    patch, labels, weights = ds[0]
+    assert patch.shape == (7, 7, 59), f"Got {patch.shape}"
+    assert patch.dtype == torch.float32
+    assert labels.shape == (5,)
+    assert weights.shape == ()
+    assert patch.min().item() >= 0.0
+    assert patch.max().item() <= 0.5
