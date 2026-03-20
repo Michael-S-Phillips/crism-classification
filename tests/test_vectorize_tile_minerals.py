@@ -70,3 +70,19 @@ def test_load_thresholds_json(tmp_path):
     result = load_thresholds_json(str(f))
     assert result['olivine'] == [0.28, 0.41, 0.57]
     assert len(result) == 4
+
+
+def test_assign_confidence_tiers_filters_zero_threshold():
+    """Vectroscopy background sentinel polygons with Threshold=0 are dropped."""
+    import geopandas as gpd
+    from shapely.geometry import Point
+    from scripts.vectorize_tile_minerals import assign_confidence_tiers
+
+    gdf = gpd.GeoDataFrame({
+        'geometry': [Point(0, 0), Point(1, 0), Point(2, 0), Point(3, 0)],
+        'Threshold': [0.0, 0.28, 0.41, 0.57],
+    })
+    result = assign_confidence_tiers(gdf)
+    assert len(result) == 3, "Threshold=0 sentinel row should be removed"
+    assert list(result['confidence']) == [1, 2, 3]
+    assert 0.0 not in result['Threshold'].values
