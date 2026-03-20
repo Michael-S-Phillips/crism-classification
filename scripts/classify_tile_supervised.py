@@ -282,14 +282,11 @@ def main():
     probs = probs_flat.reshape(H, W, N_CLASSES)  # (H, W, 5)
 
     if args.save_probs:
-        import rasterio
-        with rasterio.open(args.tile) as src:
-            # Save rasterio Affine as (a,b,c,d,e,f) = (col_scale, col_shear, col_off,
-            #                                            row_shear, row_scale, row_off)
-            transform_arr = np.array([src.transform.a, src.transform.b, src.transform.c,
-                                       src.transform.d, src.transform.e, src.transform.f],
-                                      dtype=np.float64)
-            crs_wkt = src.crs.to_wkt()
+        # transform and crs already extracted by load_tile() above
+        transform_arr = np.array([transform.a, transform.b, transform.c,
+                                   transform.d, transform.e, transform.f],
+                                  dtype=np.float64)
+        crs_wkt = crs.to_wkt()
         probs_hw4 = probs[:, :, :4]  # drop "other" class (index 4)
         save_probs(args.save_probs, probs_hw4, valid_mask, transform_arr, crs_wkt)
         print(f'Saved probs → {args.save_probs}')

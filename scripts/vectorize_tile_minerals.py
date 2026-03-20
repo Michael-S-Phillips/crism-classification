@@ -238,6 +238,9 @@ def main():
                         help='Output GeoPackage path')
     parser.add_argument('--median_size', type=int, default=3)
     parser.add_argument('--median_iter', type=int, default=1)
+    # NOTE: The "morphology" section in vectroscopy_thresholds.json documents the same
+    # sieve_px/majority_iter defaults for reproducibility, but does NOT control runtime
+    # behaviour — Stage 3 reads only from these CLI args (not from the JSON).
     parser.add_argument('--sieve_px', type=int, default=9,
                         help='Min pixels for sieve filter (accepted for CLI compat; not yet wired to Vectroscopy from_array API)')
     parser.add_argument('--majority_iter', type=int, default=3,
