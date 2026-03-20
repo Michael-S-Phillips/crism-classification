@@ -5,11 +5,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def test_save_probs_output_shape(tmp_path):
-    """save_probs writes (H,W,4) probs + valid_mask + transform + crs_wkt to npz."""
+    """save_probs writes (H,W,5) probs + valid_mask + transform + crs_wkt to npz."""
     from scripts.classify_tile_supervised import save_probs
 
     H, W = 10, 12
-    probs_hw4 = np.random.rand(H, W, 4).astype(np.float32)
+    probs_hw4 = np.random.rand(H, W, 5).astype(np.float32)
     valid_mask = np.ones((H, W), dtype=bool)
     valid_mask[0, 0] = False
     # transform_arr: rasterio Affine order (a,b,c,d,e,f) = (col_scale, col_shear, col_off,
@@ -21,7 +21,7 @@ def test_save_probs_output_shape(tmp_path):
     save_probs(str(out), probs_hw4, valid_mask, transform_arr, crs_wkt)
 
     data = np.load(str(out), allow_pickle=True)
-    assert data['probs'].shape == (H, W, 4)
+    assert data['probs'].shape == (H, W, 5)
     assert data['probs'].dtype == np.float32
     assert data['valid_mask'].shape == (H, W)
     assert data['valid_mask'].dtype == bool
@@ -36,11 +36,11 @@ def test_save_probs_values_preserved(tmp_path):
     """Saved probs match input values exactly."""
     from scripts.classify_tile_supervised import save_probs
 
-    probs = np.array([[[0.1, 0.9, 0.2, 0.05]]], dtype=np.float32)  # (1,1,4)
+    probs = np.array([[[0.1, 0.9, 0.2, 0.05, 0.3]]], dtype=np.float32)  # (1,1,5)
     mask = np.array([[True]])
     t = np.zeros(6)
     out = tmp_path / 'p.npz'
     save_probs(str(out), probs, mask, t, '')
     data = np.load(str(out), allow_pickle=True)
-    assert data['probs'].shape == (1, 1, 4)
+    assert data['probs'].shape == (1, 1, 5)
     np.testing.assert_array_almost_equal(data['probs'], probs)

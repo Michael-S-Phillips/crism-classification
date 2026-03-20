@@ -43,7 +43,7 @@ TILES = [
     },
 ]
 
-MINERALS = ['olivine', 'lcp', 'hcp', 'plagioclase']
+MINERALS = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
 
 # Confidence tier colours: light → dark (low → high)
 TIER_COLORS = {

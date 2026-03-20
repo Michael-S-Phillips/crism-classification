@@ -97,7 +97,7 @@ def test_load_probs_npz_round_trip(tmp_path):
     from rasterio.transform import Affine
 
     H, W = 5, 6
-    probs = np.random.rand(H, W, 4).astype(np.float32)
+    probs = np.random.rand(H, W, 5).astype(np.float32)
     mask = np.ones((H, W), dtype=bool)
     mask[0, 0] = False
     # Realistic rasterio Affine: 200m pixels, top-left at (100000, -200000)

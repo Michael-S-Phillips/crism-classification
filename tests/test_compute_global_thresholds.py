@@ -23,14 +23,14 @@ def test_pool_valid_probs_single_tile(tmp_path):
     from scripts.compute_global_thresholds import pool_valid_probs
 
     H, W = 4, 4
-    probs = np.random.rand(H, W, 4).astype(np.float32)
+    probs = np.random.rand(H, W, 5).astype(np.float32)
     mask = np.ones((H, W), dtype=bool)
     mask[0, 0] = False  # one invalid pixel
 
     path = make_npz(tmp_path, 'tile.npz', probs, mask)
-    result = pool_valid_probs([path])  # {0: array, 1: array, 2: array, 3: array}
+    result = pool_valid_probs([path])  # {0: array, ..., 4: array}
 
-    for ci in range(4):
+    for ci in range(5):
         expected = probs[:, :, ci][mask]
         np.testing.assert_array_almost_equal(result[ci], expected)
 
@@ -39,8 +39,8 @@ def test_pool_valid_probs_two_tiles(tmp_path):
     """pool_valid_probs concatenates across tiles."""
     from scripts.compute_global_thresholds import pool_valid_probs
 
-    probs1 = np.ones((3, 3, 4), dtype=np.float32) * 0.3
-    probs2 = np.ones((3, 3, 4), dtype=np.float32) * 0.7
+    probs1 = np.ones((3, 3, 5), dtype=np.float32) * 0.3
+    probs2 = np.ones((3, 3, 5), dtype=np.float32) * 0.7
     mask = np.ones((3, 3), dtype=bool)
 
     p1 = make_npz(tmp_path, 't1.npz', probs1, mask)
@@ -62,8 +62,9 @@ def test_compute_thresholds_values(tmp_path):
         1: np.full(100, 0.9, dtype=np.float32),
         2: np.zeros(100, dtype=np.float32),
         3: np.zeros(100, dtype=np.float32),
+        4: np.zeros(100, dtype=np.float32),
     }
-    CLASS_NAMES = ['olivine', 'lcp', 'hcp', 'plagioclase']
+    CLASS_NAMES = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
     result = compute_thresholds(pooled, CLASS_NAMES, percentiles=[33, 67, 90])
 
     # For uniform [0,1], 33rd pctile ≈ 0.33
@@ -84,6 +85,7 @@ def test_write_thresholds_json(tmp_path):
         'lcp': [0.82, 0.91, 0.96],
         'hcp': [0.04, 0.09, 0.18],
         'plagioclase': [0.03, 0.08, 0.15],
+        'other': [0.35, 0.55, 0.75],
     }
     out = tmp_path / 'thresh.json'
     write_thresholds_json(
@@ -99,6 +101,6 @@ def test_write_thresholds_json(tmp_path):
     assert 'generated' in data
     assert data['tiles_used'] == ['T0434', 'T0435']
     assert data['percentiles'] == [33, 67, 90]
-    assert list(data['thresholds'].keys()) == ['olivine', 'lcp', 'hcp', 'plagioclase']
+    assert list(data['thresholds'].keys()) == ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
     assert len(data['thresholds']['olivine']) == 3
     assert 'morphology' in data

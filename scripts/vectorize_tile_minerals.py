@@ -47,7 +47,7 @@ except ImportError as e:
         "Then set VECTROSCOPY_SRC=/opt/Vectroscopy/src or add its src/ dir to sys.path."
     ) from e
 
-CLASS_NAMES = ['olivine', 'lcp', 'hcp', 'plagioclase']
+CLASS_NAMES = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +203,7 @@ def load_probs_npz(path: str) -> Tuple[np.ndarray, np.ndarray, object, object]:
     """Load probs .npz; return (probs, valid_mask, crs, transform).
 
     Returns:
-        probs: (H, W, 4) float32
+        probs: (H, W, 5) float32
         valid_mask: (H, W) bool
         crs: rasterio.crs.CRS
         transform: rasterio.transform.Affine
@@ -283,7 +283,7 @@ def main():
         H, W = valid_mask.shape
         model = load_classifier(args.ckpt, device)
         probs_flat = run_supervised(tile, model, device)  # (H*W, 5)
-        probs = probs_flat.reshape(H, W, 5)[:, :, :4]    # (H, W, 4) drop "other"
+        probs = probs_flat.reshape(H, W, 5)
 
     H, W = valid_mask.shape
     print(f'Tile: {H}×{W}, {valid_mask.sum():,} valid pixels')

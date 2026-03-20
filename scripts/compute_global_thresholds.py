@@ -19,7 +19,7 @@ from typing import Dict, List
 
 import numpy as np
 
-CLASS_NAMES = ['olivine', 'lcp', 'hcp', 'plagioclase']
+CLASS_NAMES = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
 DEFAULT_MORPHOLOGY = {
     'median_filter_size': 3,
     'median_filter_iterations': 1,
@@ -36,16 +36,16 @@ def pool_valid_probs(npz_paths: List[str]) -> Dict[int, np.ndarray]:
         npz_paths: list of .npz paths produced by classify_tile_supervised --save_probs
 
     Returns:
-        dict mapping class index (0-3) → 1-D float32 array of valid-pixel probs
+        dict mapping class index (0-4) → 1-D float32 array of valid-pixel probs
     """
-    pooled = {ci: [] for ci in range(4)}
+    pooled = {ci: [] for ci in range(5)}
     for path in npz_paths:
         data = np.load(path)
-        probs = data['probs']          # (H, W, 4)
+        probs = data['probs']          # (H, W, 5)
         valid_mask = data['valid_mask']  # (H, W) bool
-        for ci in range(4):
+        for ci in range(5):
             pooled[ci].append(probs[:, :, ci][valid_mask])
-    return {ci: np.concatenate(pooled[ci]) for ci in range(4)}
+    return {ci: np.concatenate(pooled[ci]) for ci in range(5)}
 
 
 def compute_thresholds(pooled: Dict[int, np.ndarray],

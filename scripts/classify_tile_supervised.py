@@ -127,20 +127,20 @@ def run_supervised(tile, model, device, batch_size=4096):
     return probs
 
 
-def save_probs(path: str, probs_hw4: np.ndarray, valid_mask: np.ndarray,
+def save_probs(path: str, probs_hw: np.ndarray, valid_mask: np.ndarray,
                transform_arr: np.ndarray, crs_wkt: str) -> None:
-    """Save (H,W,4) mineral probability raster to .npz for downstream vectorization.
+    """Save (H,W,N) mineral probability raster to .npz for downstream vectorization.
 
     Args:
         path: output .npz path
-        probs_hw4: (H, W, 4) float32 probabilities for olivine/lcp/hcp/plagioclase
+        probs_hw: (H, W, N) float32 probabilities (N=5: olivine/lcp/hcp/plagioclase/other)
         valid_mask: (H, W) bool, True = valid pixel
         transform_arr: (6,) float64 rasterio Affine coefficients (a,b,c,d,e,f)
         crs_wkt: CRS as WKT string
     """
     np.savez_compressed(
         path,
-        probs=probs_hw4,
+        probs=probs_hw,
         valid_mask=valid_mask,
         transform=transform_arr,
         crs_wkt=crs_wkt,
@@ -260,7 +260,7 @@ def main():
     parser.add_argument('--drop_pcs', type=int, nargs='+', default=[0, 1, 2, 3])
     parser.add_argument('--out_dir', default='/mnt/mrdr/crism_classification/reports')
     parser.add_argument('--save_probs', default=None, metavar='PATH',
-                        help='Save (H,W,4) mineral prob raster to .npz for vectorization')
+                        help='Save (H,W,5) mineral prob raster to .npz for vectorization')
     parser.add_argument('--out', default=None, metavar='PATH',
                         help='Output figure path (overrides --out_dir naming)')
     args = parser.parse_args()
@@ -287,8 +287,7 @@ def main():
                                    transform.d, transform.e, transform.f],
                                   dtype=np.float64)
         crs_wkt = crs.to_wkt()
-        probs_hw4 = probs[:, :, :4]  # drop "other" class (index 4)
-        save_probs(args.save_probs, probs_hw4, valid_mask, transform_arr, crs_wkt)
+        save_probs(args.save_probs, probs, valid_mask, transform_arr, crs_wkt)
         print(f'Saved probs → {args.save_probs}')
 
     # Dominant class per pixel (argmax over classes)
