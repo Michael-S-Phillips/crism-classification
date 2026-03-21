@@ -95,7 +95,7 @@ def compute_prototypes(
 
     Args:
         embeddings_per_class: dict mapping class name → (N, embed_dim) float32
-            array of L2-normalized per-pixel embeddings.
+            array of per-pixel embeddings (will be L2-normalized internally before averaging).
             N may be 0 — this raises ValueError naming the class.
 
     Returns:
@@ -103,7 +103,10 @@ def compute_prototypes(
         n_pixels_per_class: dict mapping class name → int pixel count
     """
     n_classes  = len(CLASS_NAMES)
-    embed_dim  = next(v.shape[1] for v in embeddings_per_class.values() if v.shape[0] > 0)
+    _nonempty = next((v for v in embeddings_per_class.values() if v.shape[0] > 0), None)
+    if _nonempty is None:
+        raise ValueError("All classes have zero embeddings. Check --confidence_tiers and --splits.")
+    embed_dim  = _nonempty.shape[1]
     prototypes = np.zeros((n_classes, embed_dim), dtype=np.float32)
     n_pixels   = {}
 
@@ -115,7 +118,7 @@ def compute_prototypes(
                 f"Widen --confidence_tiers or --splits."
             )
         n_pixels[name] = embs.shape[0]
-        # Normalize each embedding to unit sphere before averaging (Fréchet mean)
+        # L2-normalize each embedding to unit sphere before averaging (spec: normalize → mean → normalize)
         norms = np.linalg.norm(embs, axis=1, keepdims=True)
         norms = np.where(norms < 1e-8, 1.0, norms)
         embs = embs / norms
@@ -201,6 +204,11 @@ def embed_labeled_pixels(
         dict mapping class name → (N, 128) float32 L2-normalized embeddings.
         N may be 0 if no hard-positive pixels found for that class/tier combo.
     """
+    if 'olivine' not in df.columns:
+        raise ValueError(
+            "df must contain an 'olivine' column. "
+            "Add it with: df['olivine'] = df[['olivine_t1', 'olivine_t2']].max(axis=1)"
+        )
     embeddings_per_class: Dict[str, List[np.ndarray]] = {n: [] for n in CLASS_NAMES}
 
     for split in splits:
