@@ -164,16 +164,9 @@ def collect_spectra(tiles_info, rng=None):
     return spectra, wavelengths
 
 
-def compute_other_mean(spectra, focal_mineral):
-    """Mean spectrum of all classified pixels NOT belonging to focal_mineral."""
-    arrays = []
-    for other in CLASS_NAMES:
-        if other == focal_mineral:
-            continue
-        for tier in TIERS:
-            arr = spectra[other][tier]
-            if arr.shape[0] > 0:
-                arrays.append(arr)
+def compute_other_mean(spectra):
+    """Mean spectrum of all 'other'-class pixels (spectrally neutral CRISM denominator)."""
+    arrays = [spectra['other'][t] for t in TIERS if spectra['other'][t].shape[0] > 0]
     if not arrays:
         return None
     return np.nanmean(np.concatenate(arrays, axis=0), axis=0)
@@ -208,7 +201,7 @@ def main():
         ax_raw = axes[ri, 0]
         ax_rat = axes[ri, 1]
         mcolor = MINERAL_COLORS[mineral]
-        other_mean = compute_other_mean(spectra, mineral)
+        other_mean = compute_other_mean(spectra)
 
         for ti, tier in enumerate(TIERS):
             arr = spectra[mineral][tier]
@@ -240,7 +233,7 @@ def main():
 
         # Style
         for ax, title in [(ax_raw, f'{mineral} — raw reflectance'),
-                          (ax_rat, f'{mineral} / other classes')]:
+                          (ax_rat, f'{mineral} / other (neutral)')]:
             ax.set_title(title, fontsize=9, fontweight='bold', color=mcolor)
             ax.set_xlabel('Wavelength (nm)', fontsize=7)
             ax.tick_params(labelsize=6)
