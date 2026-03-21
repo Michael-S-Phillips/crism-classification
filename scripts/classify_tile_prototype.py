@@ -95,6 +95,34 @@ def apply_valid_mask(
     return result
 
 
+def apply_min_similarity(
+    sims_hw5: np.ndarray,
+    valid_mask: np.ndarray,
+    min_similarity: float | None,
+) -> np.ndarray:
+    """Zero out pixels whose max class similarity falls below min_similarity.
+
+    Args:
+        sims_hw5: (H, W, 5) float32, output of apply_valid_mask
+        valid_mask: (H, W) bool — used to exclude invalid pixels from percentile
+        min_similarity: explicit threshold in [0, 1], or None to auto-compute
+            as the 10th percentile of max-similarity across valid pixels.
+
+    Returns:
+        (H, W, 5) float32 — low-confidence pixels zeroed on all channels.
+    """
+    result = sims_hw5.copy()
+    max_sims = result.max(axis=-1)                       # (H, W)
+    if min_similarity is None:
+        valid_max = max_sims[valid_mask]                 # (N_valid,)
+        threshold = float(np.percentile(valid_max, 10))
+    else:
+        threshold = min_similarity
+    low_conf = max_sims < threshold                      # (H, W) bool
+    result[low_conf] = 0.0
+    return result
+
+
 def load_prototype_npz(path: str) -> Tuple[np.ndarray, List[str], str]:
     """Load prototype .npz produced by build_prototypes.py.
 
@@ -255,6 +283,12 @@ def main():
     parser.add_argument('--out', default=None,
                         help='Figure output path (default: reports/fig_prototype_<tile>.png)')
     parser.add_argument('--batch_size', type=int, default=512)
+    parser.add_argument(
+        '--min_similarity', type=float, default=None,
+        help='Minimum max cosine similarity to classify a pixel. '
+             'Default: 10th percentile of tile max-similarity distribution. '
+             'Pass 0.0 to disable.',
+    )
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -286,6 +320,7 @@ def main():
         embs = embed_tile(tile, encoder, device, args.batch_size)
         sims_flat = cosine_similarity_classify(embs, protos)
         sims_hw5  = apply_valid_mask(sims_flat, valid_mask)
+        sims_hw5  = apply_min_similarity(sims_hw5, valid_mask, args.min_similarity)
         return sims_hw5, embs, tag
 
     # Run proto_a (always)
