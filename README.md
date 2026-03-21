@@ -153,6 +153,10 @@ conda run -n crism python scripts/vectorize_tile_minerals.py \
 
 # 3. Plot all tiles
 conda run -n crism python scripts/plot_vector_mineral_maps.py
+
+# Compare label polygons to predicted mineral maps
+conda run -n crism python scripts/plot_labels_vs_predicted.py
+# → reports/fig_labels_vs_predicted.png
 ```
 
 Outputs `reports/fig_vector_mineral_maps.png` — 5×2 grid (minerals × tiles), coloured by confidence tier.
