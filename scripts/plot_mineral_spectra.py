@@ -47,6 +47,21 @@ TIER_COLORS = ['#43a047', '#fb8c00', '#e53935']   # tier 1 / 2 / 3
 TIER_LABELS = ['Tier 1', 'Tier 2', 'Tier 3']
 CRISM_NODATA = 65535.0
 MAX_PIXELS_PER_CLASS_TIER = 10_000   # cap to keep memory bounded
+BAD_BAND_RANGES = [(1000, 1100)]     # nm — detector gap / order-sorting artefact
+
+
+def interp_bad_bands(spec, wav, bad_ranges=BAD_BAND_RANGES):
+    """Linearly interpolate over bad-band wavelength ranges in a 1-D spectrum."""
+    spec = spec.copy()
+    good = np.ones(len(wav), dtype=bool)
+    for lo, hi in bad_ranges:
+        good &= ~((wav >= lo) & (wav <= hi))
+    bad_idx = np.where(~good)[0]
+    if len(bad_idx) == 0:
+        return spec
+    good_idx = np.where(good)[0]
+    spec[bad_idx] = np.interp(wav[bad_idx], wav[good_idx], spec[good_idx])
+    return spec
 
 
 def read_tile_cube(img_path):
@@ -201,15 +216,16 @@ def main():
         ax_raw = axes[ri, 0]
         ax_rat = axes[ri, 1]
         mcolor = MINERAL_COLORS[mineral]
-        other_mean = compute_other_mean(spectra)
+        _om = compute_other_mean(spectra)
+        other_mean = interp_bad_bands(_om, wav) if _om is not None else None
 
         for ti, tier in enumerate(TIERS):
             arr = spectra[mineral][tier]
             if arr.shape[0] == 0:
                 continue
 
-            mean_spec = np.nanmean(arr, axis=0)
-            std_spec = np.nanstd(arr, axis=0)
+            mean_spec = interp_bad_bands(np.nanmean(arr, axis=0), wav)
+            std_spec = interp_bad_bands(np.nanstd(arr, axis=0), wav)
             tcolor = TIER_COLORS[ti]
             tlabel = f'{TIER_LABELS[ti]} (n={arr.shape[0]:,})'
 
@@ -226,6 +242,7 @@ def main():
             if other_mean is not None:
                 with np.errstate(invalid='ignore', divide='ignore'):
                     ratio = np.where(other_mean > 0, mean_spec / other_mean, np.nan)
+                ratio = interp_bad_bands(ratio, wav)
                 ax_rat.plot(wav, ratio, color=tcolor, lw=1.2, label=tlabel, zorder=3)
 
         # Reference line at ratio = 1
