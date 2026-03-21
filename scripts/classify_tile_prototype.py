@@ -123,23 +123,57 @@ def apply_min_similarity(
     return result
 
 
-def load_prototype_npz(path: str) -> Tuple[np.ndarray, List[str], str]:
+def apply_pca(
+    raw_embs: np.ndarray,
+    pca_mean: np.ndarray,
+    pca_components: np.ndarray,
+    pca_explained_variance: np.ndarray,
+) -> np.ndarray:
+    """Apply saved whitened PCA projection to raw encoder embeddings.
+
+    Equivalent to sklearn.PCA(whiten=True).transform() without requiring sklearn.
+
+    Args:
+        raw_embs: (N, D) float32 raw encoder embeddings
+        pca_mean: (D,) float32 mean vector from PCA fit
+        pca_components: (K, D) float32 PCA eigenvectors
+        pca_explained_variance: (K,) float32 eigenvalues (for whitening)
+
+    Returns:
+        (N, K) float32 whitened PCA projections
+    """
+    centered = raw_embs - pca_mean
+    projected = centered @ pca_components.T
+    whitened = projected / np.sqrt(pca_explained_variance)
+    return whitened.astype(np.float32)
+
+
+def load_prototype_npz(path: str) -> Tuple[np.ndarray, List[str], str, dict]:
     """Load prototype .npz produced by build_prototypes.py.
 
     Returns:
         prototypes: (n_classes, embed_dim) float32
         class_names: list of class name strings
         encoder_ckpt: checkpoint path string (for loading the encoder)
+        pca_params: dict with pca_mean, pca_components, pca_explained_variance
+            if the proto was built with --variance_threshold, else None
     """
     data = np.load(path, allow_pickle=True)
     prototypes = data['prototypes']
-    if prototypes.ndim != 2 or prototypes.shape[1] != 128:
+    if prototypes.ndim != 2:
         raise ValueError(
-            f"Unexpected prototypes shape {prototypes.shape}; expected (n_classes, 128)"
+            f"Unexpected prototypes shape {prototypes.shape}; expected 2D (n_classes, embed_dim)"
         )
     class_names = [str(x) for x in data['class_names']]
     encoder_ckpt = str(data['encoder_ckpt'])
-    return prototypes, class_names, encoder_ckpt
+    pca_params = None
+    if 'pca_components' in data:
+        pca_params = {
+            'pca_mean':               data['pca_mean'],
+            'pca_components':         data['pca_components'],
+            'pca_explained_variance': data['pca_explained_variance'],
+        }
+    return prototypes, class_names, encoder_ckpt, pca_params
 
 
 # ── patch extraction ─────────────────────────────────────────────────────────
@@ -167,17 +201,20 @@ def embed_tile(
     encoder: torch.nn.Module,
     device: torch.device,
     batch_size: int = 512,
+    normalize: bool = True,
 ) -> np.ndarray:
-    """Embed all tile pixels via encoder; return (H*W, 128) L2-normalized.
+    """Embed all tile pixels via encoder.
 
     Args:
         tile: (H, W, 59) float32, pre-processed (nodata→0, clipped)
         encoder: SpatialSpectralTransformer in eval mode
         device: torch device
         batch_size: number of pixels per inference batch
+        normalize: if True (default), L2-normalize each embedding. Set False
+            when raw embeddings are needed for downstream PCA projection.
 
     Returns:
-        (H*W, embed_dim) float32, L2-normalized
+        (H*W, embed_dim) float32; L2-normalized if normalize=True, raw otherwise
     """
     from tqdm import tqdm
     H, W, _ = tile.shape
@@ -192,7 +229,8 @@ def embed_tile(
             x = torch.from_numpy(patches).to(device)
             out = encoder(x)                         # (B, 50, 128)
             emb = out[:, CENTER_IDX]                  # (B, 128)
-            emb = torch.nn.functional.normalize(emb, dim=-1)
+            if normalize:
+                emb = torch.nn.functional.normalize(emb, dim=-1)
             embeddings[idx] = emb.cpu().numpy()
 
     return embeddings
@@ -312,12 +350,20 @@ def main():
         """Embed tile + cosine similarity for one prototype file.
         Returns (sims_hw5, embeddings_flat, encoder_tag).
         """
-        protos, _, ckpt_path = load_prototype_npz(proto_path)
+        protos, _, ckpt_path, pca_params = load_prototype_npz(proto_path)
         tag = os.path.splitext(os.path.basename(proto_path))[0]
         print(f'Loading encoder for {tag}: {ckpt_path}')
         encoder, _ = load_encoder(ckpt_path, device)
         print(f'Embedding tile ({tag})...')
-        embs = embed_tile(tile, encoder, device, args.batch_size)
+        raw_embs = embed_tile(tile, encoder, device, args.batch_size,
+                              normalize=(pca_params is None))
+        if pca_params is not None:
+            embs = apply_pca(raw_embs, **pca_params)
+            # L2-normalize after PCA projection
+            norms = np.linalg.norm(embs, axis=-1, keepdims=True)
+            embs = embs / np.maximum(norms, 1e-10)
+        else:
+            embs = raw_embs
         sims_flat = cosine_similarity_classify(embs, protos)
         sims_hw5  = apply_valid_mask(sims_flat, valid_mask)
         sims_hw5  = apply_min_similarity(sims_hw5, valid_mask, args.min_similarity)

@@ -28,6 +28,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 import torch
+from sklearn.decomposition import PCA
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -131,6 +132,52 @@ def compute_prototypes(
     return prototypes, n_pixels
 
 
+def fit_and_apply_pca(
+    embeddings_per_class: Dict[str, np.ndarray],
+    variance_threshold: float,
+) -> Tuple[Dict[str, np.ndarray], Dict]:
+    """Fit whitened PCA on pooled labeled embeddings; project all class embeddings.
+
+    Pools all class embeddings, fits PCA retaining enough components to explain
+    `variance_threshold` of the total variance, with whitening (unit variance per
+    component). Projects each class embedding matrix through the fitted PCA.
+
+    Args:
+        embeddings_per_class: dict class_name → (N, D) raw encoder embeddings
+        variance_threshold: fraction of variance to retain, e.g. 0.95
+
+    Returns:
+        projected: dict class_name → (N, K) PCA-whitened embeddings
+        pca_params: dict with serializable arrays for saving to .npz:
+            pca_components (K, D), pca_mean (D,), pca_explained_variance (K,),
+            pca_n_components (scalar), pca_variance_threshold (scalar)
+    """
+    nonempty = [v for v in embeddings_per_class.values() if v.shape[0] > 0]
+    all_embs = np.concatenate(nonempty, axis=0)   # (N_total, D)
+
+    pca = PCA(n_components=variance_threshold, whiten=True, random_state=42)
+    pca.fit(all_embs)
+    n_comp = pca.n_components_
+    var_retained = float(pca.explained_variance_ratio_.sum())
+    print(f'  PCA: {n_comp} components retain {100*var_retained:.1f}% variance '
+          f'(threshold={100*variance_threshold:.0f}%)')
+
+    projected = {
+        name: pca.transform(embs).astype(np.float32)
+              if embs.shape[0] > 0
+              else np.zeros((0, n_comp), dtype=np.float32)
+        for name, embs in embeddings_per_class.items()
+    }
+    pca_params = {
+        'pca_components':         pca.components_.astype(np.float32),         # (K, D)
+        'pca_mean':               pca.mean_.astype(np.float32),               # (D,)
+        'pca_explained_variance': pca.explained_variance_.astype(np.float32), # (K,)
+        'pca_n_components':       np.array(n_comp),
+        'pca_variance_threshold': np.array(variance_threshold),
+    }
+    return projected, pca_params
+
+
 # ── encoder loading ───────────────────────────────────────────────────────────
 
 def load_encoder(ckpt_path: str, device: torch.device) -> Tuple[torch.nn.Module, str]:
@@ -183,6 +230,7 @@ def embed_labeled_pixels(
     encoder: torch.nn.Module,
     device: torch.device,
     batch_size: int = 512,
+    normalize: bool = True,
 ) -> Dict[str, np.ndarray]:
     """Extract L2-normalized center-token embeddings for all hard-positive pixels.
 
@@ -246,7 +294,8 @@ def embed_labeled_pixels(
                 with torch.no_grad():
                     out = encoder(x)                         # (B, 50, 128)
                     emb = out[:, CENTER_IDX]                  # (B, 128)
-                    emb = torch.nn.functional.normalize(emb, dim=-1)
+                    if normalize:
+                        emb = torch.nn.functional.normalize(emb, dim=-1)
                 class_embs.append(emb.cpu().numpy())
 
             if class_embs:
@@ -276,6 +325,10 @@ def main():
     parser.add_argument('--out', default=None,
                         help='Output .npz path (default: data/prototypes/proto_<tag>_<tiers>.npz)')
     parser.add_argument('--batch_size', type=int, default=512)
+    parser.add_argument('--variance_threshold', type=float, default=None,
+                        help='If set, fit whitened PCA on labeled embeddings retaining this '
+                             'fraction of variance (e.g. 0.95) before computing prototypes. '
+                             'PCA params are saved to the .npz for use at inference time.')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -308,21 +361,30 @@ def main():
 
     # Embed labeled pixels — pass FULL df so memmap row indices are correct
     cache_dir = os.path.join(PROJ, 'data', 'patch_cache')
+    use_pca = args.variance_threshold is not None
     print('Extracting embeddings for labeled pixels...')
     embeddings_per_class = embed_labeled_pixels(
         df, args.splits, args.confidence_tiers, cache_dir, encoder, device, args.batch_size,
+        normalize=not use_pca,   # raw embeddings needed for PCA fitting
     )
 
     for name, embs in embeddings_per_class.items():
         print(f'  {name:12s}: {len(embs):,} hard-positive pixels')
+
+    # Optionally project through whitened PCA
+    pca_params = None
+    if use_pca:
+        print(f'Fitting PCA (variance_threshold={args.variance_threshold})...')
+        embeddings_per_class, pca_params = fit_and_apply_pca(
+            embeddings_per_class, args.variance_threshold,
+        )
 
     # Compute prototypes
     print('Computing prototypes...')
     prototypes, n_pixels_per_class = compute_prototypes(embeddings_per_class)
 
     # Save
-    np.savez_compressed(
-        args.out,
+    save_dict = dict(
         prototypes=prototypes,
         class_names=np.array(CLASS_NAMES),
         encoder_ckpt=np.array(args.ckpt),
@@ -330,6 +392,9 @@ def main():
         splits_used=np.array(args.splits),
         n_pixels_per_class=np.array([n_pixels_per_class[n] for n in CLASS_NAMES]),
     )
+    if pca_params is not None:
+        save_dict.update(pca_params)
+    np.savez_compressed(args.out, **save_dict)
     print(f'Saved → {args.out}')
     for i, name in enumerate(CLASS_NAMES):
         print(f'  {name:12s}: norm={np.linalg.norm(prototypes[i]):.6f}, '

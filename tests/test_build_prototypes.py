@@ -115,6 +115,43 @@ def test_confidence_tier_filtering():
     assert set(df_high['confidence_tier'].unique()) == {'High'}
 
 
+def test_fit_and_apply_pca_reduces_dimensions():
+    """fit_and_apply_pca selects fewer than 128 components for low-rank input."""
+    from scripts.build_prototypes import fit_and_apply_pca, CLASS_NAMES
+    rng = np.random.default_rng(42)
+    D, K_true, N = 128, 8, 200
+    # Low-rank structure: only K_true dimensions have real variance
+    basis = rng.normal(0, 1, (K_true, D)).astype(np.float32)
+    emb_per_class = {
+        name: rng.normal(0, 1, (N, K_true)).astype(np.float32) @ basis
+              + rng.normal(0, 0.001, (N, D)).astype(np.float32)
+        for name in CLASS_NAMES
+    }
+    projected, pca_params = fit_and_apply_pca(emb_per_class, variance_threshold=0.95)
+    n_comp = int(pca_params['pca_n_components'])
+    assert n_comp < D
+    assert pca_params['pca_components'].shape == (n_comp, D)
+    assert pca_params['pca_mean'].shape == (D,)
+    assert pca_params['pca_explained_variance'].shape == (n_comp,)
+    for name in CLASS_NAMES:
+        assert projected[name].shape == (N, n_comp)
+
+
+def test_fit_and_apply_pca_whitened_unit_variance():
+    """Whitened projections have ~unit variance per component across training data."""
+    from scripts.build_prototypes import fit_and_apply_pca, CLASS_NAMES
+    rng = np.random.default_rng(7)
+    D, N = 128, 300
+    emb_per_class = {
+        name: rng.normal(0, 1, (N, D)).astype(np.float32)
+        for name in CLASS_NAMES
+    }
+    projected, _ = fit_and_apply_pca(emb_per_class, variance_threshold=0.90)
+    all_proj = np.concatenate(list(projected.values()), axis=0)
+    component_vars = all_proj.var(axis=0)
+    np.testing.assert_allclose(component_vars, np.ones_like(component_vars), atol=0.15)
+
+
 def test_filter_parquet_preserves_original_index():
     """filter_parquet does NOT reset_index — original row positions are preserved for memmap lookup."""
     from scripts.build_prototypes import filter_parquet

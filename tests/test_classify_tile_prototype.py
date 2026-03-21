@@ -60,7 +60,7 @@ def test_invalid_pixels_masked():
 
 
 def test_load_prototype_npz(tmp_path):
-    """load_prototype_npz returns prototypes array, class_names, and ckpt_tag."""
+    """load_prototype_npz returns (prototypes, class_names, ckpt, pca_params=None)."""
     from scripts.classify_tile_prototype import load_prototype_npz
     protos = np.random.rand(5, 128).astype(np.float32)
     np.savez_compressed(
@@ -72,10 +72,58 @@ def test_load_prototype_npz(tmp_path):
         splits_used=np.array(['train', 'val']),
         n_pixels_per_class=np.array([100, 200, 50, 75, 150]),
     )
-    p, names, ckpt_path = load_prototype_npz(str(tmp_path / 'test_proto.npz'))
+    p, names, ckpt_path, pca_params = load_prototype_npz(str(tmp_path / 'test_proto.npz'))
     assert p.shape == (5, 128)
     assert list(names) == ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
     assert 'spvit_lrscale0005' in ckpt_path
+    assert pca_params is None   # no PCA keys in this proto
+
+
+def test_load_prototype_npz_with_pca(tmp_path):
+    """load_prototype_npz returns pca_params dict when PCA keys are present."""
+    from scripts.classify_tile_prototype import load_prototype_npz
+    K, D = 20, 128
+    protos = np.random.rand(5, K).astype(np.float32)
+    np.savez_compressed(
+        str(tmp_path / 'proto_pca.npz'),
+        prototypes=protos,
+        class_names=np.array(['olivine', 'lcp', 'hcp', 'plagioclase', 'other']),
+        encoder_ckpt=np.array('checkpoints/test.pt'),
+        confidence_tiers_used=np.array(['High']),
+        splits_used=np.array(['train']),
+        n_pixels_per_class=np.array([10, 10, 10, 10, 10]),
+        pca_components=np.random.rand(K, D).astype(np.float32),
+        pca_mean=np.random.rand(D).astype(np.float32),
+        pca_explained_variance=np.abs(np.random.rand(K)).astype(np.float32),
+        pca_n_components=np.array(K),
+        pca_variance_threshold=np.array(0.95),
+    )
+    p, names, ckpt_path, pca_params = load_prototype_npz(str(tmp_path / 'proto_pca.npz'))
+    assert p.shape == (5, K)
+    assert pca_params is not None
+    assert pca_params['pca_components'].shape == (K, D)
+    assert pca_params['pca_mean'].shape == (D,)
+    assert pca_params['pca_explained_variance'].shape == (K,)
+
+
+def test_apply_pca_matches_sklearn():
+    """apply_pca output matches sklearn PCA(whiten=True).transform()."""
+    from sklearn.decomposition import PCA
+    from scripts.classify_tile_prototype import apply_pca
+    rng = np.random.default_rng(42)
+    D, N_fit, N_test, K = 128, 200, 50, 20
+    X_fit = rng.normal(0, 1, (N_fit, D)).astype(np.float32)
+    X_test = rng.normal(0, 1, (N_test, D)).astype(np.float32)
+    pca = PCA(n_components=K, whiten=True)
+    pca.fit(X_fit)
+    expected = pca.transform(X_test).astype(np.float32)
+    result = apply_pca(
+        X_test,
+        pca_mean=pca.mean_.astype(np.float32),
+        pca_components=pca.components_.astype(np.float32),
+        pca_explained_variance=pca.explained_variance_.astype(np.float32),
+    )
+    np.testing.assert_allclose(result, expected, atol=1e-4)
 
 
 def test_apply_min_similarity_fixed_threshold():
