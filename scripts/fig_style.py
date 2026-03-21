@@ -8,11 +8,11 @@ FIGSIZE_GRID   = (10, 7)
 DPI = 300
 
 MINERAL_COLORS = {
-    'olivine':     '#4caf50',
-    'lcp':         '#2196f3',
-    'hcp':         '#ff9800',
-    'plagioclase': '#9c27b0',
-    'other':       '#9e9e9e',
+    'olivine':     '#e53935',   # red
+    'lcp':         '#00bcd4',   # cyan
+    'hcp':         '#e91e63',   # magenta
+    'plagioclase': '#ffeb3b',   # yellow
+    'other':       '#9e9e9e',   # gray (unchanged)
 }
 
 LABEL_COLS = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
