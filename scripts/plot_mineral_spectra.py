@@ -183,6 +183,15 @@ def main():
     print('Collecting pixel spectra ...')
     spectra, wav = collect_spectra(TILES)
 
+    # Restrict to VNIR–SWIR range (400–2600 nm)
+    band_mask = (wav >= 400) & (wav <= 2600)
+    wav = wav[band_mask]
+    for mineral in CLASS_NAMES:
+        for tier in TIERS:
+            arr = spectra[mineral][tier]
+            if arr.shape[0] > 0:
+                spectra[mineral][tier] = arr[:, band_mask]
+
     print('Pixel counts per mineral / tier:')
     for mineral in CLASS_NAMES:
         counts = [spectra[mineral][t].shape[0] for t in TIERS]
