@@ -104,3 +104,47 @@ def test_write_thresholds_json(tmp_path):
     assert list(data['thresholds'].keys()) == ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
     assert len(data['thresholds']['olivine']) == 3
     assert 'morphology' in data
+
+
+def test_compute_otsu_thresholds_bimodal():
+    """Otsu splits a bimodal distribution; tier thresholds come from the signal cluster."""
+    from scripts.compute_global_thresholds import compute_otsu_thresholds
+
+    rng = np.random.default_rng(42)
+    # Class 0: 1000 noise pixels near 0.05, 200 signal pixels near 0.70
+    noise = rng.normal(0.05, 0.01, 1000).astype(np.float32)
+    signal = rng.normal(0.70, 0.05, 200).astype(np.float32)
+    vals = np.concatenate([noise, signal])
+    pooled = {0: vals, 1: vals, 2: vals, 3: vals, 4: vals}
+    CLASS_NAMES = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
+
+    thresholds, otsu_vals = compute_otsu_thresholds(pooled, CLASS_NAMES)
+
+    # Otsu should land somewhere between the two modes (noise ~0.05, signal ~0.70)
+    assert 0.06 < otsu_vals['olivine'] < 0.60
+    # All three tier thresholds must be above the Otsu split
+    for t in thresholds['olivine']:
+        assert t > otsu_vals['olivine']
+    # Tiers must be non-decreasing
+    t1, t2, t3 = thresholds['olivine']
+    assert t1 <= t2 <= t3
+
+
+def test_compute_otsu_thresholds_signal_percentiles():
+    """Tier thresholds are the 50th, 67th, 90th percentiles of above-Otsu pixels."""
+    from scripts.compute_global_thresholds import compute_otsu_thresholds
+    from skimage.filters import threshold_otsu
+
+    rng = np.random.default_rng(7)
+    noise = rng.normal(0.05, 0.01, 800).astype(np.float32)
+    signal = rng.normal(0.60, 0.08, 200).astype(np.float32)
+    vals = np.concatenate([noise, signal])
+    pooled = {0: vals, 1: vals, 2: vals, 3: vals, 4: vals}
+    CLASS_NAMES = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
+
+    thresholds, otsu_vals = compute_otsu_thresholds(pooled, CLASS_NAMES)
+
+    otsu = otsu_vals['olivine']
+    signal_pixels = vals[vals > otsu]
+    expected = [float(np.percentile(signal_pixels, p)) for p in [50, 67, 90]]
+    np.testing.assert_allclose(thresholds['olivine'], expected, rtol=1e-5)
