@@ -195,7 +195,7 @@ def main():
 
     # Mineral legend
     mineral_handles = [
-        mpatches.Patch(facecolor=MINERAL_COLORS[m], label=m.capitalize(), alpha=0.85)
+        mpatches.Patch(facecolor=MINERAL_COLORS[m], label=m.capitalize())
         for m in MINERALS
     ]
     # Confidence tier legend
