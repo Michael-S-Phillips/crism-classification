@@ -29,8 +29,8 @@ from scripts.fig_style import DPI
 
 PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROBS = [
-    '/tmp/t0435_mrral_40s323_0327_4_probs.npz',
-    '/tmp/t0434_mrral_40s318_0327_4_probs.npz',
+    '/tmp/t0435_proto_pca95_probs.npz',
+    '/tmp/t0434_proto_pca95_probs.npz',
 ]
 CLASS_NAMES = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
 SIGNAL_PERCENTILES = [50, 67, 90]
