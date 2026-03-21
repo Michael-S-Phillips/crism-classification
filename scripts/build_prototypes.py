@@ -115,6 +115,10 @@ def compute_prototypes(
                 f"Widen --confidence_tiers or --splits."
             )
         n_pixels[name] = embs.shape[0]
+        # Normalize each embedding to unit sphere before averaging (Fréchet mean)
+        norms = np.linalg.norm(embs, axis=1, keepdims=True)
+        norms = np.where(norms < 1e-8, 1.0, norms)
+        embs = embs / norms
         mean_emb = embs.mean(axis=0)
         norm = np.linalg.norm(mean_emb)
         if norm < 1e-8:

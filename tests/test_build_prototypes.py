@@ -123,11 +123,12 @@ def test_filter_parquet_preserves_original_index():
     n = 30
     df = pd.DataFrame({
         'split': ['train'] * n,
-        'confidence_tier': ['High'] * 10 + ['Moderate'] * 10 + ['Low'] * 10,
+        'confidence_tier': ['Low'] * 10 + ['High'] * 10 + ['Moderate'] * 10,
         'olivine_t1': np.zeros(n), 'olivine_t2': np.zeros(n),
         'lcp': np.zeros(n), 'hcp': np.zeros(n),
         'plagioclase': np.zeros(n), 'other': np.zeros(n),
     })
     df_filtered = filter_parquet(df, splits=['train'], confidence_tiers=['High'])
-    assert list(df_filtered.index) == list(range(10)), \
+    # High rows are at positions 10–19; reset_index would give 0–9 instead
+    assert list(df_filtered.index) == list(range(10, 20)), \
         "filter_parquet must not reset_index; memmap lookup depends on original positions"
