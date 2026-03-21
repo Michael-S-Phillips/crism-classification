@@ -39,20 +39,21 @@ Both panels share a grey background showing the tile valid-mask extent, axes tic
 
 ## Label Panel
 
-**Source:** `/mnt/mrdr/categorized_mineral_units/T043X.gpkg`, single layer (same name as tile ID).
+**Source:** `/mnt/mrdr/categorized_mineral_units/T0435.gpkg` and `T0434.gpkg`, one GeoPackage per tile, single layer each (layer name = tile ID).
 
 **Color:** parsed from the `Category` column (e.g. `"hcp + olivine (Moderate)"`). Steps:
 
 1. Extract tier from trailing parenthetical: `High`, `Moderate`, or `Low`.
 2. Strip tier text to get mineral string; split on ` + ` to get components.
-3. Map each component to one of the 5 canonical classes:
-   - `"olivine"`, `"Type 1 olivine"`, `"Type 2 olivine"` → `olivine`
+3. Normalise each component to lowercase, then map to one of the 5 canonical classes:
+   - `"olivine"`, `"type 1 olivine"`, `"type 2 olivine"` → `olivine`
    - `"lcp"` → `lcp`
    - `"hcp"` → `hcp`
    - `"plagioclase"` → `plagioclase`
    - `"alteration"`, `"red slope"`, `"other"`, `"bland"`, `"denom"`, `"uncertain"` → `other`
+   - Any unrecognised token → `other` (fail-safe)
 4. **Single-class polygon:** use that mineral's color from `MINERAL_COLORS`.
-5. **Multi-class polygon:** blend colors by averaging the RGB components of the constituent minerals (e.g. `hcp + olivine` → average of magenta and red ≈ deep pink; `alteration + hcp + olivine` → average of gray, magenta, red).
+5. **Multi-class polygon:** blend colors by averaging the RGB components of the constituent minerals (e.g. `hcp + olivine` → average of magenta and red ≈ deep pink; `alteration + hcp + olivine` → average of gray, magenta, red). The returned mineral list from `parse_category` preserves input token order (not canonical order); downstream code must not rely on ordering.
 6. **Opacity:** `High`=0.9, `Moderate`=0.65, `Low`=0.4.
 
 This logic lives in two helper functions in the script:
@@ -73,14 +74,14 @@ def blend_mineral_color(mineral_names: list[str]) -> tuple[float, float, float]:
 
 **Opacity:** confidence tier column → `{1: 0.4, 2: 0.65, 3: 0.9}` (same scale as labels).
 
-**Rendering order:** olivine, lcp, hcp, plagioclase, other (less common minerals on top).
+**Rendering order (bottom to top):** olivine, lcp, hcp, plagioclase, other — so less common classes are not buried under the dominant olivine signal.
 
 ## Legends
 
 Two legends placed below the figure:
 
 1. **Mineral legend:** one patch per canonical mineral class using `MINERAL_COLORS` (solid, full opacity).
-2. **Confidence tier legend:** three patches using neutral grey at the three opacity levels, labelled `Low`, `Moderate/Tier 1–2`, `High/Tier 3`.
+2. **Confidence tier legend:** three patches using neutral grey at the three opacity levels, labelled `Low / Tier 1`, `Moderate / Tier 2`, `High / Tier 3`.
 
 ## Script
 
@@ -104,7 +105,7 @@ TILES = [
 ]
 ```
 
-Output: `reports/fig_labels_vs_predicted.png` at `DPI=150`.
+Output: `reports/fig_labels_vs_predicted.png` at `DPI` from `fig_style.DPI` (300).
 
 ## Tests
 
@@ -114,6 +115,8 @@ Output: `reports/fig_labels_vs_predicted.png` at `DPI=150`.
 - `test_parse_category_mixed` — `"hcp + olivine (Moderate)"` → `(['hcp', 'olivine'], 'Moderate')`
 - `test_parse_category_three_way` — `"alteration + hcp + olivine (Low)"` → `(['other', 'hcp', 'olivine'], 'Low')`
 - `test_parse_category_type_olivine` — `"Type 2 olivine (High)"` → `(['olivine'], 'High')`
+- `test_parse_category_other_uppercase` — `"Other (High)"` → `(['other'], 'High')`
+- `test_parse_category_red_slope` — `"red slope (Low)"` → `(['other'], 'Low')` (two-word token, not split further)
 - `test_blend_single` — single mineral returns its exact MINERAL_COLORS RGB
 - `test_blend_two` — two minerals return the component-wise average of their RGB values
 
