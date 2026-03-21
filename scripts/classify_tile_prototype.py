@@ -43,6 +43,7 @@ from models.spatial_spectral_transformer import (
     SpatialSpectralTransformer,
 )
 from scripts.build_prototypes import normalize_patches, load_encoder
+from scripts.classify_tile_supervised import load_tile, save_probs
 from scripts.fig_style import MINERAL_COLORS
 
 # ── constants ────────────────────────────────────────────────────────────────
@@ -113,21 +114,7 @@ def load_prototype_npz(path: str) -> Tuple[np.ndarray, List[str], str]:
     return prototypes, class_names, encoder_ckpt
 
 
-# ── tile loading & patch extraction ──────────────────────────────────────────
-
-def load_tile(img_path: str):
-    """Load mrral tile; returns (data HWC, valid_mask HW, transform, crs)."""
-    import rasterio
-    with rasterio.open(img_path) as src:
-        data = src.read(list(range(1, N_BANDS + 1))).astype(np.float32)
-        transform = src.transform
-        crs = src.crs
-    nodata_mask = (data == NODATA) | ~np.isfinite(data)
-    data = np.clip(data, 0.0, CLIP_MAX)
-    data[nodata_mask] = 0.0
-    valid_mask = ~nodata_mask.any(axis=0)
-    return data.transpose(1, 2, 0), valid_mask, transform, crs
-
+# ── patch extraction ─────────────────────────────────────────────────────────
 
 def extract_patches_batched(tile: np.ndarray, batch_size: int = 512):
     """Yield (patches, flat_indices) batches over all tile pixels."""
@@ -304,7 +291,6 @@ def main():
 
     # Save probs from proto_a
     if args.save_probs:
-        from scripts.classify_tile_supervised import save_probs
         save_probs(args.save_probs, sims_a, valid_mask, transform_arr, crs_wkt)
         print(f'Saved probs → {args.save_probs}')
 
