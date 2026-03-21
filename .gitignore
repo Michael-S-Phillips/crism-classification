@@ -16,3 +16,4 @@ wandb/
 *.pkl
 .worktrees/
 data/vector/
+data/prototypes/
