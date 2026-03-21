@@ -120,6 +120,14 @@ Output: `reports/fig_labels_vs_predicted.png` at `DPI` from `fig_style.DPI` (300
 - `test_blend_single` — single mineral returns its exact MINERAL_COLORS RGB
 - `test_blend_two` — two minerals return the component-wise average of their RGB values
 
+## classify_tile_prototype.py: --min_similarity flag
+
+Add a `--min_similarity` argument to `scripts/classify_tile_prototype.py`. Pixels whose maximum cosine similarity across all classes falls below this value are left unclassified (similarity map set to 0.0 for all classes at that pixel, on top of the existing `valid_mask` zeroing).
+
+**Default behaviour:** compute the 10th percentile of `max(similarity, axis=-1)` across all valid pixels in the tile, and use that as the threshold. This means the least-confident 10% of pixels go unclassified. Pass `--min_similarity 0.0` to disable (backward-compatible with current behaviour).
+
+The predicted panel in the comparison figure already shows unclassified pixels as grey background because the vectroscopy GeoPackages only contain polygons above the tier-1 threshold — no additional change needed to the figure script.
+
 ## Not in Scope
 
 - Re-running `vectorize_tile_minerals.py` — existing `data/vector/` GeoPackages already contain all 5 mineral classes and are used as-is.
