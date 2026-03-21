@@ -184,7 +184,7 @@ def main():
     spectra, wav = collect_spectra(TILES)
 
     # Restrict to VNIR–SWIR range (400–2600 nm)
-    band_mask = (wav >= 400) & (wav <= 2600)
+    band_mask = (wav >= 500) & (wav <= 2600)
     wav = wav[band_mask]
     for mineral in CLASS_NAMES:
         for tier in TIERS:
