@@ -28,7 +28,7 @@ Usage:
 import argparse
 import os
 import sys
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import numpy as np
 import torch
@@ -38,10 +38,6 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from models.spatial_spectral_transformer import (
-    SpatialSpectralClassifier,
-    SpatialSpectralTransformer,
-)
 from scripts.build_prototypes import normalize_patches, load_encoder
 from scripts.classify_tile_supervised import load_tile, save_probs
 from scripts.fig_style import MINERAL_COLORS
@@ -109,6 +105,10 @@ def load_prototype_npz(path: str) -> Tuple[np.ndarray, List[str], str]:
     """
     data = np.load(path, allow_pickle=True)
     prototypes = data['prototypes']
+    if prototypes.ndim != 2 or prototypes.shape[1] != 128:
+        raise ValueError(
+            f"Unexpected prototypes shape {prototypes.shape}; expected (n_classes, 128)"
+        )
     class_names = [str(x) for x in data['class_names']]
     encoder_ckpt = str(data['encoder_ckpt'])
     return prototypes, class_names, encoder_ckpt
@@ -224,6 +224,7 @@ def make_comparison_figure(
 
     # Bottom rows: per-class similarity heatmaps
     for enc_i, (enc_label, sims_hw5) in enumerate(panels_sims):
+        last_ax = None
         for ci, class_name in enumerate(CLASS_NAMES):
             ax = fig.add_subplot(gs[1 + enc_i, ci])
             im = ax.imshow(sims_hw5[:, :, ci], vmin=0, vmax=1, cmap='viridis', aspect='auto')
@@ -232,7 +233,8 @@ def make_comparison_figure(
             if ci == 0:
                 ax.set_ylabel(enc_label, fontsize=9, rotation=90, labelpad=4)
             ax.axis('off')
-        plt.colorbar(im, ax=fig.axes[-1], fraction=0.03, pad=0.02)
+            last_ax = ax
+        plt.colorbar(im, ax=last_ax, fraction=0.03, pad=0.02)
 
     return fig
 
