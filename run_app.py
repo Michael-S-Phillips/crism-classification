@@ -1,5 +1,7 @@
 """Entry point: python run_app.py --img <mrral.img> --gpkg <mineral_map.gpkg>"""
-import argparse, uvicorn
+import argparse
+import os
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -9,10 +11,10 @@ def main():
     parser.add_argument('--port', default=8765, type=int)
     args = parser.parse_args()
 
-    import os
     os.environ['CRISM_IMG']  = args.img
     os.environ['CRISM_GPKG'] = args.gpkg
 
+    import uvicorn
     uvicorn.run('app.main:app', host=args.host, port=args.port, reload=False)
 
 if __name__ == '__main__':
