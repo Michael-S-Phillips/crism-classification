@@ -52,7 +52,7 @@ TILES = [
 ]
 
 MINERALS = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
-TIER_ALPHA = {1: 0.40, 2: 0.65, 3: 0.90}
+TIER_ALPHA = {1: 0.25, 2: 0.42, 3: 0.58, 4: 0.75, 5: 0.90}
 LABEL_TIER_ALPHA = {'Low': 0.40, 'Moderate': 0.65, 'High': 0.90}
 
 # Canonical token mapping (lowercase keys)
@@ -200,9 +200,8 @@ def main():
     ]
     # Confidence tier legend
     tier_handles = [
-        mpatches.Patch(facecolor='#888888', alpha=TIER_ALPHA[1], label='Low / Tier 1'),
-        mpatches.Patch(facecolor='#888888', alpha=TIER_ALPHA[2], label='Moderate / Tier 2'),
-        mpatches.Patch(facecolor='#888888', alpha=TIER_ALPHA[3], label='High / Tier 3'),
+        mpatches.Patch(facecolor='#888888', alpha=TIER_ALPHA[t], label=f'Tier {t}')
+        for t in sorted(TIER_ALPHA)
     ]
     fig.legend(handles=mineral_handles + tier_handles,
                loc='lower center', ncol=8, fontsize=9,

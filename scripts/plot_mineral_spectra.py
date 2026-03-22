@@ -42,9 +42,9 @@ TILES = [
 ]
 
 CLASS_NAMES = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
-TIERS = [1, 2, 3]
-TIER_COLORS = ['#43a047', '#fb8c00', '#e53935']   # tier 1 / 2 / 3
-TIER_LABELS = ['Tier 1', 'Tier 2', 'Tier 3']
+TIERS = [1, 2, 3, 4, 5]
+TIER_COLORS = ['#81c784', '#43a047', '#fb8c00', '#e53935', '#c62828']  # tier 1–5
+TIER_LABELS = ['Tier 1', 'Tier 2', 'Tier 3', 'Tier 4', 'Tier 5']
 CRISM_NODATA = 65535.0
 MAX_PIXELS_PER_CLASS_TIER = 10_000   # cap to keep memory bounded
 BAD_BAND_RANGES = [(1000, 1100)]     # nm — detector gap / order-sorting artefact
@@ -202,8 +202,8 @@ def main():
 
     print('Pixel counts per mineral / tier:')
     for mineral in CLASS_NAMES:
-        counts = [spectra[mineral][t].shape[0] for t in TIERS]
-        print(f'  {mineral}: tier1={counts[0]:,}  tier2={counts[1]:,}  tier3={counts[2]:,}')
+        parts = '  '.join(f'tier{t}={spectra[mineral][t].shape[0]:,}' for t in TIERS)
+        print(f'  {mineral}: {parts}')
 
     fig, axes = plt.subplots(5, 2, figsize=(13, 17), constrained_layout=True)
     fig.suptitle(

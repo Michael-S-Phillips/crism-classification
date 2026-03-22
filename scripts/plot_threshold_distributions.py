@@ -33,8 +33,8 @@ PROBS = [
     '/tmp/t0434_proto_pca95_probs.npz',
 ]
 CLASS_NAMES = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
-SIGNAL_PERCENTILES = [50, 67, 90]
-TIER_COLORS = ['#43a047', '#fb8c00', '#e53935']   # tier 1 / 2 / 3
+SIGNAL_PERCENTILES = [50, 67, 90, 95, 99]
+TIER_COLORS = ['#81c784', '#43a047', '#fb8c00', '#e53935', '#c62828']  # tier 1–5
 
 
 def main():

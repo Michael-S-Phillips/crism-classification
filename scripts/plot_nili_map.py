@@ -58,7 +58,7 @@ GRID = [
 ]
 
 MINERALS = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
-TIER_ALPHA = {1: 0.40, 2: 0.65, 3: 0.90}
+TIER_ALPHA = {1: 0.25, 2: 0.42, 3: 0.58, 4: 0.75, 5: 0.90}
 
 
 def main():
@@ -78,9 +78,8 @@ def main():
         for m in MINERALS
     ]
     tier_handles = [
-        mpatches.Patch(facecolor='#888888', alpha=TIER_ALPHA[1], label='Tier 1 (low)'),
-        mpatches.Patch(facecolor='#888888', alpha=TIER_ALPHA[2], label='Tier 2 (med)'),
-        mpatches.Patch(facecolor='#888888', alpha=TIER_ALPHA[3], label='Tier 3 (high)'),
+        mpatches.Patch(facecolor='#888888', alpha=TIER_ALPHA[t], label=f'Tier {t}')
+        for t in sorted(TIER_ALPHA)
     ]
     fig.legend(handles=mineral_handles + tier_handles,
                loc='lower center', ncol=8, fontsize=9,

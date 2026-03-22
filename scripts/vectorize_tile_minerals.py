@@ -6,7 +6,7 @@ applies global percentile thresholds from compute_global_thresholds.py, and writ
 a GeoPackage with one layer per mineral class (olivine, lcp, hcp, plagioclase).
 
 Each polygon carries:
-  confidence (int 1-3): model-driven tier (1=low/33rd pctile, 2=medium/67th, 3=high/90th)
+  confidence (int 1-5): model-driven tier (1=p50, 2=p67, 3=p90, 4=p95, 5=p99 of above-Otsu signal)
   mineral (str): class name
   threshold (float): lower probability bound for this polygon's tier
   mean_prob, std_prob, min_prob, max_prob, median_prob: zonal statistics
@@ -294,15 +294,16 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
 
     for ci, mineral in enumerate(CLASS_NAMES):
-        t1, t2, t3 = thresholds_cfg[mineral]
-        print(f'Vectorizing {mineral} (thresholds: {t1:.4f}/{t2:.4f}/{t3:.4f})...')
+        tiers = thresholds_cfg[mineral]
+        tier_str = '/'.join(f'{t:.4f}' for t in tiers)
+        print(f'Vectorizing {mineral} (thresholds: {tier_str})...')
 
         prob_2d = probs[:, :, ci].copy().astype(np.float32)
 
         gdf = vectorize_mineral(
             prob_2d=prob_2d,
             valid_mask=valid_mask,
-            thresholds=[t1, t2, t3],
+            thresholds=tiers,
             mineral=mineral,
             input_crs=input_crs,
             input_transform=input_transform,
@@ -311,13 +312,14 @@ def main():
         )
 
         if gdf.empty:
-            print(f'  {mineral}: no polygons detected above threshold {t1:.4f}')
+            print(f'  {mineral}: no polygons detected above threshold {tiers[0]:.4f}')
             continue
 
-        print(f'  {mineral}: {len(gdf)} polygons '
-              f'(tier 1: {(gdf["confidence"]==1).sum()}, '
-              f'tier 2: {(gdf["confidence"]==2).sum()}, '
-              f'tier 3: {(gdf["confidence"]==3).sum()})')
+        tier_counts = '  '.join(
+            f'tier {i+1}: {(gdf["confidence"]==i+1).sum()}'
+            for i in range(len(tiers))
+        )
+        print(f'  {mineral}: {len(gdf)} polygons  ({tier_counts})')
 
         gdf.to_file(args.out, layer=mineral, driver='GPKG')
 

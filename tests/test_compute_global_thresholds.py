@@ -122,12 +122,12 @@ def test_compute_otsu_thresholds_bimodal():
 
     # Otsu should land somewhere between the two modes (noise ~0.05, signal ~0.70)
     assert 0.06 < otsu_vals['olivine'] < 0.60
-    # All three tier thresholds must be above the Otsu split
+    # All 5 tier thresholds must be above the Otsu split
+    assert len(thresholds['olivine']) == 5
     for t in thresholds['olivine']:
         assert t > otsu_vals['olivine']
     # Tiers must be non-decreasing
-    t1, t2, t3 = thresholds['olivine']
-    assert t1 <= t2 <= t3
+    assert thresholds['olivine'] == sorted(thresholds['olivine'])
 
 
 def test_compute_otsu_thresholds_signal_percentiles():
@@ -146,5 +146,5 @@ def test_compute_otsu_thresholds_signal_percentiles():
 
     otsu = otsu_vals['olivine']
     signal_pixels = vals[vals > otsu]
-    expected = [float(np.percentile(signal_pixels, p)) for p in [50, 67, 90]]
+    expected = [float(np.percentile(signal_pixels, p)) for p in [50, 67, 90, 95, 99]]
     np.testing.assert_allclose(thresholds['olivine'], expected, rtol=1e-5)

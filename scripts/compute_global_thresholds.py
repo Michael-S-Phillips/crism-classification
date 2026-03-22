@@ -56,14 +56,14 @@ def compute_otsu_thresholds(pooled: Dict[int, np.ndarray],
 
     Steps:
       1. Otsu's threshold splits noise vs. signal pixels.
-      2. p50 / p67 / p90 of above-Otsu pixels become tier 1 / 2 / 3 thresholds.
+      2. p50 / p67 / p90 / p95 / p99 of above-Otsu pixels become tier 1–5 thresholds.
 
     Args:
         pooled: dict from pool_valid_probs()
         class_names: list of class name strings in class-index order
 
     Returns:
-        thresholds: dict name → [p50_signal, p67_signal, p90_signal]
+        thresholds: dict name → [p50, p67, p90, p95, p99] signal percentile values
         otsu_values: dict name → float (Otsu split, stored for diagnostics)
     """
     thresholds = {}
@@ -74,7 +74,7 @@ def compute_otsu_thresholds(pooled: Dict[int, np.ndarray],
         signal = vals[vals > otsu]
         if len(signal) == 0:
             signal = vals          # degenerate fallback
-        t = [float(np.percentile(signal, p)) for p in [50, 67, 90]]
+        t = [float(np.percentile(signal, p)) for p in [50, 67, 90, 95, 99]]
         thresholds[name] = t
         otsu_values[name] = otsu
         n_sig = len(signal)
@@ -158,10 +158,10 @@ def main():
     tiles_used = [_npz_to_tile_id(p) for p in args.probs]
 
     if args.otsu:
-        print('Computing Otsu + signal-distribution (p50/p67/p90) thresholds per class:')
+        print('Computing Otsu + signal-distribution (p50/p67/p90/p95/p99) thresholds per class:')
         thresholds, otsu_vals = compute_otsu_thresholds(pooled, CLASS_NAMES)
         write_thresholds_json(args.out, thresholds, tiles_used,
-                              [50, 67, 90], DEFAULT_MORPHOLOGY,
+                              [50, 67, 90, 95, 99], DEFAULT_MORPHOLOGY,
                               otsu_thresholds=otsu_vals)
     else:
         print(f'Computing {args.percentiles} percentile thresholds per class:')

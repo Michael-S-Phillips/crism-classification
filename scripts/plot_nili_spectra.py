@@ -69,8 +69,8 @@ def main():
 
     print('Pixel counts per mineral / tier:')
     for mineral in CLASS_NAMES:
-        counts = [spectra[mineral][t].shape[0] for t in TIERS]
-        print(f'  {mineral}: tier1={counts[0]:,}  tier2={counts[1]:,}  tier3={counts[2]:,}')
+        parts = '  '.join(f'tier{t}={spectra[mineral][t].shape[0]:,}' for t in TIERS)
+        print(f'  {mineral}: {parts}')
 
     fig, axes = plt.subplots(5, 2, figsize=(13, 17), constrained_layout=True)
     fig.suptitle(
