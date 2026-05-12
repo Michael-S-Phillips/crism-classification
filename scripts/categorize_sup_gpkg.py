@@ -51,8 +51,17 @@ def categorize_minerals(row) -> str:
     Build a Category string ("hcp + olivine (Moderate)") from a row's
     Mineral ID 1-4 columns.
 
-    Verbatim port of the categorize_minerals function in
-    /mnt/mrdr/categorize_gpkg_ratio_files.ipynb. Behaviour summary:
+    Faithful port of the categorize_minerals function in
+    /mnt/mrdr/categorize_gpkg_ratio_files.ipynb, with two safety guards added
+    over the notebook source: NaN-before-.lower() (the notebook called
+    row[col].lower() before its pd.isna check, which would crash on a NaN
+    float; the guard is moved here to run first) and an explicit empty-string
+    skip after stripping (the notebook would fall through with mineral="" and
+    produce the same no-op, but the intent is now explicit). Neither guard
+    changes output for any input the existing 40 categorized files were
+    produced from.
+
+    Behaviour summary:
       - Default tier = "High".
       - "±" in Mineral ID 1 → tier "Low"; in 2-4 → "Moderate" unless already Low.
       - "uncertain" in Mineral ID 1 → "Low"; in 2-4 → "Moderate" unless already Low.

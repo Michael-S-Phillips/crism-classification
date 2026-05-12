@@ -97,6 +97,18 @@ def test_nan_id_is_skipped():
     assert categorize_minerals(row) == "hcp (High)"
 
 
+def test_alteration_in_id1_stays_high():
+    # 'alteration' in ID 1 does NOT drop tier (notebook rule:
+    # alteration only forces Low when in non-ID1 cells).
+    assert categorize_minerals(_row(id1="alteration")) == "alteration (High)"
+
+
+def test_substring_triggers_dont_append():
+    # 'felsic uncertain' is not an exact MINERALS token, so no category
+    # is appended; both substrings still trigger Low.
+    assert categorize_minerals(_row(id1="felsic uncertain")) == "Other (Low)"
+
+
 # --- is_contaminated_denom ------------------------------------------------
 
 def test_denom_alone_is_not_contaminated():
@@ -127,3 +139,13 @@ def test_denom_case_insensitive():
 def test_denom_with_whitespace_is_not_contaminated():
     # Whitespace-only secondary cells don't count as contamination.
     assert is_contaminated_denom(_row(id1="denom", id2="  ")) is False
+
+
+def test_nan_id1_is_not_contaminated():
+    # NaN in Mineral ID 1 short-circuits the denom check.
+    assert is_contaminated_denom(_row(id1=float("nan"), id2="hcp")) is False
+
+
+def test_denom_with_whitespace_around_token_still_matches():
+    # Strip + lowercase on Mineral ID 1 means '  DENOM  ' is still treated as denom.
+    assert is_contaminated_denom(_row(id1=" denom ", id2="hcp")) is True
