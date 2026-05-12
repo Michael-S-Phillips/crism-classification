@@ -230,3 +230,78 @@ def process_gpkg(input_path: str, output_path: str) -> dict:
         "rows_out": len(gdf),
         "contaminated_dropped": n_contaminated,
     }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Categorize raw supplementary GPKG files (no Category column) "
+            "into the schema used by the existing categorized_mineral_units/ files."
+        )
+    )
+    parser.add_argument(
+        "--input_dir",
+        default="/mnt/mrdr/categorized_mineral_units/sup",
+        help="Directory containing raw sup .gpkg files (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--output_dir",
+        default="/mnt/mrdr/categorized_mineral_units",
+        help="Directory to write categorized .gpkg files (default: %(default)s)",
+    )
+    args = parser.parse_args()
+
+    if not os.path.isdir(args.input_dir):
+        logger.error("Input dir does not exist: %s", args.input_dir)
+        return 2
+    if not os.path.isdir(args.output_dir):
+        logger.error("Output dir does not exist: %s", args.output_dir)
+        return 2
+
+    # 1. Pre-flight conflict check. Abort before doing any work if any
+    #    target filename already exists.
+    conflicts = find_conflicts(args.input_dir, args.output_dir)
+    if conflicts:
+        logger.error(
+            "Aborting: %d output filename(s) already exist in %s. "
+            "Resolve manually (different files mean different annotation sessions; "
+            "no safe auto-merge is possible).",
+            len(conflicts), args.output_dir,
+        )
+        for fname, target in conflicts:
+            logger.error("  %s already exists at %s", fname, target)
+        return 1
+
+    # 2. Process each input file.
+    inputs = sorted(
+        os.path.join(args.input_dir, f)
+        for f in os.listdir(args.input_dir)
+        if f.endswith(".gpkg")
+    )
+    if not inputs:
+        logger.warning("No .gpkg files found in %s — nothing to do.", args.input_dir)
+        return 0
+
+    grand_in = grand_out = grand_drop = 0
+    for src in inputs:
+        fname = os.path.basename(src)
+        dst = os.path.join(args.output_dir, fname)
+        stats = process_gpkg(src, dst)
+        verify_categories_parsable(dst)
+        grand_in += stats["rows_in"]
+        grand_out += stats["rows_out"]
+        grand_drop += stats["contaminated_dropped"]
+        logger.info(
+            "%s: %d rows → %d categorized, %d contaminated denoms skipped",
+            fname, stats["rows_in"], stats["rows_out"], stats["contaminated_dropped"],
+        )
+
+    logger.info(
+        "Done. %d files processed, %d total rows in, %d out, %d contaminated denoms dropped.",
+        len(inputs), grand_in, grand_out, grand_drop,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
