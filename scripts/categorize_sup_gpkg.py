@@ -141,6 +141,23 @@ def is_contaminated_denom(row) -> bool:
     return False
 
 
+def find_conflicts(input_dir: str, output_dir: str) -> List[Tuple[str, str]]:
+    """
+    Return a list of (filename, existing_target_path) for every .gpkg in
+    input_dir whose filename already exists in output_dir.
+
+    Empty list means safe to write.
+    """
+    conflicts: List[Tuple[str, str]] = []
+    for fname in sorted(os.listdir(input_dir)):
+        if not fname.endswith(".gpkg"):
+            continue
+        target = os.path.join(output_dir, fname)
+        if os.path.exists(target):
+            conflicts.append((fname, target))
+    return conflicts
+
+
 def process_gpkg(input_path: str, output_path: str) -> dict:
     """
     Read a sup-style GeoPackage, drop contaminated-denom rows, synthesise the

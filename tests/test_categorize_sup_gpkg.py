@@ -211,3 +211,38 @@ def test_process_gpkg_preserves_existing_columns(tmp_path):
     out = gpd.read_file(str(dst))
     for col in ("Mineral ID 1", "Mineral ID 2", "Mineral ID 3", "Mineral ID 4", "geometry"):
         assert col in out.columns
+
+
+# --- find_conflicts -------------------------------------------------------
+
+from scripts.categorize_sup_gpkg import find_conflicts
+
+
+def test_find_conflicts_empty_when_no_overlap(tmp_path):
+    src_dir = tmp_path / "in"; src_dir.mkdir()
+    dst_dir = tmp_path / "out"; dst_dir.mkdir()
+    (src_dir / "A.gpkg").touch()
+    (src_dir / "B.gpkg").touch()
+
+    assert find_conflicts(str(src_dir), str(dst_dir)) == []
+
+
+def test_find_conflicts_returns_collisions(tmp_path):
+    src_dir = tmp_path / "in"; src_dir.mkdir()
+    dst_dir = tmp_path / "out"; dst_dir.mkdir()
+    (src_dir / "A.gpkg").touch()
+    (src_dir / "B.gpkg").touch()
+    (dst_dir / "A.gpkg").touch()   # collides
+
+    conflicts = find_conflicts(str(src_dir), str(dst_dir))
+    assert conflicts == [("A.gpkg", str(dst_dir / "A.gpkg"))]
+
+
+def test_find_conflicts_ignores_non_gpkg(tmp_path):
+    src_dir = tmp_path / "in"; src_dir.mkdir()
+    dst_dir = tmp_path / "out"; dst_dir.mkdir()
+    (src_dir / "A.gpkg").touch()
+    (src_dir / "notes.txt").touch()  # not a gpkg
+    (dst_dir / "notes.txt").touch()  # collides but irrelevant
+
+    assert find_conflicts(str(src_dir), str(dst_dir)) == []
