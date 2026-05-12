@@ -24,13 +24,14 @@ def main():
     pairs = find_mrral_pairs(cfg['gpkg_dir'], cfg['data_root'])
     logging.info(f"Found {len(pairs)} mrral tile pairs")
 
-    # Re-use same train/val/test split as mrrsu parquet — join on tile+polygon+row+col
+    # Re-use same train/val/test split as mrrsu parquet — join on tile+polygon+row+col.
+    # Load only the join keys + split column to keep peak memory low.
     mrrsu_parquet = os.path.join(cfg['output_dir'], 'pixels.parquet')
-    mrrsu_df = pd.read_parquet(mrrsu_parquet)
-    split_map = mrrsu_df.set_index(
-        ['tile_id', 'polygon_id', 'pixel_row', 'pixel_col']
-    )['split'].to_dict()
-    logging.info(f"Loaded split map from {mrrsu_parquet} ({len(split_map)} entries)")
+    mrrsu_splits = pd.read_parquet(
+        mrrsu_parquet,
+        columns=['tile_id', 'polygon_id', 'pixel_row', 'pixel_col', 'split'],
+    )
+    logging.info(f"Loaded {len(mrrsu_splits)} split entries from {mrrsu_parquet}")
 
     all_records = []
     for i, (tile_id, gpkg_path, mrral_path) in enumerate(pairs):
@@ -40,16 +41,19 @@ def main():
         all_records.extend(records)
 
     df = pd.DataFrame(all_records)
+    del all_records
     logging.info(f"Total pixels before split assignment: {len(df)}")
 
-    # Assign split from mrrsu parquet; default 'train' for any new pixels
-    df['split'] = df.apply(
-        lambda r: split_map.get(
-            (r['tile_id'], int(r['polygon_id']), int(r['pixel_row']), int(r['pixel_col'])),
-            'train'
-        ),
-        axis=1
+    # Vectorised left-join to assign split. Pixels not present in the mrrsu
+    # parquet default to 'train'. Using merge instead of df.apply(axis=1) avoids
+    # per-row Python lambdas — required for the 1.7M-row scale here (df.apply
+    # was triggering the OOM killer).
+    df = df.merge(
+        mrrsu_splits,
+        on=['tile_id', 'polygon_id', 'pixel_row', 'pixel_col'],
+        how='left',
     )
+    df['split'] = df['split'].fillna('train')
 
     out = os.path.join(cfg['output_dir'], 'mrral_pixels.parquet')
     df.to_parquet(out, index=False)
