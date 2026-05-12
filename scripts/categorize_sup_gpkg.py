@@ -19,11 +19,16 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sys
 from typing import List, Tuple
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from data.label_parser import _TOKEN_MAP  # noqa: E402, WPS437
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -45,6 +50,11 @@ MINERALS = {
 # Mineral-ID column names used by both the sup files and the existing
 # categorized files.
 ID_COLS = ("Mineral ID 1", "Mineral ID 2", "Mineral ID 3", "Mineral ID 4")
+
+# Compiled regex for stripping confidence parentheticals, e.g. "(High)".
+_CONF_RE = re.compile(r"\(\w+\)")
+# Tuple of all token keys known to the downstream label parser.
+_KNOWN_TOKEN_KEYS = tuple(_TOKEN_MAP.keys())
 
 
 def categorize_minerals(row) -> str:
@@ -156,6 +166,38 @@ def find_conflicts(input_dir: str, output_dir: str) -> List[Tuple[str, str]]:
         if os.path.exists(target):
             conflicts.append((fname, target))
     return conflicts
+
+
+def verify_categories_parsable(gpkg_path: str) -> None:
+    """
+    Open a written GeoPackage and confirm every Category string is a value
+    the downstream pipeline understands — every "+"-separated token (after
+    stripping the (Tier) suffix) must contain at least one substring from
+    the parser's _TOKEN_MAP keys.
+
+    The parser uses substring matching, so e.g. "hcp" matches the "hcp"
+    key. Known non-target tokens ("alteration", "red slope", "spinel",
+    "pyroxene") are also accepted — they're in _TOKEN_MAP with empty
+    contributions and are deliberate "ignore me" markers.
+
+    Raises ValueError on the first row with an unknown token.
+    """
+    gdf = gpd.read_file(gpkg_path)
+    if "Category" not in gdf.columns:
+        raise ValueError(f"{gpkg_path}: no Category column present")
+
+    for idx, cat in enumerate(gdf["Category"].tolist()):
+        if cat is None or (isinstance(cat, float) and np.isnan(cat)) or cat == "":
+            raise ValueError(f"{gpkg_path}: row {idx} has empty Category")
+        mineral_part = _CONF_RE.sub("", str(cat)).strip().lower()
+        for tok in (t.strip() for t in mineral_part.split("+")):
+            if not tok:
+                continue
+            if not any(key in tok for key in _KNOWN_TOKEN_KEYS):
+                raise ValueError(
+                    f"{gpkg_path}: row {idx} has unparseable Category {cat!r} "
+                    f"— token {tok!r} not in label_parser vocabulary"
+                )
 
 
 def process_gpkg(input_path: str, output_path: str) -> dict:

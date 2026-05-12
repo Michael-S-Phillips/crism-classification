@@ -246,3 +246,35 @@ def test_find_conflicts_ignores_non_gpkg(tmp_path):
     (dst_dir / "notes.txt").touch()  # collides but irrelevant
 
     assert find_conflicts(str(src_dir), str(dst_dir)) == []
+
+
+# --- verify_categories_parsable -------------------------------------------
+
+from scripts.categorize_sup_gpkg import verify_categories_parsable
+
+
+def test_verify_categories_passes_for_clean_output(tmp_path):
+    """An output produced by process_gpkg should always pass verification."""
+    src = tmp_path / "T9997.gpkg"
+    dst = tmp_path / "out" / "T9997.gpkg"
+    dst.parent.mkdir()
+    _make_synthetic_gpkg(str(src))
+    process_gpkg(str(src), str(dst))
+
+    # Should not raise.
+    verify_categories_parsable(str(dst))
+
+
+def test_verify_categories_raises_on_unknown_token(tmp_path):
+    """If somehow a row's Category produces an empty label parse, raise."""
+    gpkg = tmp_path / "T9996.gpkg"
+    geoms = [Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])]
+    # 'mystery_mineral' is not in the label_parser vocabulary → all-zero label.
+    gdf = gpd.GeoDataFrame(
+        [{"Category": "mystery_mineral (High)"}],
+        geometry=geoms, crs="EPSG:4326",
+    )
+    gdf.to_file(str(gpkg), driver="GPKG")
+
+    with pytest.raises(ValueError, match="unparseable Category"):
+        verify_categories_parsable(str(gpkg))
