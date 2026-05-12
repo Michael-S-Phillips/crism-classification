@@ -22,6 +22,7 @@ import os
 import sys
 from typing import List, Tuple
 
+import geopandas as gpd
 import pandas as pd
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -138,3 +139,35 @@ def is_contaminated_denom(row) -> bool:
         if str(val).strip() != "":
             return True
     return False
+
+
+def process_gpkg(input_path: str, output_path: str) -> dict:
+    """
+    Read a sup-style GeoPackage, drop contaminated-denom rows, synthesise the
+    Category column with categorize_minerals, write the result.
+
+    Returns a stats dict:
+      {'rows_in': int, 'rows_out': int, 'contaminated_dropped': int}
+    """
+    gdf = gpd.read_file(input_path)
+    rows_in = len(gdf)
+
+    # Identify and drop contaminated denoms.
+    contaminated_mask = gdf.apply(is_contaminated_denom, axis=1)
+    n_contaminated = int(contaminated_mask.sum())
+    gdf = gdf[~contaminated_mask].copy()
+
+    # Apply the categorization rule to every surviving row.
+    gdf["Category"] = gdf.apply(categorize_minerals, axis=1)
+
+    # geopandas.to_file refuses to overwrite an existing GPKG cleanly; ensure
+    # the parent dir exists. The caller is responsible for conflict detection
+    # before reaching this function.
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    gdf.to_file(output_path, driver="GPKG")
+
+    return {
+        "rows_in": rows_in,
+        "rows_out": len(gdf),
+        "contaminated_dropped": n_contaminated,
+    }

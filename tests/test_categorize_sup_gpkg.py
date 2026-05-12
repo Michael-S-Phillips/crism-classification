@@ -149,3 +149,65 @@ def test_nan_id1_is_not_contaminated():
 def test_denom_with_whitespace_around_token_still_matches():
     # Strip + lowercase on Mineral ID 1 means '  DENOM  ' is still treated as denom.
     assert is_contaminated_denom(_row(id1=" denom ", id2="hcp")) is True
+
+
+# --- process_gpkg ---------------------------------------------------------
+
+import geopandas as gpd
+from shapely.geometry import Polygon
+
+from scripts.categorize_sup_gpkg import process_gpkg
+
+
+def _make_synthetic_gpkg(path: str) -> None:
+    """Write a small synthetic GPKG that exercises every code path."""
+    rows = [
+        # idx 0: clean primary class → "hcp (High)"
+        {"Mineral ID 1": "hcp",      "Mineral ID 2": "",          "Mineral ID 3": "", "Mineral ID 4": ""},
+        # idx 1: ± in ID2 → Moderate
+        {"Mineral ID 1": "hcp",      "Mineral ID 2": "±olivine",  "Mineral ID 3": "", "Mineral ID 4": ""},
+        # idx 2: clean denom → "Other (High)" (kept)
+        {"Mineral ID 1": "denom",    "Mineral ID 2": "",          "Mineral ID 3": "", "Mineral ID 4": ""},
+        # idx 3: contaminated denom → DROPPED
+        {"Mineral ID 1": "denom",    "Mineral ID 2": "probably has olivine", "Mineral ID 3": "", "Mineral ID 4": ""},
+        # idx 4: uncertain alone → "Other (Low)" (kept)
+        {"Mineral ID 1": "uncertain","Mineral ID 2": "",          "Mineral ID 3": "", "Mineral ID 4": ""},
+    ]
+    geoms = [Polygon([(i, 0), (i + 1, 0), (i + 1, 1), (i, 1)]) for i in range(len(rows))]
+    gdf = gpd.GeoDataFrame(rows, geometry=geoms, crs="EPSG:4326")
+    gdf.to_file(path, driver="GPKG")
+
+
+def test_process_gpkg_writes_category_and_drops_contaminated(tmp_path):
+    src = tmp_path / "T9999.gpkg"
+    dst = tmp_path / "out" / "T9999.gpkg"
+    dst.parent.mkdir()
+
+    _make_synthetic_gpkg(str(src))
+    stats = process_gpkg(str(src), str(dst))
+
+    assert stats["rows_in"] == 5
+    assert stats["rows_out"] == 4
+    assert stats["contaminated_dropped"] == 1
+
+    out = gpd.read_file(str(dst))
+    assert "Category" in out.columns
+    assert sorted(out["Category"].tolist()) == sorted([
+        "hcp (High)",
+        "hcp + olivine (Moderate)",
+        "Other (High)",     # clean denom
+        "Other (Low)",      # uncertain alone
+    ])
+
+
+def test_process_gpkg_preserves_existing_columns(tmp_path):
+    src = tmp_path / "T9998.gpkg"
+    dst = tmp_path / "out" / "T9998.gpkg"
+    dst.parent.mkdir()
+
+    _make_synthetic_gpkg(str(src))
+    process_gpkg(str(src), str(dst))
+
+    out = gpd.read_file(str(dst))
+    for col in ("Mineral ID 1", "Mineral ID 2", "Mineral ID 3", "Mineral ID 4", "geometry"):
+        assert col in out.columns
