@@ -14,18 +14,43 @@ LABEL_COLS_RAW = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'othe
 LABEL_COLS = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
 
 
-def _collapse_labels(df: pd.DataFrame) -> pd.DataFrame:
-    """Return df with olivine_t1/t2 merged into a single 'olivine' column.
+_TIER_WEIGHTS = {'high': 1.0, 'moderate': 0.85, 'low': 0.70}
 
-    olivine = max(olivine_t1, olivine_t2), so:
-      - Hard labels (1.0/0.0): result is 1.0 if either type is positive.
-      - Soft labels (0.5/0.5 for Hellas): result is 0.5 (still present but uncertain).
-    Uniform confidence weights (1.0) are assigned regardless of confidence_tier,
-    so all pixels contribute equally during training.
+
+def _collapse_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """Return df with olivine_t1/t2 merged into a single 'olivine' column
+    and confidence_weight derived from confidence_tier.
+
+    Olivine collapse (hard label):
+      olivine = 1.0 if either olivine_t1 or olivine_t2 is positive, else 0.0.
+      This treats untyped "olivine" annotations (parser writes 0.5/0.5 for
+      these because the type is unknown) as full olivine presence at training
+      time — pixels the annotator called olivine should train the model to
+      predict olivine confidently, regardless of whether subtype was specified.
+
+    Confidence weights (per-pixel sample weight in the loss):
+      Manually-annotated low-confidence detections were still confident enough
+      to flag, so they keep most of their signal rather than being heavily
+      down-weighted (1.0/0.5/0.25 → 1.0/0.85/0.70):
+        High:     1.0
+        Moderate: 0.85
+        Low:      0.70
+      Pixels with missing/unrecognised tier default to Moderate.
     """
     out = df.copy()
-    out['olivine'] = out[['olivine_t1', 'olivine_t2']].max(axis=1)
-    out['confidence_weight'] = 1.0
+    out['olivine'] = (
+        out[['olivine_t1', 'olivine_t2']].max(axis=1) > 0
+    ).astype(np.float32)
+    if 'confidence_tier' in out.columns:
+        out['confidence_weight'] = (
+            out['confidence_tier']
+            .astype(str).str.lower()
+            .map(_TIER_WEIGHTS)
+            .fillna(_TIER_WEIGHTS['moderate'])
+            .astype(np.float32)
+        )
+    else:
+        out['confidence_weight'] = np.float32(_TIER_WEIGHTS['moderate'])
     return out
 BAND_COLS = [f'b{i}' for i in range(60)]
 MRRAL_BAND_COLS = [f'm{i}' for i in range(59)]  # 59 bands, 410-2457 nm (< 2500 nm cutoff)
