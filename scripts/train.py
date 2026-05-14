@@ -93,10 +93,32 @@ def main():
                         help='Freeze encoder weights (requires_grad=False). '
                              'Mutually exclusive with --encoder_lr_scale. '
                              'Only effective when --pretrain_ckpt is set.')
+    parser.add_argument('--class_weights', type=str, default=None,
+                        help='Per-class loss multipliers, comma-separated in '
+                             'LABEL_COLS order (olivine,lcp,hcp,plagioclase,other). '
+                             'e.g. "1,1,1.5,3,1" to boost HCP and plagioclase. '
+                             'Default: uniform 1.0 for all classes.')
+    parser.add_argument('--min_delta', type=float, default=0.0,
+                        help='Early-stopping tolerance: val_mAP drops up to this '
+                             'much below the running best do not tick patience. '
+                             'Default 0.0 = strict, any non-improvement counts.')
     args = parser.parse_args()
 
     if args.freeze_encoder and args.encoder_lr_scale is not None:
         parser.error('--freeze_encoder and --encoder_lr_scale are mutually exclusive.')
+
+    # Parse class_weights once for all torch training paths.
+    class_weights_tensor = None
+    if args.class_weights:
+        import torch as _torch
+        try:
+            vals = [float(v) for v in args.class_weights.split(',')]
+        except ValueError as e:
+            parser.error(f'--class_weights values must be floats: {e}')
+        if len(vals) != 5:
+            parser.error(f'--class_weights must have 5 values '
+                         f'(olivine,lcp,hcp,plagioclase,other); got {len(vals)}')
+        class_weights_tensor = _torch.tensor(vals, dtype=_torch.float32)
 
     cfg_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -258,6 +280,8 @@ def main():
                 aug_band_dropout=args.aug_band_dropout,
                 aug_shift_std=args.aug_shift_std,
                 encoder_lr_scale=args.encoder_lr_scale,
+                class_weights=class_weights_tensor,
+                min_delta=args.min_delta,
             )
 
         elif args.model == 'spectral_hybrid':
@@ -315,6 +339,8 @@ def main():
                 aug_band_dropout=args.aug_band_dropout,
                 aug_shift_std=args.aug_shift_std,
                 encoder_lr_scale=args.encoder_lr_scale,
+                class_weights=class_weights_tensor,
+                min_delta=args.min_delta,
             )
 
 
@@ -379,6 +405,8 @@ def main():
                 asl_clip=args.asl_clip,
                 use_balanced_sampling=args.balanced_sampling,
                 encoder_lr_scale=args.encoder_lr_scale,
+                class_weights=class_weights_tensor,
+                min_delta=args.min_delta,
                 freeze_encoder=args.freeze_encoder,
             )
 

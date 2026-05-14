@@ -70,6 +70,8 @@ def train_torch_model(
     aug_shift_std: float = 0.005,
     encoder_lr_scale: Optional[float] = None,
     freeze_encoder: bool = False,
+    class_weights: Optional[torch.Tensor] = None,
+    min_delta: float = 0.0,
     device: Optional[str] = None,
     **wandb_config
 ) -> Dict[str, Any]:
@@ -181,6 +183,12 @@ def train_torch_model(
     else:
         loss_fn = WeightedBCEWithLogitsLoss()
 
+    # Per-class loss weights (e.g., boost rare classes like plagioclase, HCP).
+    # Moved to device once so the loss can broadcast without per-step transfer.
+    if class_weights is not None:
+        class_weights = class_weights.to(device)
+        logger.info(f"Using per-class loss weights: {class_weights.tolist()}")
+
     augment = None
     if use_spectral_aug:
         from training.augmentations import SpectralAugmentation
@@ -210,7 +218,10 @@ def train_torch_model(
             weights = weights.to(device)
             optimizer.zero_grad()
             logits = model(features)
-            loss = loss_fn(logits, labels, weights, pos_weight=pos_weight)
+            loss = loss_fn(
+                logits, labels, weights,
+                pos_weight=pos_weight, class_weights=class_weights,
+            )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -242,11 +253,16 @@ def train_torch_model(
             import wandb as wb
             wb.log({'epoch': epoch, 'train_loss': np.mean(train_losses), **flat})
 
-        # Early stopping
+        # Early stopping with tolerance band. val_mAP near the running best
+        # (within `min_delta`) is treated as plateau, not regression — patience
+        # only ticks on a meaningful drop. min_delta=0 recovers strict behavior.
         if val_map > best_val_map:
             best_val_map = val_map
             best_state = copy.deepcopy(model.state_dict())
             patience_counter = 0
+        elif val_map >= best_val_map - min_delta:
+            # Inside tolerance — neither update best nor tick patience.
+            pass
         else:
             patience_counter += 1
             if patience_counter >= patience:
