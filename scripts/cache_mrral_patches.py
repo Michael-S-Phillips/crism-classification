@@ -71,7 +71,11 @@ def main():
 
     print('Building mrral tile map ...')
     data_root = cfg.get('data_root', '/mnt/crism/MRDR')
-    mrral_hdrs = sorted(glob.glob(os.path.join(data_root, 'mc*', 't*mrral*.hdr')))
+    # Support both nested (mc*/<file>) and flat (<file>) tile layouts.
+    mrral_hdrs = sorted(set(
+        glob.glob(os.path.join(data_root, 'mc*', 't*mrral*.hdr')) +
+        glob.glob(os.path.join(data_root, 't*mrral*.hdr'))
+    ))
     if not mrral_hdrs:
         mrral_hdrs = sorted(glob.glob('/mnt/crism/MRDR/mc*/t*mrral*.hdr'))
     mrral_map = {}
