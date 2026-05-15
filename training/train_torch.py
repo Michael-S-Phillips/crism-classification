@@ -72,6 +72,11 @@ def train_torch_model(
     freeze_encoder: bool = False,
     class_weights: Optional[torch.Tensor] = None,
     min_delta: float = 0.0,
+    decomp_lambda_recon: float = 1.0,
+    decomp_lambda_eps: float = 0.1,
+    decomp_lambda_T: float = 0.01,
+    decomp_lambda_b: float = 0.01,
+    decomp_lambda_smooth: float = 0.001,
     device: Optional[str] = None,
     **wandb_config
 ) -> Dict[str, Any]:
@@ -174,7 +179,26 @@ def train_torch_model(
     else:
         scheduler = cosine
 
-    if use_asl_loss:
+    is_decomp = type(model).__name__ == 'DecompSpVit'
+
+    if is_decomp:
+        from training.decomp_losses import DecompositionLoss
+        loss_fn = DecompositionLoss(
+            lambda_recon=decomp_lambda_recon,
+            lambda_eps=decomp_lambda_eps,
+            lambda_T=decomp_lambda_T,
+            lambda_b=decomp_lambda_b,
+            lambda_smooth=decomp_lambda_smooth,
+            asl_gamma_neg=asl_gamma_neg,
+            asl_gamma_pos=asl_gamma_pos,
+            asl_clip=asl_clip,
+        )
+        logger.info(
+            f"Using DecompositionLoss: λ_recon={decomp_lambda_recon}, "
+            f"λ_eps={decomp_lambda_eps}, λ_T={decomp_lambda_T}, "
+            f"λ_b={decomp_lambda_b}, λ_smooth={decomp_lambda_smooth}"
+        )
+    elif use_asl_loss:
         from training.losses import AsymmetricLoss
         loss_fn = AsymmetricLoss(gamma_neg=asl_gamma_neg, gamma_pos=asl_gamma_pos, clip=asl_clip)
     elif use_focal_loss:
@@ -209,6 +233,7 @@ def train_torch_model(
         # --- Train ---
         model.train()
         train_losses = []
+        train_loss_components: dict = {}   # decomp-only; ignored for non-decomp models
         for features, labels, weights in train_loader:
             features = features.to(device)
             if augment is not None:
@@ -217,11 +242,24 @@ def train_torch_model(
             labels = labels.to(device)
             weights = weights.to(device)
             optimizer.zero_grad()
-            logits = model(features)
-            loss = loss_fn(
-                logits, labels, weights,
-                pos_weight=pos_weight, class_weights=class_weights,
-            )
+            if is_decomp:
+                logits, s_hat, T_hat, b_hat, eps_hat, x_hat = model(features)
+                loss, components = loss_fn(
+                    x=features,
+                    logits=logits, labels=labels, weights=weights,
+                    s_hat=s_hat, T_hat=T_hat, b_hat=b_hat,
+                    eps_hat=eps_hat, x_hat=x_hat,
+                    pos_weight=pos_weight, class_weights=class_weights,
+                )
+                # Stash component values for later epoch-level logging
+                for k, v in components.items():
+                    train_loss_components.setdefault(k, []).append(v.item())
+            else:
+                logits = model(features)
+                loss = loss_fn(
+                    logits, labels, weights,
+                    pos_weight=pos_weight, class_weights=class_weights,
+                )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -231,11 +269,18 @@ def train_torch_model(
         # --- Validate ---
         model.eval()
         all_logits, all_labels = [], []
+        val_T_means, val_b_means, val_eps_norms = [], [], []
 
         with torch.no_grad():
             for features, labels, weights in val_loader:
                 features = features.to(device)
-                logits = model(features)
+                if is_decomp:
+                    logits, _s_hat, T_hat, b_hat, eps_hat, _x_hat = model(features)
+                    val_T_means.append(T_hat.mean().item())
+                    val_b_means.append(b_hat.mean().item())
+                    val_eps_norms.append(eps_hat.norm(dim=-1).mean().item())
+                else:
+                    logits = model(features)
                 all_logits.append(torch.sigmoid(logits).cpu().numpy())
                 all_labels.append(labels.numpy())
 
@@ -251,7 +296,20 @@ def train_torch_model(
 
         if use_wandb:
             import wandb as wb
-            wb.log({'epoch': epoch, 'train_loss': np.mean(train_losses), **flat})
+            log_dict = {'epoch': epoch, 'train_loss': np.mean(train_losses), **flat}
+            if is_decomp:
+                # Per-epoch mean of each loss component (training side)
+                for k, vals in train_loss_components.items():
+                    if vals:
+                        log_dict[f'train_loss_{k}'] = float(np.mean(vals))
+                # Validation-side physical metrics
+                if val_T_means:
+                    log_dict['val_T_mean'] = float(np.mean(val_T_means))
+                if val_b_means:
+                    log_dict['val_b_mean'] = float(np.mean(val_b_means))
+                if val_eps_norms:
+                    log_dict['val_eps_norm_mean'] = float(np.mean(val_eps_norms))
+            wb.log(log_dict)
 
         # Early stopping with tolerance band. val_mAP near the running best
         # (within `min_delta`) is treated as plateau, not regression — patience
