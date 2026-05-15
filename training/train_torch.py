@@ -77,6 +77,7 @@ def train_torch_model(
     decomp_lambda_T: float = 0.01,
     decomp_lambda_b: float = 0.01,
     decomp_lambda_smooth: float = 0.001,
+    lambda_adv_max: float = 1.0,
     device: Optional[str] = None,
     **wandb_config
 ) -> Dict[str, Any]:
@@ -180,8 +181,22 @@ def train_torch_model(
         scheduler = cosine
 
     is_decomp = type(model).__name__ == 'DecompSpVit'
+    is_decomp_adv = type(model).__name__ == 'DecompSpVitAdv'
 
-    if is_decomp:
+    if is_decomp_adv:
+        from training.adv_decomp_losses import AdversarialDecompositionLoss
+        loss_fn = AdversarialDecompositionLoss(
+            lambda_recon=decomp_lambda_recon,
+            lambda_smooth=decomp_lambda_smooth,
+            asl_gamma_neg=asl_gamma_neg,
+            asl_gamma_pos=asl_gamma_pos,
+            asl_clip=asl_clip,
+        )
+        logger.info(
+            f"Using AdversarialDecompositionLoss: λ_recon={decomp_lambda_recon}, "
+            f"λ_smooth={decomp_lambda_smooth}, λ_adv_max={lambda_adv_max}"
+        )
+    elif is_decomp:
         from training.decomp_losses import DecompositionLoss
         loss_fn = DecompositionLoss(
             lambda_recon=decomp_lambda_recon,
@@ -234,6 +249,17 @@ def train_torch_model(
         model.train()
         train_losses = []
         train_loss_components: dict = {}   # decomp-only; ignored for non-decomp models
+
+        # DANN-style lambda_adv warmup for the adversarial decomposition model.
+        # Smooth schedule from ~0 at epoch 1 to ~lambda_adv_max at the last epoch.
+        if is_decomp_adv:
+            import math as _math
+            p = (epoch - 1) / max(max_epochs - 1, 1)        # ∈ [0, 1]
+            schedule = (2.0 / (1.0 + _math.exp(-10.0 * p))) - 1.0   # ∈ [0, ~1)
+            model.lambda_adv = float(lambda_adv_max * schedule)
+            logger.info(
+                f"epoch {epoch}: lambda_adv = {model.lambda_adv:.4f}"
+            )
         for features, labels, weights in train_loader:
             features = features.to(device)
             if augment is not None:
@@ -242,7 +268,18 @@ def train_torch_model(
             labels = labels.to(device)
             weights = weights.to(device)
             optimizer.zero_grad()
-            if is_decomp:
+            if is_decomp_adv:
+                logits, s_hat, n_hat, x_hat, disc_logits, _, _ = model(features)
+                loss, components = loss_fn(
+                    x=features,
+                    logits=logits, labels=labels, weights=weights,
+                    s_hat=s_hat, n_hat=n_hat, x_hat=x_hat,
+                    disc_logits=disc_logits,
+                    pos_weight=pos_weight, class_weights=class_weights,
+                )
+                for k, v in components.items():
+                    train_loss_components.setdefault(k, []).append(v.item())
+            elif is_decomp:
                 logits, s_hat, T_hat, b_hat, eps_hat, x_hat = model(features)
                 loss, components = loss_fn(
                     x=features,
@@ -251,7 +288,6 @@ def train_torch_model(
                     eps_hat=eps_hat, x_hat=x_hat,
                     pos_weight=pos_weight, class_weights=class_weights,
                 )
-                # Stash component values for later epoch-level logging
                 for k, v in components.items():
                     train_loss_components.setdefault(k, []).append(v.item())
             else:
@@ -270,11 +306,25 @@ def train_torch_model(
         model.eval()
         all_logits, all_labels = [], []
         val_T_means, val_b_means, val_eps_norms = [], [], []
+        val_disc_correct, val_disc_total = 0.0, 0
+        val_n_norms = []
 
         with torch.no_grad():
             for features, labels, weights in val_loader:
                 features = features.to(device)
-                if is_decomp:
+                if is_decomp_adv:
+                    logits, _, n_hat, _, disc_logits, _, _ = model(features)
+                    val_n_norms.append(n_hat.norm(dim=-1).mean().item())
+                    # Multi-label accuracy on the discriminator: per-class accuracy
+                    # averaged over classes and samples. A working adversary drives
+                    # this DOWN toward the marginal class prior (~prevalence-aware
+                    # chance), as the encoder makes n_emb class-uninformative.
+                    disc_pred = (torch.sigmoid(disc_logits) > 0.5).float().cpu()
+                    target = (labels > 0.4).float()
+                    correct = (disc_pred == target).float().mean().item()
+                    val_disc_correct += correct * features.size(0)
+                    val_disc_total += features.size(0)
+                elif is_decomp:
                     logits, _s_hat, T_hat, b_hat, eps_hat, _x_hat = model(features)
                     val_T_means.append(T_hat.mean().item())
                     val_b_means.append(b_hat.mean().item())
@@ -297,7 +347,16 @@ def train_torch_model(
         if use_wandb:
             import wandb as wb
             log_dict = {'epoch': epoch, 'train_loss': np.mean(train_losses), **flat}
-            if is_decomp:
+            if is_decomp_adv:
+                for k, vals in train_loss_components.items():
+                    if vals:
+                        log_dict[f'train_loss_{k}'] = float(np.mean(vals))
+                if val_n_norms:
+                    log_dict['val_n_norm_mean'] = float(np.mean(val_n_norms))
+                if val_disc_total > 0:
+                    log_dict['val_disc_acc'] = float(val_disc_correct / val_disc_total)
+                log_dict['lambda_adv'] = float(model.lambda_adv)
+            elif is_decomp:
                 # Per-epoch mean of each loss component (training side)
                 for k, vals in train_loss_components.items():
                     if vals:
