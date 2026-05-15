@@ -19,7 +19,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
 
 SKLEARN_MODELS = {'logreg', 'svc', 'rf', 'xgb', 'lgbm'}
 TORCH_MODELS = {'mlp', 'cnn', 'vit', 'spectral_cnn', 'spectral_vit',
-                'spectral_hybrid', 'spatial_vit', 'decomp_spatial_vit'}
+                'spectral_hybrid', 'spatial_vit', 'decomp_spatial_vit',
+                'decomp_spatial_vit_adv'}
 
 def load_config(config_path):
     try:
@@ -113,6 +114,9 @@ def main():
                         help='Weight on b^2 prior for DecompSpVit.')
     parser.add_argument('--decomp_lambda_smooth', type=float, default=0.001,
                         help='Weight on spatial-TV smoothness on s_hat for DecompSpVit.')
+    parser.add_argument('--lambda_adv_max', type=float, default=1.0,
+                        help='Max value of the adversarial GRL multiplier for '
+                             'DecompSpVitAdv. Schedule warms from ~0 → this value.')
     args = parser.parse_args()
 
     if args.freeze_encoder and args.encoder_lr_scale is not None:
@@ -489,6 +493,76 @@ def main():
                 decomp_lambda_T=args.decomp_lambda_T,
                 decomp_lambda_b=args.decomp_lambda_b,
                 decomp_lambda_smooth=args.decomp_lambda_smooth,
+                freeze_encoder=args.freeze_encoder,
+            )
+
+        elif args.model == 'decomp_spatial_vit_adv':
+            import glob as _glob
+            data_root = cfg.get('data_root', '/mnt/crism/MRDR')
+            globs_to_try = [
+                os.path.join(data_root, 'mc*', 't*mrral*.hdr'),
+                os.path.join(data_root, 't*mrral*.hdr'),
+            ]
+            mrral_hdrs = []
+            for pattern in globs_to_try:
+                mrral_hdrs = sorted(_glob.glob(pattern))
+                if mrral_hdrs:
+                    break
+            mrral_map = {}
+            for hdr in mrral_hdrs:
+                tid = os.path.basename(hdr).split('_mrral_')[0]
+                mrral_map[tid] = hdr.replace('.hdr', '.img')
+            logging.info(f'mrral_map: {len(mrral_map)} tiles found')
+
+            mrral_parquet = os.path.join(cfg['output_dir'], 'mrral_pixels.parquet')
+            df_mrral = pd.read_parquet(mrral_parquet)
+            dropout = args.dropout if args.dropout is not None else 0.1
+
+            from models.decomp_spatial_vit_adv import DecompSpVitAdv
+            model = DecompSpVitAdv(
+                n_bands=59, patch_size=args.patch_size, n_classes=5,
+                embed_dim=args.embed_dim, n_heads=args.n_heads,
+                n_layers=args.n_layers, dropout=dropout,
+                lambda_adv=0.0,   # warms up via the per-epoch schedule
+            )
+            if args.pretrain_ckpt:
+                ckpt = torch.load(args.pretrain_ckpt, map_location='cpu', weights_only=False)
+                missing, unexpected = model.load_encoder_state_dict(ckpt['encoder_state'])
+                logging.info(
+                    f'Loaded spatial MAE encoder from {args.pretrain_ckpt}. '
+                    f'Missing: {missing}, Unexpected: {unexpected}'
+                )
+            if args.freeze_encoder:
+                for p in model.encoder.parameters():
+                    p.requires_grad = False
+                logging.info('Encoder frozen (requires_grad=False on all encoder params)')
+
+            mrral_cache_dir = cfg.get('patch_cache_dir')
+            metrics = train_torch_model(
+                model=model, df=df_mrral, model_name=run_name,
+                max_epochs=args.epochs, batch_size=args.batch_size,
+                lr=args.lr, patience=args.patience,
+                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir,
+                mrral_map=mrral_map, patch_size=args.patch_size,
+                cache_dir=mrral_cache_dir,
+                use_pos_weight=args.use_pos_weight,
+                weight_decay=args.weight_decay,
+                warmup_epochs=args.warmup_epochs,
+                lr_t_max=args.lr_t_max,
+                high_conf_only=args.high_conf_only,
+                use_focal_loss=args.focal_loss,
+                focal_gamma=args.focal_gamma,
+                use_asl_loss=args.asl_loss,
+                asl_gamma_neg=args.asl_gamma_neg,
+                asl_gamma_pos=args.asl_gamma_pos,
+                asl_clip=args.asl_clip,
+                use_balanced_sampling=args.balanced_sampling,
+                encoder_lr_scale=args.encoder_lr_scale,
+                class_weights=class_weights_tensor,
+                min_delta=args.min_delta,
+                decomp_lambda_recon=args.decomp_lambda_recon,
+                decomp_lambda_smooth=args.decomp_lambda_smooth,
+                lambda_adv_max=args.lambda_adv_max,
                 freeze_encoder=args.freeze_encoder,
             )
 
