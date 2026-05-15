@@ -1,0 +1,69 @@
+#!/bin/bash
+#SBATCH --job-name=spvit_decomp_v2
+#SBATCH --account=sbyrne
+#SBATCH --partition=gpu_standard
+#SBATCH --ntasks=1
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=6
+#SBATCH --mem=32gb
+#SBATCH --time=0-24:00:00
+#SBATCH --array=0-2
+#SBATCH --output=logs/decomp_v2_%a_%j.out
+#SBATCH --error=logs/decomp_v2_%a_%j.err
+
+# v2: adversarial signal/noise decomposition encoder (DecompSpVitAdv).
+# Drops the frozen-encoder condition (per user feedback — always
+# underperforms). Three lr_scale conditions only.
+# Spec: docs/superpowers/specs/2026-05-15-adversarial-decomposition-design.md
+
+WORK_DIR=/groups/sbyrne/phillipsm/crism_classification
+CKPT_DIR=${WORK_DIR}/checkpoints
+PRETRAIN_CKPT=${CKPT_DIR}/spatial_mae_128d_6l_best.pt
+CACHE_DIR=${WORK_DIR}/data/patch_cache
+
+RUN_NAMES=("spvit_decomp_v2_lrscale0001" "spvit_decomp_v2_lrscale001" "spvit_decomp_v2_lrscale01")
+LR_SCALE_ARGS=("--encoder_lr_scale 0.001" "--encoder_lr_scale 0.01" "--encoder_lr_scale 0.1")
+CLASS_WEIGHTS="1.0,1.0,1.5,3.0,1.0"
+
+PYTHON=/groups/sbyrne/phillipsm/micromamba/envs/crism/bin/python
+
+cd "$WORK_DIR"
+
+if [ ! -f config.local.yaml ]; then
+    cat > config.local.yaml <<EOF
+data_root: /xdisk/sbyrne/phillipsm/CRISM_MRDR
+checkpoint_dir: ${CKPT_DIR}
+checkpoints_dir: ${CKPT_DIR}
+output_dir: ${WORK_DIR}/data
+patch_cache_dir: ${WORK_DIR}/data/patch_cache
+EOF
+fi
+
+if [ ! -f "${CACHE_DIR}/mrral_train_patches_p7.npy" ]; then
+    echo "ERROR: mrral_train_patches_p7.npy not found at ${CACHE_DIR}" >&2
+    exit 1
+fi
+
+mkdir -p logs checkpoints
+
+echo "=== decomp_v2 ablation: ${RUN_NAMES[$SLURM_ARRAY_TASK_ID]} (task $SLURM_ARRAY_TASK_ID) ==="
+${PYTHON} -u scripts/train.py \
+    --model decomp_spatial_vit_adv \
+    --run_name "${RUN_NAMES[$SLURM_ARRAY_TASK_ID]}" \
+    --epochs 100 \
+    --patience 25 \
+    --min_delta 0.001 \
+    --batch_size 256 \
+    --lr 5e-4 \
+    --lr_t_max 100 \
+    --embed_dim 128 \
+    --n_heads 4 \
+    --n_layers 6 \
+    --patch_size 7 \
+    --asl_loss \
+    --class_weights "${CLASS_WEIGHTS}" \
+    --decomp_lambda_recon 10.0 \
+    --decomp_lambda_smooth 0.001 \
+    --lambda_adv_max 1.0 \
+    --pretrain_ckpt "${PRETRAIN_CKPT}" \
+    ${LR_SCALE_ARGS[$SLURM_ARRAY_TASK_ID]}
