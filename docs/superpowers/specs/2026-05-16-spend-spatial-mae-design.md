@@ -174,14 +174,22 @@ Figure is generated after pretraining completes, added to `wiki/Methodology Log 
 
 ## 9. Success criteria
 
-This pretraining run is considered successful if **either** of the following holds, evaluated on the existing classifier benchmark (5-class mineral mAP on the stratified-tile validation set):
+The success criteria below are aspirational targets, not gates. Concrete evaluation protocol (datasets, splits, alteration-mineral region selection) will be refined as a follow-up before the final evaluation pass.
 
-- **(a) Classifier transfer:** with the SPEND-pretrained encoder loaded into `SpatialSpectralClassifier` and fine-tuned with `lrscale=0.01` (current best v3+v4 setting), val_mAP ≥ 0.7175 (the v5 current best). Stretch: ≥ 0.72.
-- **(b) Reconstruction quality:** the post-pretraining `fig_v5_spend_partition.png` Col 3 shows visually clean interpolation (no high-frequency residual structure) on all three mineral classes; and Col 4 residuals look centered and unstructured.
+**Aspirational (what we'd like to see):**
 
-We also track:
-- HCP/LCP confusion: cosine similarity between HCP and LCP class-mean embeddings should not be higher than v3's value.
-- Reconstruction loss curve: final epoch loss < v3's final epoch loss (different objective so the values are not directly comparable, but both should descend monotonically modulo cosine-decay artifacts).
+- **Classifier transfer:** SPEND-pretrained encoder, loaded into `SpatialSpectralClassifier` and fine-tuned, exceeds the v5 current best (val_mAP > 0.7175) and ideally reaches ≥ 85% per-class accuracy across all 5 mineral classes — including the historically harder HCP and LCP.
+- **Spectral reconstruction quality:** denoised reconstructions preserve subtle, narrow absorption features of alteration minerals (e.g., hydrated phyllosilicates, sulfates, carbonates). Evaluate qualitatively on regions where such minerals are known to occur (Nili Fossae, Mawrth Vallis, etc.) — narrow absorption bands should be sharper or at least no less sharp than in the raw mrral input, and not blurred away by the model.
+- **Quantitative noise-removal metric:** TBD. Candidates: spectral SNR estimated from local flat-field tiles, residual variance in continuum regions, or a paired comparison against E2E-CRISM / N2N4M outputs on overlapping scenes.
+
+**Minimum bar (must hold for the run to be considered worth keeping):**
+
+- Training loss descends monotonically (modulo cosine-decay artifacts) and converges below the random-init baseline.
+- The encoder loads into `SpatialSpectralClassifier` with no missing weights.
+- Reconstructions of olivine, HCP, plagioclase center pixels look qualitatively plausible (Col 3 of `fig_v5_spend_partition.png` is not nonsense).
+- HCP/LCP class-mean embedding cosine similarity is not higher than v3's value.
+
+The full evaluation protocol — including the alteration-mineral region picks and the chosen noise-removal metric — is deferred to a follow-up task tracked separately.
 
 ## 10. Risks and mitigations
 
