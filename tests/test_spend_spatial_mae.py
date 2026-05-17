@@ -46,3 +46,35 @@ class TestSpectralMaskSchedule:
         assert compute_spectral_mask_ratio(
             epoch=200, anneal_start_epoch=161, anneal_end_epoch=181, base=0.5,
         ) == 0.0
+
+
+from models.spend_spatial_mae import SpendSpatialSpectralMAE
+
+
+@pytest.fixture
+def model():
+    return SpendSpatialSpectralMAE(
+        n_bands=59, patch_size=7,
+        embed_dim=128, n_heads=4, n_layers=6,
+        decoder_dim=64, decoder_layers=2,
+        mask_ratio=0.75,
+        spectral_mask_ratio=0.5,
+    )
+
+
+class TestSkeletonAndAttributes:
+    def test_instantiates_with_expected_attributes(self, model):
+        assert model.n_bands == 59
+        assert model.n_tokens == 49
+        assert model.mask_ratio == 0.75
+        assert model.spectral_mask_ratio == 0.5
+
+    def test_spectral_mask_ratio_is_mutable(self, model):
+        model.spectral_mask_ratio = 0.0
+        assert model.spectral_mask_ratio == 0.0
+
+    def test_inherits_encoder_state_dict_method(self, model):
+        # Inherited from SpatialSpectralMAE; must still work for downstream loading
+        state = model.encoder_state_dict()
+        assert any(k.startswith('band_embed') for k in state)
+        assert any(k.startswith('encoder.') for k in state)
