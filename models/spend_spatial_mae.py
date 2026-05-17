@@ -86,3 +86,47 @@ class SpendSpatialSpectralMAE(SpatialSpectralMAE):
         target_idx = torch.randperm(self.n_bands, device=device)[:n_target]
         target_mask[target_idx] = True
         return target_mask
+
+    def forward(self, x_clean: torch.Tensor):
+        """Returns (loss, recon, mask).
+
+        loss:  scalar MSE on target-band positions of recon vs x_clean,
+               across all 49 spatial positions. If spectral_mask_ratio == 0,
+               the loss degenerates to MSE on all bands at all positions
+               (equivalent to v3's all-position MAE loss).
+        recon: (B, n_tokens, n_bands) — reconstructed spectra at every position
+        mask:  (B, n_tokens) bool — True = was spatially masked at the encoder
+        """
+        B = x_clean.shape[0]
+        device = x_clean.device
+        N = self.n_tokens
+
+        # 1. Sample one band partition for the whole batch.
+        target_mask = self._partition_bands(device)  # (n_bands,) bool
+        input_band_mask = ~target_mask                # bands the encoder sees
+
+        # 2. Zero out target bands at every pixel in the encoder input.
+        x_in = x_clean * input_band_mask.view(1, 1, 1, self.n_bands).to(x_clean.dtype)
+
+        # 3. Standard spatial masking + encoder pass (parent-class machinery).
+        visible_ids, masked_ids, mask = self._mask_tokens(B, device)
+        enc_out = self.encoder.encode_visible(x_in, visible_ids)
+        enc_proj = self.enc_to_dec(enc_out[:, 1:])
+
+        decoder_tokens = self.mask_token.expand(B, N, -1).clone()
+        scatter_idx = visible_ids.unsqueeze(-1).expand(-1, -1, self.decoder_dim)
+        decoder_tokens.scatter_(1, scatter_idx, enc_proj)
+        pos_ids = torch.arange(1, N + 1, device=device)
+        decoder_tokens = decoder_tokens + self.decoder_pos_embed(pos_ids)
+        decoded = self.decoder(decoder_tokens)
+        recon = self.reconstruction_head(decoded)
+
+        # 4. SPEND loss: MSE on target bands only (or all bands when ratio=0).
+        x_flat = x_clean.reshape(B, N, self.n_bands)
+        if target_mask.any():
+            loss = ((recon[:, :, target_mask] - x_flat[:, :, target_mask]) ** 2).mean()
+        else:
+            # ratio==0 → no target bands → fall back to all-band MSE (phase C).
+            loss = ((recon - x_flat) ** 2).mean()
+
+        return loss, recon, mask

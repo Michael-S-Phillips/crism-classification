@@ -109,3 +109,89 @@ class TestBandPartition:
         m1 = model._partition_bands(device=torch.device('cpu'))
         m2 = model._partition_bands(device=torch.device('cpu'))
         assert not torch.equal(m1, m2), "Two consecutive partitions should differ"
+
+
+class TestForwardPass:
+    """SPEND forward pass: shape, loss localization, masking interaction."""
+
+    def test_forward_returns_loss_recon_mask(self, model):
+        model.train()
+        B = 4
+        x = torch.randn(B, 7, 7, 59) * 0.1
+        out = model(x)
+        assert isinstance(out, tuple) and len(out) == 3
+        loss, recon, mask = out
+        assert loss.ndim == 0
+        assert recon.shape == (B, 49, 59)
+        assert mask.shape == (B, 49)
+        assert mask.dtype == torch.bool
+
+    def test_loss_is_finite_and_positive(self, model):
+        model.train()
+        B = 8
+        torch.manual_seed(0)
+        x = torch.randn(B, 7, 7, 59) * 0.1
+        loss, _, _ = model(x)
+        assert torch.isfinite(loss)
+        assert loss.item() > 0.0
+
+    def test_loss_is_target_band_only_at_ratio_half(self, model):
+        """At spectral_mask_ratio=0.5, the returned loss equals MSE only on
+        the target-band positions of the reconstruction (not on input bands)."""
+        model.eval()
+        model.spectral_mask_ratio = 0.5
+        torch.manual_seed(42)
+        B = 4
+        x = torch.randn(B, 7, 7, 59) * 0.1
+
+        # Patch _partition_bands to return a deterministic mask so we can
+        # reconstruct the expected loss after the call.
+        chosen_targets = torch.zeros(59, dtype=torch.bool)
+        chosen_targets[torch.arange(0, 59, 2)] = True  # even indices = target
+        model._partition_bands = lambda device: chosen_targets.to(device)
+
+        loss, recon, _ = model(x)
+        x_flat = x.reshape(B, 49, 59)
+        expected_loss = (
+            (recon[:, :, chosen_targets] - x_flat[:, :, chosen_targets]) ** 2
+        ).mean()
+        torch.testing.assert_close(loss, expected_loss, rtol=1e-5, atol=1e-6)
+
+    def test_mask_ratio_75_percent_spatial_tokens_hidden(self, model):
+        """Spatial masking is preserved from the parent class: ~75% hidden."""
+        model.train()
+        B = 50
+        torch.manual_seed(0)
+        x = torch.randn(B, 7, 7, 59)
+        _, _, mask = model(x)
+        fraction_masked = mask.float().mean().item()
+        expected = int(49 * 0.75) / 49
+        assert abs(fraction_masked - expected) < 0.01, (
+            f"got {fraction_masked}, expected ≈ {expected}"
+        )
+
+    def test_encoder_sees_zeroed_target_bands(self, model):
+        """Two forward passes that differ only at target-band positions
+        should produce identical encoder visible-token outputs, because
+        target bands are zeroed before encoding."""
+        model.eval()
+        model.spectral_mask_ratio = 0.5
+        chosen_targets = torch.zeros(59, dtype=torch.bool)
+        chosen_targets[torch.arange(0, 59, 2)] = True
+        model._partition_bands = lambda device: chosen_targets.to(device)
+
+        torch.manual_seed(0)
+        x_a = torch.randn(2, 7, 7, 59) * 0.1
+        x_b = x_a.clone()
+        # Perturb target bands only
+        x_b[..., chosen_targets] += 5.0
+
+        # Same spatial mask so we compare apples to apples.
+        torch.manual_seed(123)
+        _, recon_a, _ = model(x_a)
+        torch.manual_seed(123)
+        _, recon_b, _ = model(x_b)
+
+        # Encoder input is band-masked → identical at every position →
+        # recon should be identical for both inputs.
+        torch.testing.assert_close(recon_a, recon_b, rtol=1e-5, atol=1e-5)
