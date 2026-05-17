@@ -120,6 +120,12 @@ def main():
         progress = (epoch - args.warmup) / max(1, args.epochs - args.warmup)
         return 0.5 * (1.0 + np.cos(np.pi * progress))
 
+    # Construct scheduler in its default state. We restore its real position
+    # via load_state_dict on resume; PyTorch only auto-injects 'initial_lr'
+    # into param groups when last_epoch == -1, so we cannot pass last_epoch
+    # directly to the constructor here.
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
     # ── Resume ────────────────────────────────────────────────────────────
     start_epoch = 1
     best_loss = float('inf')
@@ -129,18 +135,17 @@ def main():
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(ckpt['mae_state'])
         start_epoch = ckpt.get('epoch', 0) + 1
-        best_loss = ckpt.get('mae_loss', float('inf'))
-        log.info(f"Resumed from {args.resume} at epoch {start_epoch}, loss={best_loss:.6f}")
-
-    # Scheduler constructed AFTER resume so last_epoch is correct.
-    # LambdaLR internally calls step() once at construction, advancing last_epoch
-    # from `last_epoch` to `last_epoch + 1`. We want the first explicit step() at
-    # the end of epoch=start_epoch to advance last_epoch to start_epoch, so we
-    # initialize at start_epoch - 2. When start_epoch == 1 (fresh run), this gives
-    # last_epoch=-1, the default.
-    scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer, lr_lambda, last_epoch=start_epoch - 2,
-    )
+        # best_loss persists across resumes so the _best.pt provenance is
+        # preserved — fall back to this checkpoint's loss only if missing.
+        best_loss = ckpt.get('best_loss', ckpt.get('mae_loss', float('inf')))
+        if 'optimizer_state' in ckpt:
+            optimizer.load_state_dict(ckpt['optimizer_state'])
+        if 'scheduler_state' in ckpt:
+            scheduler.load_state_dict(ckpt['scheduler_state'])
+        log.info(
+            f"Resumed from {args.resume} at epoch {start_epoch}, "
+            f"best_loss={best_loss:.6f}"
+        )
 
     # ── wandb ─────────────────────────────────────────────────────────────
     use_wandb = not args.no_wandb
@@ -182,6 +187,9 @@ def main():
             patches = patches.to(device)
             optimizer.zero_grad()
             loss, _, _ = model(patches)
+            if not torch.isfinite(loss):
+                log.warning(f"non-finite loss at epoch {epoch}, skipping batch")
+                continue
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -204,7 +212,7 @@ def main():
                 'spend_loss': mean_loss,
                 'spectral_mask_ratio': model.spectral_mask_ratio,
                 'lr': lr_now,
-            })
+            }, step=epoch)
 
         # Save every 50 epochs and at end
         if epoch % 50 == 0 or epoch == args.epochs:
@@ -212,7 +220,12 @@ def main():
             torch.save({
                 'mae_state': model.state_dict(),
                 'encoder_state': model.encoder_state_dict(),
-                'epoch': epoch, 'mae_loss': mean_loss, 'config': vars(args),
+                'optimizer_state': optimizer.state_dict(),
+                'scheduler_state': scheduler.state_dict(),
+                'epoch': epoch,
+                'mae_loss': mean_loss,
+                'best_loss': best_loss,
+                'config': vars(args),
             }, path)
             log.info(f"Saved {path}")
 
@@ -223,7 +236,12 @@ def main():
             torch.save({
                 'mae_state': model.state_dict(),
                 'encoder_state': model.encoder_state_dict(),
-                'epoch': epoch, 'mae_loss': mean_loss, 'config': vars(args),
+                'optimizer_state': optimizer.state_dict(),
+                'scheduler_state': scheduler.state_dict(),
+                'epoch': epoch,
+                'mae_loss': mean_loss,
+                'best_loss': best_loss,
+                'config': vars(args),
             }, path)
 
 

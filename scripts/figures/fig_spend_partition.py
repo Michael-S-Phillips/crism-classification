@@ -38,13 +38,18 @@ CLASSES_TO_SHOW = ['olivine', 'hcp', 'plagioclase']
 
 
 def load_model(checkpoint_path: str) -> SpendSpatialSpectralMAE:
+    ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    cfg = ckpt.get('config', {})
     model = SpendSpatialSpectralMAE(
         n_bands=59, patch_size=7,
-        embed_dim=128, n_heads=4, n_layers=6,
-        decoder_dim=64, decoder_layers=2,
-        mask_ratio=0.75, spectral_mask_ratio=0.5,
+        embed_dim=cfg.get('embed_dim', 128),
+        n_heads=cfg.get('n_heads', 4),
+        n_layers=cfg.get('n_layers', 6),
+        decoder_dim=cfg.get('decoder_dim', 64),
+        decoder_layers=cfg.get('decoder_layers', 2),
+        mask_ratio=cfg.get('mask_ratio', 0.75),
+        spectral_mask_ratio=cfg.get('spectral_mask_ratio', 0.5),
     )
-    ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     model.load_state_dict(ckpt['mae_state'])
     model.eval()
     return model
