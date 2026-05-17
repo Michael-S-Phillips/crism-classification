@@ -68,3 +68,21 @@ class SpendSpatialSpectralMAE(SpatialSpectralMAE):
         )
         # Mutable attribute; the training loop updates it each epoch.
         self.spectral_mask_ratio: float = spectral_mask_ratio
+
+    def _partition_bands(self, device: torch.device) -> torch.Tensor:
+        """Sample one random band partition for this batch.
+
+        Returns a boolean mask `target_mask: bool[n_bands]` where True
+        indicates a target-half band (encoder input zeroes these out;
+        the loss is evaluated on these).
+
+        Per-batch (not per-sample) partition: all samples in the batch
+        share the same target-mask.
+        """
+        n_target = round(self.n_bands * self.spectral_mask_ratio)
+        target_mask = torch.zeros(self.n_bands, dtype=torch.bool, device=device)
+        if n_target == 0:
+            return target_mask
+        target_idx = torch.randperm(self.n_bands, device=device)[:n_target]
+        target_mask[target_idx] = True
+        return target_mask

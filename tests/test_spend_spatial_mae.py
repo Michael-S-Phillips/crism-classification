@@ -71,3 +71,41 @@ class TestSkeletonAndAttributes:
         state = model.encoder_state_dict()
         assert any(k.startswith('band_embed') for k in state)
         assert any(k.startswith('encoder.') for k in state)
+
+
+class TestBandPartition:
+    """The random per-batch band partition splits 59 bands into input/target."""
+
+    def test_shape_and_dtype(self, model):
+        target_mask = model._partition_bands(device=torch.device('cpu'))
+        assert target_mask.shape == (59,)
+        assert target_mask.dtype == torch.bool
+
+    def test_target_count_at_ratio_half(self, model):
+        # With ratio 0.5 and 59 bands: round(59 * 0.5) = 30 → 30 target bands.
+        model.spectral_mask_ratio = 0.5
+        target_mask = model._partition_bands(device=torch.device('cpu'))
+        assert int(target_mask.sum().item()) == 30
+
+    def test_target_count_at_ratio_zero(self, model):
+        model.spectral_mask_ratio = 0.0
+        target_mask = model._partition_bands(device=torch.device('cpu'))
+        assert int(target_mask.sum().item()) == 0
+
+    def test_unbiased_over_many_samples(self, model):
+        """Every band index appears in the target-half across enough samples."""
+        model.spectral_mask_ratio = 0.5
+        counts = torch.zeros(59, dtype=torch.long)
+        torch.manual_seed(0)
+        for _ in range(1000):
+            counts += model._partition_bands(device=torch.device('cpu')).long()
+        # Each band should appear in target-half ~500 times.
+        # Generous bound: every band hits target-half in ≥ 10 of 1000 samples.
+        assert counts.min().item() >= 10, f"min count={counts.min().item()} — partition is biased"
+
+    def test_samples_differ_across_calls(self, model):
+        model.spectral_mask_ratio = 0.5
+        torch.manual_seed(0)
+        m1 = model._partition_bands(device=torch.device('cpu'))
+        m2 = model._partition_bands(device=torch.device('cpu'))
+        assert not torch.equal(m1, m2), "Two consecutive partitions should differ"
