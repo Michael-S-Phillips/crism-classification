@@ -195,3 +195,34 @@ class TestForwardPass:
         # Encoder input is band-masked → identical at every position →
         # recon should be identical for both inputs.
         torch.testing.assert_close(recon_a, recon_b, rtol=1e-5, atol=1e-5)
+
+
+class TestDegenerateRatioEdgeCase:
+    """At spectral_mask_ratio==0, SPEND becomes plain all-band-all-position MAE."""
+
+    def test_loss_equals_all_band_all_position_mse_at_ratio_zero(self, model):
+        model.eval()
+        model.spectral_mask_ratio = 0.0
+        torch.manual_seed(0)
+        B = 4
+        x = torch.randn(B, 7, 7, 59) * 0.1
+        loss, recon, _ = model(x)
+        x_flat = x.reshape(B, 49, 59)
+        expected = ((recon - x_flat) ** 2).mean()
+        torch.testing.assert_close(loss, expected, rtol=1e-5, atol=1e-6)
+
+    def test_encoder_sees_full_band_input_at_ratio_zero(self, model):
+        """At ratio=0 target_mask is all False, so encoder input == x_clean."""
+        model.eval()
+        model.spectral_mask_ratio = 0.0
+        torch.manual_seed(0)
+        x_a = torch.randn(2, 7, 7, 59) * 0.1
+        x_b = x_a.clone()
+        x_b[..., :30] += 5.0  # perturb the first 30 bands
+
+        torch.manual_seed(123)
+        _, recon_a, _ = model(x_a)
+        torch.manual_seed(123)
+        _, recon_b, _ = model(x_b)
+        # At ratio=0 the encoder sees the full input, so different x → different recon.
+        assert not torch.allclose(recon_a, recon_b, rtol=1e-3)
