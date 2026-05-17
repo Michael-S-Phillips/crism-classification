@@ -120,17 +120,27 @@ def main():
         progress = (epoch - args.warmup) / max(1, args.epochs - args.warmup)
         return 0.5 * (1.0 + np.cos(np.pi * progress))
 
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
     # ── Resume ────────────────────────────────────────────────────────────
     start_epoch = 1
     best_loss = float('inf')
-    if args.resume and os.path.exists(args.resume):
+    if args.resume:
+        if not os.path.exists(args.resume):
+            raise FileNotFoundError(f"--resume path not found: {args.resume}")
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(ckpt['mae_state'])
         start_epoch = ckpt.get('epoch', 0) + 1
         best_loss = ckpt.get('mae_loss', float('inf'))
         log.info(f"Resumed from {args.resume} at epoch {start_epoch}, loss={best_loss:.6f}")
+
+    # Scheduler constructed AFTER resume so last_epoch is correct.
+    # LambdaLR internally calls step() once at construction, advancing last_epoch
+    # from `last_epoch` to `last_epoch + 1`. We want the first explicit step() at
+    # the end of epoch=start_epoch to advance last_epoch to start_epoch, so we
+    # initialize at start_epoch - 2. When start_epoch == 1 (fresh run), this gives
+    # last_epoch=-1, the default.
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer, lr_lambda, last_epoch=start_epoch - 2,
+    )
 
     # ── wandb ─────────────────────────────────────────────────────────────
     use_wandb = not args.no_wandb
