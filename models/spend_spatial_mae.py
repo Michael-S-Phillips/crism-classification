@@ -109,7 +109,7 @@ class SpendSpatialSpectralMAE(SpatialSpectralMAE):
         x_in = x_clean * input_band_mask.view(1, 1, 1, self.n_bands).to(x_clean.dtype)
 
         # 3. Standard spatial masking + encoder pass (parent-class machinery).
-        visible_ids, masked_ids, mask = self._mask_tokens(B, device)
+        visible_ids, _, mask = self._mask_tokens(B, device)
         enc_out = self.encoder.encode_visible(x_in, visible_ids)
         enc_proj = self.enc_to_dec(enc_out[:, 1:])
 
