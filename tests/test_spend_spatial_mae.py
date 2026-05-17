@@ -226,3 +226,68 @@ class TestDegenerateRatioEdgeCase:
         _, recon_b, _ = model(x_b)
         # At ratio=0 the encoder sees the full input, so different x → different recon.
         assert not torch.allclose(recon_a, recon_b, rtol=1e-3)
+
+
+class TestNoise2NoiseGradientDirection:
+    """Confirm SPEND drives the model toward the clean signal, not the noise."""
+
+    def test_recon_converges_toward_clean_signal(self):
+        """Train a tiny SPEND model for a few steps on a synthetic
+        (smooth-signal + i.i.d. Gaussian noise) dataset. After training,
+        the reconstruction should be closer to the clean signal than to
+        the noisy observation.
+        """
+        torch.manual_seed(0)
+        model = SpendSpatialSpectralMAE(
+            n_bands=59, patch_size=7,
+            embed_dim=64, n_heads=4, n_layers=2,
+            decoder_dim=32, decoder_layers=1,
+            mask_ratio=0.5, spectral_mask_ratio=0.5,
+        )
+        model.train()
+        opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+        # Synthetic clean signal: smooth Gaussian-like spectrum per patch.
+        B, P, n_bands = 32, 7, 59
+        wavelength = torch.linspace(0, 1, n_bands)
+        clean = torch.exp(-((wavelength - 0.5) ** 2) / 0.05)  # (n_bands,)
+        clean_patch = clean.view(1, 1, 1, n_bands).expand(B, P, P, n_bands).contiguous()
+
+        # Training loop: each step gets fresh i.i.d. noise (Noise2Noise condition).
+        for _ in range(100):
+            noisy = clean_patch + 0.1 * torch.randn_like(clean_patch)
+            loss, _, _ = model(noisy)
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+
+        # Evaluation: a single new noisy sample, evaluated with the same
+        # spectral mask ratio used during training (so the decoder is asked
+        # to do the task it was actually trained for). Fix the partition for
+        # reproducibility — the model has seen all bands as targets across
+        # the 100 random training partitions, so any fixed partition is fair.
+        model.eval()
+        target_mask_eval = torch.zeros(n_bands, dtype=torch.bool)
+        target_mask_eval[torch.arange(0, n_bands, 2)] = True
+        model._partition_bands = lambda device: target_mask_eval.to(device)
+
+        torch.manual_seed(99)
+        eval_noisy = clean_patch[:4] + 0.1 * torch.randn(4, P, P, n_bands)
+        _, recon, _ = model(eval_noisy)
+
+        clean_flat = clean_patch[:4].reshape(4, 49, n_bands)
+        noisy_flat = eval_noisy.reshape(4, 49, n_bands)
+        # Compare on target-band positions only — those are what the decoder
+        # is trained to predict.
+        mse_vs_clean = (
+            (recon[:, :, target_mask_eval] - clean_flat[:, :, target_mask_eval]) ** 2
+        ).mean().item()
+        mse_vs_noisy = (
+            (recon[:, :, target_mask_eval] - noisy_flat[:, :, target_mask_eval]) ** 2
+        ).mean().item()
+
+        # The whole point of Noise2Noise: recon is closer to clean than to noisy.
+        assert mse_vs_clean < mse_vs_noisy, (
+            f"recon is closer to noisy ({mse_vs_noisy:.4f}) than clean ({mse_vs_clean:.4f}) — "
+            "training did not drive the model toward the signal."
+        )
