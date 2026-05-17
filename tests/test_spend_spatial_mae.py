@@ -291,3 +291,19 @@ class TestNoise2NoiseGradientDirection:
             f"recon is closer to noisy ({mse_vs_noisy:.4f}) than clean ({mse_vs_clean:.4f}) — "
             "training did not drive the model toward the signal."
         )
+
+
+class TestEncoderStateDictCompat:
+    """Pretrained SPEND encoder must load into SpatialSpectralClassifier."""
+
+    def test_encoder_state_dict_loads_into_classifier(self, model):
+        from models.spatial_spectral_transformer import SpatialSpectralClassifier
+        classifier = SpatialSpectralClassifier(
+            n_bands=59, patch_size=7, n_classes=5,
+            embed_dim=128, n_heads=4, n_layers=6,
+        )
+        encoder_state = model.encoder_state_dict()
+        missing, unexpected = classifier.load_encoder_state_dict(encoder_state)
+        assert unexpected == [], f"unexpected keys: {unexpected}"
+        core_missing = [k for k in missing if k.startswith('encoder.encoder')]
+        assert not core_missing, f"core encoder weights missing: {core_missing}"
