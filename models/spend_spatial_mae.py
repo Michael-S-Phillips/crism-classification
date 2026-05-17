@@ -11,6 +11,10 @@ Spec: docs/superpowers/specs/2026-05-16-spend-spatial-mae-design.md
 """
 from __future__ import annotations
 
+import torch
+
+from models.spatial_mae import SpatialSpectralMAE
+
 
 def compute_spectral_mask_ratio(
     epoch: int,
@@ -31,11 +35,6 @@ def compute_spectral_mask_ratio(
     if epoch >= anneal_end_epoch:
         return 0.0
     return base * (anneal_end_epoch - epoch) / (anneal_end_epoch - anneal_start_epoch)
-
-
-import torch
-
-from models.spatial_mae import SpatialSpectralMAE
 
 
 class SpendSpatialSpectralMAE(SpatialSpectralMAE):

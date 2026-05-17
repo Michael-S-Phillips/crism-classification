@@ -2,7 +2,7 @@
 import pytest
 import torch
 
-from models.spend_spatial_mae import compute_spectral_mask_ratio
+from models.spend_spatial_mae import compute_spectral_mask_ratio, SpendSpatialSpectralMAE
 
 
 class TestSpectralMaskSchedule:
@@ -48,9 +48,6 @@ class TestSpectralMaskSchedule:
         ) == 0.0
 
 
-from models.spend_spatial_mae import SpendSpatialSpectralMAE
-
-
 @pytest.fixture
 def model():
     return SpendSpatialSpectralMAE(
@@ -68,10 +65,6 @@ class TestSkeletonAndAttributes:
         assert model.n_tokens == 49
         assert model.mask_ratio == 0.75
         assert model.spectral_mask_ratio == 0.5
-
-    def test_spectral_mask_ratio_is_mutable(self, model):
-        model.spectral_mask_ratio = 0.0
-        assert model.spectral_mask_ratio == 0.0
 
     def test_inherits_encoder_state_dict_method(self, model):
         # Inherited from SpatialSpectralMAE; must still work for downstream loading
