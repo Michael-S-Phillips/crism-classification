@@ -187,7 +187,13 @@ No code outside the pretraining scripts imports `CRISMGlobalPatchDataset`. Remov
 
 ## 6. Pretrain script integration
 
-### 6.1 Code changes
+### 6.1 New config key
+
+Introduce a **new** config key `global_patch_cache_dir` to point at the global pretraining cache.
+
+**Why a new key, not reusing `patch_cache_dir`:** the existing `patch_cache_dir` is consumed by the supervised classifier pipeline (`scripts/cache_mrral_patches.py`, `scripts/cache_patches.py`, `scripts/eval_test_split.py`, and four sites in `scripts/train.py`) which read labeled patch files like `mrral_train_patches_p7.npy` from that directory. Repurposing the key would break finetune and evaluation. Two distinct caches → two distinct keys.
+
+### 6.2 Code changes in pretrain scripts
 
 In both `scripts/pretrain_spatial_mae_denoising.py` and `scripts/pretrain_spatial_mae_spend.py`:
 
@@ -218,10 +224,10 @@ loader = DataLoader(
 
 **Replace with:**
 ```python
-shard_dir = cfg.get('patch_cache_dir')
+shard_dir = cfg.get('global_patch_cache_dir')
 if not shard_dir:
-    raise KeyError("config.local.yaml must define patch_cache_dir")
-log.info(f"Patch cache: {shard_dir}")
+    raise KeyError("config.local.yaml must define global_patch_cache_dir")
+log.info(f"Global patch cache: {shard_dir}")
 
 from data.cached_patch_dataset import CRISMCachedPatchDataset
 ds = CRISMCachedPatchDataset(shard_dir=shard_dir, normalize=True, shuffle=True)
@@ -233,25 +239,32 @@ loader = DataLoader(
 )
 ```
 
-`glob` and `os` imports stay (still used elsewhere in the scripts).
+The `glob` import may become unused in these scripts after the change — remove it if so.
 
-### 6.2 SLURM script changes
+### 6.3 SLURM script changes
 
-In both `scripts/hpc_pretrain_denoising.slurm` and `scripts/hpc_pretrain_spend.slurm`:
-
-The auto-generated `config.local.yaml` already includes `patch_cache_dir`. Update it to point at the new global cache:
+In both `scripts/hpc_pretrain_denoising.slurm` and `scripts/hpc_pretrain_spend.slurm`, the auto-generated `config.local.yaml` block adds the new key:
 
 **Before:**
 ```yaml
+data_root: /xdisk/sbyrne/phillipsm/CRISM_MRDR
+checkpoint_dir: ${WORK_DIR}/checkpoints
+checkpoints_dir: ${WORK_DIR}/checkpoints
+output_dir: ${WORK_DIR}/data
 patch_cache_dir: ${WORK_DIR}/data/patch_cache
 ```
 
 **After:**
 ```yaml
-patch_cache_dir: /xdisk/sbyrne/phillipsm/crism_patch_cache
+data_root: /xdisk/sbyrne/phillipsm/CRISM_MRDR
+checkpoint_dir: ${WORK_DIR}/checkpoints
+checkpoints_dir: ${WORK_DIR}/checkpoints
+output_dir: ${WORK_DIR}/data
+patch_cache_dir: ${WORK_DIR}/data/patch_cache
+global_patch_cache_dir: /xdisk/sbyrne/phillipsm/crism_patch_cache
 ```
 
-(The supervised-classifier patch cache at `${WORK_DIR}/data/patch_cache` is named differently — `mrral_train_patches_p7.npy` etc. — and is read directly via its own path in the supervised training pipeline, not via `patch_cache_dir`. No collision.)
+`patch_cache_dir` is preserved (unchanged) so the supervised pipeline continues to work. `global_patch_cache_dir` is added for the new pretraining cache.
 
 ## 7. Testing strategy
 
