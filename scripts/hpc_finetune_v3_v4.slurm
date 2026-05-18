@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=32gb
-#SBATCH --time=1-00:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --output=logs/finetune_v3_v4_%j.log
 #SBATCH --error=logs/finetune_v3_v4_%j.log
 
@@ -15,7 +15,8 @@
 # downstream classification before investing in longer pretraining runs.
 #
 # 6 runs: 2 encoders × 3 lr_scales {0.001, 0.01, 0.1}
-# Per-run budget ~2-3 hrs; 24-hr wall time gives comfortable margin.
+# Per-run budget ~5 hrs at --epochs 100 --patience 25 (matches v5 ablation
+# convention); 48-hr wall time accommodates the full 6-run sweep with margin.
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 WORKDIR="/groups/sbyrne/${USER}/crism_classification"
@@ -61,8 +62,8 @@ python -u scripts/train.py \
     --run_name ft_v3_denoising_lrscale0001 \
     --pretrain_ckpt "${CKPT_V3}" \
     --encoder_lr_scale 0.001 \
-    --epochs 50 \
-    --patience 10 \
+    --epochs 100 \
+    --patience 25 \
     --batch_size 256 \
     --lr 5e-4 \
     --embed_dim 128 \
@@ -78,8 +79,8 @@ python -u scripts/train.py \
     --run_name ft_v3_denoising_lrscale001 \
     --pretrain_ckpt "${CKPT_V3}" \
     --encoder_lr_scale 0.01 \
-    --epochs 50 \
-    --patience 10 \
+    --epochs 100 \
+    --patience 25 \
     --batch_size 256 \
     --lr 5e-4 \
     --embed_dim 128 \
@@ -95,8 +96,8 @@ python -u scripts/train.py \
     --run_name ft_v3_denoising_lrscale01 \
     --pretrain_ckpt "${CKPT_V3}" \
     --encoder_lr_scale 0.1 \
-    --epochs 50 \
-    --patience 10 \
+    --epochs 100 \
+    --patience 25 \
     --batch_size 256 \
     --lr 5e-4 \
     --embed_dim 128 \
@@ -112,8 +113,8 @@ python -u scripts/train.py \
     --run_name ft_v4_spend_lrscale0001 \
     --pretrain_ckpt "${CKPT_V4}" \
     --encoder_lr_scale 0.001 \
-    --epochs 50 \
-    --patience 10 \
+    --epochs 100 \
+    --patience 25 \
     --batch_size 256 \
     --lr 5e-4 \
     --embed_dim 128 \
@@ -129,8 +130,8 @@ python -u scripts/train.py \
     --run_name ft_v4_spend_lrscale001 \
     --pretrain_ckpt "${CKPT_V4}" \
     --encoder_lr_scale 0.01 \
-    --epochs 50 \
-    --patience 10 \
+    --epochs 100 \
+    --patience 25 \
     --batch_size 256 \
     --lr 5e-4 \
     --embed_dim 128 \
@@ -146,8 +147,8 @@ python -u scripts/train.py \
     --run_name ft_v4_spend_lrscale01 \
     --pretrain_ckpt "${CKPT_V4}" \
     --encoder_lr_scale 0.1 \
-    --epochs 50 \
-    --patience 10 \
+    --epochs 100 \
+    --patience 25 \
     --batch_size 256 \
     --lr 5e-4 \
     --embed_dim 128 \
