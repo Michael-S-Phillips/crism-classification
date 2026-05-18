@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import torch
 
 from data.cached_patch_dataset import compute_valid_centers
+from data.cached_patch_dataset import CRISMCachedPatchDataset
 
 
 class TestComputeValidCenters:
@@ -50,3 +52,77 @@ class TestComputeValidCenters:
         nodata = np.zeros((10, 10), dtype=bool)
         with pytest.raises(AssertionError):
             compute_valid_centers(nodata, patch_size=6, min_valid_frac=0.8)
+
+
+def _make_fake_cache(tmp_path, n_shards=3, n_per_shard=20, n_bands=59, patch_size=7,
+                     fill_value=0.25, seed=0):
+    """Write a tiny set of shards for tests."""
+    rng = np.random.default_rng(seed)
+    for s in range(n_shards):
+        shape = (n_per_shard, patch_size, patch_size, n_bands)
+        # Use small random values in [0, 0.5] to simulate clipped I/F.
+        arr = rng.uniform(0.0, 0.5, size=shape).astype(np.float32)
+        np.save(tmp_path / f'global_patches_{s:03d}.npy', arr)
+    return str(tmp_path)
+
+
+class TestCachedDatasetInit:
+    def test_discovers_shard_files(self, tmp_path):
+        shard_dir = _make_fake_cache(tmp_path, n_shards=4)
+        ds = CRISMCachedPatchDataset(shard_dir)
+        assert len(ds.shards) == 4
+        assert all(p.endswith('.npy') for p in ds.shards)
+
+    def test_raises_on_empty_dir(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            CRISMCachedPatchDataset(str(tmp_path))
+
+    def test_raises_on_nonexistent_dir(self):
+        with pytest.raises(FileNotFoundError):
+            CRISMCachedPatchDataset('/tmp/definitely-not-a-cache-dir-12345')
+
+
+class TestCachedDatasetIter:
+    def test_yields_correct_shape_and_dtype(self, tmp_path):
+        shard_dir = _make_fake_cache(tmp_path, n_shards=2, n_per_shard=10)
+        ds = CRISMCachedPatchDataset(shard_dir, normalize=False, shuffle=False)
+        patches = list(ds)
+        assert len(patches) == 20
+        for p in patches:
+            assert isinstance(p, torch.Tensor)
+            assert p.shape == (7, 7, 59)
+            assert p.dtype == torch.float32
+
+    def test_normalize_false_preserves_clip_range(self, tmp_path):
+        shard_dir = _make_fake_cache(tmp_path, n_shards=1, n_per_shard=10)
+        ds = CRISMCachedPatchDataset(shard_dir, normalize=False, shuffle=False)
+        for p in ds:
+            assert (p >= 0).all()
+            assert (p <= 0.5).all()
+
+    def test_normalize_true_gives_zero_mean_unit_std(self, tmp_path):
+        shard_dir = _make_fake_cache(tmp_path, n_shards=1, n_per_shard=50)
+        ds = CRISMCachedPatchDataset(shard_dir, normalize=True, shuffle=False)
+        for p in ds:
+            assert abs(p.mean().item()) < 1e-4
+            assert 0.5 < p.std().item() < 1.5
+
+    def test_same_seed_deterministic(self, tmp_path):
+        shard_dir = _make_fake_cache(tmp_path, n_shards=2, n_per_shard=10)
+        ds_a = CRISMCachedPatchDataset(shard_dir, normalize=False, shuffle=True, seed=42)
+        ds_b = CRISMCachedPatchDataset(shard_dir, normalize=False, shuffle=True, seed=42)
+        patches_a = list(ds_a)
+        patches_b = list(ds_b)
+        for a, b in zip(patches_a, patches_b):
+            torch.testing.assert_close(a, b, rtol=0, atol=0)
+
+    def test_different_seeds_differ(self, tmp_path):
+        shard_dir = _make_fake_cache(tmp_path, n_shards=2, n_per_shard=20)
+        ds_a = CRISMCachedPatchDataset(shard_dir, normalize=False, shuffle=True, seed=0)
+        ds_b = CRISMCachedPatchDataset(shard_dir, normalize=False, shuffle=True, seed=1)
+        patches_a = list(ds_a)
+        patches_b = list(ds_b)
+        # Different seeds → different first patch (overwhelmingly probable for
+        # a 40-patch cache with 50% chance of identical first index)
+        all_match = all(torch.equal(a, b) for a, b in zip(patches_a, patches_b))
+        assert not all_match
