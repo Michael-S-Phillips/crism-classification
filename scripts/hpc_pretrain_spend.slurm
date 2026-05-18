@@ -29,6 +29,7 @@ checkpoint_dir: ${WORK_DIR}/checkpoints
 checkpoints_dir: ${WORK_DIR}/checkpoints
 output_dir: ${WORK_DIR}/data
 patch_cache_dir: ${WORK_DIR}/data/patch_cache
+global_patch_cache_dir: /xdisk/sbyrne/phillipsm/crism_patch_cache
 EOF
 fi
 
