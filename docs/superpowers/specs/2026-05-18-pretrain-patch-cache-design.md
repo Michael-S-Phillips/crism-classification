@@ -178,6 +178,8 @@ class CRISMCachedPatchDataset(IterableDataset):
 - **Per-worker reproducibility:** when `seed` is set, each worker's RNG is seeded with `seed + worker_id`. With a fixed seed and num_workers, the iteration order is deterministic.
 - **Per-patch normalization on read:** zero-mean / unit-variance per patch using `(patch - patch.mean()) / (patch.std() + 1e-8)` — same as the deleted `CRISMGlobalPatchDataset`.
 
+**Normalization divergence from deleted streaming dataset:** The deleted `CRISMGlobalPatchDataset` computed per-patch mean/std over valid pixels only (excluding nodata positions) and re-zeroed nodata after normalization. The cache stores raw clipped values with nodata replaced by `0.0` at build time, and the dataset's load-time normalization computes mean/std over ALL values in the patch including those nodata-zero positions. For patches with ≥80% valid pixels (the build threshold), the resulting mean/std shifts are small but non-zero. Loss curves from cache-based pre-training will be marginally offset from the prior streaming-dataset runs. If exact parity is needed in future, a per-patch valid-mask channel would have to be added to the cache format and a rebuild performed.
+
 ### 5.3 Deleted code
 
 - `data/global_patch_dataset.py` — the entire `CRISMGlobalPatchDataset` class.

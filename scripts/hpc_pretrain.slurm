@@ -23,8 +23,14 @@ micromamba activate crism
 # ── Machine-local config (creates if missing) ─────────────────────────────────
 cd "$WORKDIR"
 if [ ! -f config.local.yaml ]; then
-    echo "data_root: ${DATA_ROOT}" > config.local.yaml
-    echo "Created config.local.yaml with data_root=${DATA_ROOT}"
+    cat > config.local.yaml <<EOF
+data_root: ${DATA_ROOT}
+checkpoint_dir: ${WORKDIR}/checkpoints
+checkpoints_dir: ${WORKDIR}/checkpoints
+output_dir: ${WORKDIR}/data
+patch_cache_dir: ${WORKDIR}/data/patch_cache
+global_patch_cache_dir: /xdisk/sbyrne/phillipsm/crism_patch_cache
+EOF
 fi
 
 # ── Launch ────────────────────────────────────────────────────────────────────

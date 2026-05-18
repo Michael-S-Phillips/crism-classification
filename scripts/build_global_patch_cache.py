@@ -228,8 +228,11 @@ def main():
                 continue
             tiles_used += 1
             total_skipped_short += n_skipped_short
-            if patches is not None and len(patches) > 0:
-                buffer.append(patches)
+            if patches is None or len(patches) == 0:
+                log.warning(f"Tile {hdr_path} had no valid centers; skipped")
+                tiles_skipped.append(os.path.basename(hdr_path))
+                continue
+            buffer.append(patches)
             # Flush full shards as buffer accumulates.
             while sum(len(a) for a in buffer) >= args.patches_per_shard:
                 shard_records.append(flush_shard(buffer, shard_id))
