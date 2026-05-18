@@ -312,7 +312,7 @@ def main():
         ax.set_ylabel('I/F', fontsize=8)
         ax.set_title(f'v3 denoising recon\ncenter = {"masked" if center_masked_v3 else "visible"}',
                      fontsize=9)
-        ax.legend(fontsize=7, loc='upper right')
+        ax.legend(fontsize=7, loc='upper left', framealpha=0.85)
         ax.grid(alpha=0.3)
 
         # ── Col 3: v4 SPEND reconstruction ──────────────────────────────────
@@ -331,7 +331,7 @@ def main():
         ax.set_ylabel('I/F', fontsize=8)
         ax.set_title(f'v4 SPEND recon\ncenter = {"masked" if center_masked_v4 else "visible"}',
                      fontsize=9)
-        ax.legend(fontsize=7, loc='upper right')
+        ax.legend(fontsize=7, loc='upper left', framealpha=0.85)
         ax.grid(alpha=0.3)
 
         # ── Col 4: residuals ─────────────────────────────────────────────────
@@ -350,7 +350,7 @@ def main():
         ax.set_xlabel('Wavelength (nm)', fontsize=8)
         ax.set_ylabel('recon − clean (I/F)', fontsize=8)
         ax.set_title('residuals\ndashed=v3  solid=v4', fontsize=9)
-        ax.legend(fontsize=7, loc='upper right')
+        ax.legend(fontsize=7, loc='upper left', framealpha=0.85)
         ax.grid(alpha=0.3)
 
         print(f'    residual MAE: v3={mae_v3:.5f}  v4={mae_v4:.5f}  '
