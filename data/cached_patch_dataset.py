@@ -9,14 +9,8 @@ Spec: docs/superpowers/specs/2026-05-18-pretrain-patch-cache-design.md
 """
 from __future__ import annotations
 
-import glob
-import os
-from typing import Iterator, Optional
-
 import numpy as np
-import torch
 from scipy.signal import convolve2d
-from torch.utils.data import IterableDataset
 
 
 def compute_valid_centers(
