@@ -4,6 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import torch
+from torch.utils.data import DataLoader
 
 from data.cached_patch_dataset import compute_valid_centers
 from data.cached_patch_dataset import CRISMCachedPatchDataset
@@ -126,3 +127,40 @@ class TestCachedDatasetIter:
         # a 40-patch cache with 50% chance of identical first index)
         all_match = all(torch.equal(a, b) for a, b in zip(patches_a, patches_b))
         assert not all_match
+
+
+class TestCachedDatasetWorkers:
+    def test_worker_sharding_disjoint_and_complete(self, tmp_path):
+        """With num_workers=N, the union of all yielded patches equals
+        the full cache, with no patch yielded twice within an epoch."""
+        shard_dir = _make_fake_cache(tmp_path, n_shards=6, n_per_shard=10, seed=0)
+        ds = CRISMCachedPatchDataset(shard_dir, normalize=False, shuffle=False, seed=0)
+        loader = DataLoader(ds, batch_size=4, num_workers=3, drop_last=False)
+        seen = []
+        for batch in loader:
+            # batch: (B, 7, 7, 59)
+            for i in range(batch.shape[0]):
+                seen.append(batch[i].numpy().tobytes())
+        # Total = 6 shards × 10 patches = 60
+        assert len(seen) == 60
+        # All unique
+        assert len(set(seen)) == 60
+
+    def test_mmap_reuse_one_load_per_shard_per_worker(self, tmp_path, monkeypatch):
+        """np.load is called once per shard per worker, not once per patch."""
+        shard_dir = _make_fake_cache(tmp_path, n_shards=3, n_per_shard=20)
+        original_load = np.load
+        call_count = {'n': 0}
+
+        def counting_load(*args, **kwargs):
+            call_count['n'] += 1
+            return original_load(*args, **kwargs)
+
+        monkeypatch.setattr(np, 'load', counting_load)
+
+        ds = CRISMCachedPatchDataset(shard_dir, normalize=False, shuffle=False)
+        # num_workers=0 → main process; expect exactly 3 np.load calls (one per shard)
+        # for a single full epoch.
+        patches = list(ds)
+        assert len(patches) == 60
+        assert call_count['n'] == 3, f"expected 3 np.load calls, got {call_count['n']}"
