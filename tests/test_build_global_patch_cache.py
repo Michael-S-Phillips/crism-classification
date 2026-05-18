@@ -84,3 +84,70 @@ def test_extract_skips_short_when_fewer_valid_centers(tmp_path):
     # Should return fewer patches than requested
     assert patches.shape[0] < 100
     assert n_skipped_short == 100 - patches.shape[0]
+
+
+import subprocess
+
+
+def _make_synthetic_data_root(tmp_path, n_tiles: int = 3, H: int = 50, W: int = 50):
+    """Create n_tiles fake mrral tiles in mc<NN>/ subdirectories."""
+    root = tmp_path / 'fake_mrdr'
+    root.mkdir()
+    mc = root / 'mc02'
+    mc.mkdir()
+    hdrs = []
+    for i in range(n_tiles):
+        prefix = mc / f't{i:04d}_mrral_00n000_0327_4'
+        hdr, _img = _make_fake_tile(str(prefix), H=H, W=W, seed=i)
+        hdrs.append(hdr)
+    return str(root), hdrs
+
+
+def test_main_builds_a_complete_cache_end_to_end(tmp_path):
+    """Run the builder against a 3-tile synthetic data root, confirm shards
+    and shard_index.json are written correctly."""
+    import glob as _glob
+    data_root, _hdrs = _make_synthetic_data_root(tmp_path, n_tiles=3, H=60, W=60)
+    output = tmp_path / 'patch_cache'
+
+    # Invoke the builder as a subprocess so we exercise the CLI entry point.
+    # Small targets: 30 patches/tile × 3 tiles = 90 total, shards of 40 → 3 shards.
+    result = subprocess.run(
+        [
+            sys.executable, '-u',
+            os.path.join(os.path.dirname(__file__), '..', 'scripts', 'build_global_patch_cache.py'),
+            '--output', str(output),
+            '--data_root', data_root,
+            '--workers', '2',
+            '--seed', '42',
+            '--patches_per_tile_target', '30',
+            '--patches_per_shard', '40',
+        ],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert result.returncode == 0, f"builder failed: {result.stderr}"
+
+    # Expect 3 shards: 40 + 40 + 10
+    shard_files = sorted(_glob.glob(str(output / 'global_patches_*.npy')))
+    assert len(shard_files) == 3, f"expected 3 shards, got {shard_files}"
+
+    sizes = [np.load(f, mmap_mode='r').shape[0] for f in shard_files]
+    assert sum(sizes) == 90
+    assert sizes[0] == 40
+    assert sizes[1] == 40
+    assert sizes[2] == 10
+
+    # Shard index well-formed
+    index_path = output / 'shard_index.json'
+    assert index_path.exists()
+    with open(index_path) as f:
+        idx = json.load(f)
+    assert idx['n_shards'] == 3
+    assert idx['patches_per_shard'] == 40
+    assert idx['patch_size'] == 7
+    assert idx['n_bands'] == 59
+    assert idx['min_valid_frac'] == 0.8
+    assert idx['clip_max'] == 0.5
+    assert idx['seed'] == 42
+    assert idx['tiles_used'] == 3
+    assert isinstance(idx['shards'], list) and len(idx['shards']) == 3
