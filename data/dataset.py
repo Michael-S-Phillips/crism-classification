@@ -297,7 +297,7 @@ class CRISMSpectralPatchDataset(Dataset):
     Spatial patch dataset for SpatialSpectralClassifier fine-tuning.
 
     Reads 7×7×59 mrral reflectance patches around labeled pixel centers.
-    Applies the same normalization as CRISMGlobalPatchDataset (clip to [0, 0.5]).
+    Applies the same clipping (to [0, 0.5]) as the pretraining patch cache builder.
     Border pixels are zero-padded. File handles are cached per tile, pid-safe.
     """
 

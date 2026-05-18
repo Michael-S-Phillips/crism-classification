@@ -1,7 +1,8 @@
 """
-Spatial MAE pre-training on all global CRISM mrral tiles.
+Spatial MAE pre-training on the global CRISM patch cache.
 
-Streams random 7×7 patches from all 1,764 mrral tiles. One "epoch" = 1M patches.
+Reads pre-built sharded .npy patches from global_patch_cache_dir (config.local.yaml).
+One "epoch" = patches_per_epoch patches (default 100 K; use smaller for smoke tests).
 Saves best checkpoint (lowest reconstruction loss) and periodic checkpoints.
 
 Usage:
@@ -17,7 +18,6 @@ Format:     {'encoder_state': ..., 'mae_state': ..., 'mae_loss': ...,
              'epoch': ..., 'config': {...}}
 """
 import argparse
-import glob
 import logging
 import os
 import sys
@@ -31,13 +31,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# Glob candidates tried in order; first that finds files wins.
-# Pattern 1: local server layout  mc##/t*mrral*.hdr
-# Pattern 2: flat transfer layout  t*mrral*.hdr (all files in one dir)
-MRRAL_GLOB_CANDIDATES = [
-    '/mnt/crism/MRDR/mc*/t*mrral*.hdr',   # local: mc## subdirs
-    None,                                   # filled from config data_root below
-]
 PATCHES_PER_EPOCH = 100_000
 SAVE_EVERY = 50  # save periodic checkpoint every N epochs
 
@@ -82,33 +75,20 @@ def main():
     run_name = f'spatial_mae_{args.embed_dim}d_{args.n_layers}l'
 
     # ── Data ──────────────────────────────────────────────────────────────
-    # Build glob candidates from config data_root (supports flat and mc##/ layouts)
-    data_root = cfg.get('data_root', '')
-    globs_to_try = [
-        os.path.join(data_root, 'mc*', 't*mrral*.hdr'),   # mc## subdirs
-        os.path.join(data_root, 't*mrral*.hdr'),           # flat directory
-        '/mnt/crism/MRDR/mc*/t*mrral*.hdr',               # hardcoded fallback
-    ] if data_root else ['/mnt/crism/MRDR/mc*/t*mrral*.hdr']
+    shard_dir = cfg.get('global_patch_cache_dir')
+    if not shard_dir:
+        raise KeyError("config.local.yaml must define global_patch_cache_dir")
+    log.info(f"Global patch cache: {shard_dir}")
 
-    hdr_files = []
-    for pattern in globs_to_try:
-        hdr_files = sorted(glob.glob(pattern))
-        if hdr_files:
-            log.info(f"Found {len(hdr_files)} mrral tiles via {pattern}")
-            break
-    if not hdr_files:
-        raise FileNotFoundError(
-            f"No mrral HDR files found. Tried:\n" + "\n".join(f"  {g}" for g in globs_to_try)
-        )
-
-    from data.global_patch_dataset import CRISMGlobalPatchDataset
-    ds = CRISMGlobalPatchDataset(hdr_files, patch_size=7, min_valid_frac=0.8)
+    from data.cached_patch_dataset import CRISMCachedPatchDataset
+    ds = CRISMCachedPatchDataset(shard_dir=shard_dir, normalize=True, shuffle=True)
     loader = DataLoader(
         ds,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         pin_memory=torch.cuda.is_available(),
         prefetch_factor=4 if args.num_workers > 0 else None,
+        persistent_workers=args.num_workers > 0,
     )
 
     # ── Model ─────────────────────────────────────────────────────────────
