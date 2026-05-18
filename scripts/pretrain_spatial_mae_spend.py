@@ -12,7 +12,6 @@ Usage (HPC):
         --anneal_start_epoch 161 --anneal_end_epoch 181
 """
 import argparse
-import glob
 import logging
 import os
 import sys
@@ -65,30 +64,20 @@ def main():
              f"anneal {args.anneal_start_epoch}→{args.anneal_end_epoch}")
 
     # ── Data ──────────────────────────────────────────────────────────────
-    data_root = cfg.get('data_root', '/mnt/crism/MRDR')
-    globs_to_try = [
-        os.path.join(data_root, 'mc*', 't*mrral*.hdr'),
-        os.path.join(data_root, 't*mrral*.hdr'),
-    ]
-    hdr_files = []
-    for g in globs_to_try:
-        hdr_files = sorted(glob.glob(g))
-        if hdr_files:
-            break
-    if not hdr_files:
-        raise FileNotFoundError(
-            f"No mrral HDR files found. Tried:\n" + "\n".join(f"  {g}" for g in globs_to_try)
-        )
-    log.info(f"Found {len(hdr_files)} mrral tiles")
+    shard_dir = cfg.get('global_patch_cache_dir')
+    if not shard_dir:
+        raise KeyError("config.local.yaml must define global_patch_cache_dir")
+    log.info(f"Global patch cache: {shard_dir}")
 
-    from data.global_patch_dataset import CRISMGlobalPatchDataset
-    ds = CRISMGlobalPatchDataset(hdr_files, patch_size=7, min_valid_frac=0.8)
+    from data.cached_patch_dataset import CRISMCachedPatchDataset
+    ds = CRISMCachedPatchDataset(shard_dir=shard_dir, normalize=True, shuffle=True)
     loader = DataLoader(
         ds,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         pin_memory=torch.cuda.is_available(),
         prefetch_factor=4 if args.num_workers > 0 else None,
+        persistent_workers=args.num_workers > 0,
     )
 
     # ── Model ─────────────────────────────────────────────────────────────
