@@ -27,13 +27,19 @@ mkdir -p logs checkpoints
 
 echo "=== Continuation pretrain start: $(date) ==="
 
-# --epochs 400 means: with resume from a checkpoint at epoch 194, train
-# from epoch 195 through 400 (about 205 more epochs). The LR scheduler
-# is fresh — warms up over the first 20 continuation epochs, then partial
-# cosine decay over the remaining ~185.
+# LR strategy informed by the original March run's wandb history:
+#   - March peaked at lr ≈ 3.0e-4 (batch 512) and decayed to ~0 by epoch 200.
+#   - For the continuation we use --lr 1.0e-4 (≈1/3 of the March peak):
+#     small enough to not shock the converged weights, large enough to
+#     make meaningful additional progress.
+#   - --warmup 10 ramps gracefully so the first continuation epoch sees
+#     LR ~= 1e-5 (10% of peak), not the full base_lr.
+#   - --epochs 400 with --resume at epoch 194 → train epochs 195–400
+#     (about 205 more), with cosine decay completing inside the window.
 ${PYTHON} -u scripts/pretrain_spatial_mae.py \
     --epochs 400 \
-    --warmup 20 \
+    --warmup 10 \
+    --lr 1.0e-4 \
     --batch_size 1024 \
     --patches_per_epoch 200000 \
     --num_workers 6 \

@@ -49,6 +49,10 @@ def main():
     parser.add_argument('--patches_per_epoch', type=int,   default=PATCHES_PER_EPOCH,
                         help='Patches per epoch (default 1M; use smaller for smoke tests)')
     parser.add_argument('--no_wandb',    action='store_true')
+    parser.add_argument('--lr',          type=float, default=None,
+                        help='Override base LR (default: 1.5e-4 * batch_size/256). '
+                             'Set this when warm-starting from a converged checkpoint '
+                             'where the original schedule had already decayed to ~0.')
     parser.add_argument('--resume',      type=str,   default=None,
                         help='Path to checkpoint to resume from')
     parser.add_argument('--run_name',    type=str,   default=None,
@@ -106,7 +110,8 @@ def main():
     ).to(device)
 
     # ── Optimizer & schedule ──────────────────────────────────────────────
-    base_lr = 1.5e-4 * args.batch_size / 256
+    base_lr = args.lr if args.lr is not None else 1.5e-4 * args.batch_size / 256
+    log.info(f"base_lr = {base_lr:.2e}")
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=base_lr,
         betas=(0.9, 0.95), weight_decay=0.05,
