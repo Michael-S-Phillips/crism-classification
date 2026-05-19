@@ -13,6 +13,9 @@ output GPKG has a single layer; per-polygon columns:
   prob_olivine, prob_lcp, prob_hcp, prob_plagioclase, prob_other  — mean
                        per-class probability within the polygon
   count_px      int   — number of mrral pixels in the polygon
+  band_00 … band_58   — mean reflectance per mrral band (59 columns) within
+                       the polygon, in original I/F units (clipped to [0, 0.5]
+                       and nodata-zeroed to match the training pipeline)
 
 Light morphology applied:
   - Per-class probability rasters are median-filtered (size=3, 1 iteration)
@@ -22,6 +25,9 @@ Light morphology applied:
 
 Source npz: /tmp/v3_nili/t*_probs.npz (from classify_tile_supervised.py)
 Output:    data/vector_v3_denoising/nili_v3_denoising_categories.gpkg
+Wavelength sidecar:
+           data/vector_v3_denoising/nili_v3_denoising_wavelengths.json
+           (single {'wavelengths_nm': [...]} array — same for every polygon)
 
 Usage (no args needed):
     conda run -n crism python scripts/vectorize_multilabel_categories.py
@@ -46,6 +52,13 @@ PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROBS_DIR = '/tmp/v3_nili'
 OUT_PATH = os.path.join(PROJ, 'data', 'vector_v3_denoising',
                         'nili_v3_denoising_categories.gpkg')
+WAVELENGTHS_SIDECAR = os.path.join(PROJ, 'data', 'vector_v3_denoising',
+                                    'nili_v3_denoising_wavelengths.json')
+
+# Match classify_tile_supervised.py preprocessing
+N_BANDS = 59
+NODATA = 65535
+CLIP_MAX = 0.5
 
 # Mars 2000 geographic CRS
 MARS_GEO_WKT = (
@@ -179,6 +192,22 @@ def vectorize_one_tile(tid: str, mrral_path: str) -> gpd.GeoDataFrame:
                                    index=np.arange(1, n_polys + 1))
         polygon_means[f'prob_{mineral}'] = means.astype(np.float32)
 
+    # ── Per-polygon mean reflectance spectrum ────────────────────────────────
+    # Load mrral cube (bands 1..N_BANDS), match the training-time preprocessing
+    # (nodata→0, clip to [0, CLIP_MAX]).
+    with rasterio.open(mrral_path) as src:
+        mrral = src.read(list(range(1, N_BANDS + 1))).astype(np.float32)  # (59, H, W)
+    nd_mask = (mrral == NODATA) | ~np.isfinite(mrral)
+    mrral[nd_mask] = 0.0
+    np.clip(mrral, 0.0, CLIP_MAX, out=mrral)
+
+    band_means = np.zeros((n_polys, N_BANDS), dtype=np.float32)
+    poly_idx = np.arange(1, n_polys + 1)
+    for b in range(N_BANDS):
+        band_means[:, b] = scipy.ndimage.mean(
+            mrral[b], labels=label_id_arr, index=poly_idx,
+        )
+
     # Compose final columns
     gdf['tile_id'] = tid
     gdf['category'] = gdf['cat_bits'].map(category_string)
@@ -186,15 +215,30 @@ def vectorize_one_tile(tid: str, mrral_path: str) -> gpd.GeoDataFrame:
                                               else lambda x: bin(x).count('1'))
     for k, v in polygon_means.items():
         gdf[k] = v
+    for b in range(N_BANDS):
+        gdf[f'band_{b:02d}'] = band_means[:, b]
 
     # Reproject to common CRS and simplify slightly
     gdf = gdf.to_crs(COMMON_CRS)
     gdf['geometry'] = gdf.geometry.simplify(SIMPLIFY_TOL_DEG, preserve_topology=True)
 
-    col_order = ['tile_id', 'category', 'n_minerals',
-                 'prob_olivine', 'prob_lcp', 'prob_hcp', 'prob_plagioclase', 'prob_other',
-                 'count_px', 'geometry']
+    col_order = (
+        ['tile_id', 'category', 'n_minerals',
+         'prob_olivine', 'prob_lcp', 'prob_hcp', 'prob_plagioclase', 'prob_other',
+         'count_px']
+        + [f'band_{b:02d}' for b in range(N_BANDS)]
+        + ['geometry']
+    )
     return gdf[col_order]
+
+
+def read_wavelengths_nm(mrral_path: str) -> list:
+    """Read the 59-band wavelength axis from the first mrral tile's metadata."""
+    import spectral.io.envi as envi
+    hdr_path = mrral_path.replace('.img', '.hdr')
+    hdr = envi.open(hdr_path)
+    wl = [float(w) for w in hdr.metadata['wavelength']][:N_BANDS]
+    return wl
 
 
 def main():
@@ -219,6 +263,16 @@ def main():
     os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
     merged.to_file(OUT_PATH, layer='categories', driver='GPKG')
     print(f'\nWrote {len(merged):,} polygons → {OUT_PATH}')
+
+    # Sidecar wavelengths JSON (same array shared by every polygon's band_00..band_58)
+    wl = read_wavelengths_nm(TILES[0]['mrral'])
+    import json
+    with open(WAVELENGTHS_SIDECAR, 'w') as f:
+        json.dump({'wavelengths_nm': wl, 'n_bands': N_BANDS,
+                   'column_prefix': 'band_',
+                   'note': 'one entry per band_NN column; matches mrral band order'},
+                  f, indent=2)
+    print(f'Wrote wavelength sidecar → {WAVELENGTHS_SIDECAR}')
 
     # Category counts by tile
     print('\nCategory polygon counts by tile:')
