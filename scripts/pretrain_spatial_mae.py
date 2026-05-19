@@ -51,6 +51,9 @@ def main():
     parser.add_argument('--no_wandb',    action='store_true')
     parser.add_argument('--resume',      type=str,   default=None,
                         help='Path to checkpoint to resume from')
+    parser.add_argument('--run_name',    type=str,   default=None,
+                        help='Override the auto-generated run_name (default: '
+                             'spatial_mae_{embed_dim}d_{n_layers}l).')
     parser.add_argument('--ckpt_dir',    type=str,   default=None,
                         help='Checkpoint directory (default: config.yaml checkpoints_dir, '
                              'falls back to <project>/checkpoints)')
@@ -72,7 +75,7 @@ def main():
     os.makedirs(ckpt_dir, exist_ok=True)
     log.info(f"Checkpoints → {ckpt_dir}")
 
-    run_name = f'spatial_mae_{args.embed_dim}d_{args.n_layers}l'
+    run_name = args.run_name or f'spatial_mae_{args.embed_dim}d_{args.n_layers}l'
 
     # ── Data ──────────────────────────────────────────────────────────────
     shard_dir = cfg.get('global_patch_cache_dir')

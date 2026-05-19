@@ -10,13 +10,15 @@
 #SBATCH --output=logs/finetune_v3_v4_%j.log
 #SBATCH --error=logs/finetune_v3_v4_%j.log
 
-# Fine-tune sweep: v3 (denoising MAE) and v4 (SPEND MAE) partial-pretraining encoders
-# (~epoch 20/200 checkpoints). Goal: determine if partial pretraining is sufficient for
-# downstream classification before investing in longer pretraining runs.
+# Fine-tune sweep: denoising MAE, SPEND MAE, and March plain MAE encoders.
+# Goal: disentangle whether downstream classification deficits come from the
+# pretraining objective or from the labeled dataset getting harder
+# (sup-GPKG and Hellas additions changed the val split since the March
+# champion ran).
 #
-# 6 runs: 2 encoders × 3 lr_scales {0.001, 0.01, 0.1}
-# Per-run budget ~5 hrs at --epochs 100 --patience 25 (matches v5 ablation
-# convention); 48-hr wall time accommodates the full 6-run sweep with margin.
+# 9 runs: 3 encoders × 3 lr_scales {0.001, 0.01, 0.1}
+# Per-run budget ~5 hrs at --epochs 100 --patience 25; 48-hr wall time
+# accommodates the full 9-run sweep with margin.
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 WORKDIR="/groups/sbyrne/${USER}/crism_classification"
@@ -25,6 +27,7 @@ CKPT_DIR="${WORKDIR}/checkpoints"
 
 CKPT_V3="${CKPT_DIR}/spatial_mae_denoising_128d_6l_best.pt"
 CKPT_V4="${CKPT_DIR}/spatial_mae_spend_128d_6l_best.pt"
+CKPT_MARCH="${CKPT_DIR}/spatial_mae_128d_6l_march_best.pt"
 
 # ── micromamba environment ─────────────────────────────────────────────────────
 export MAMBA_EXE='/opt/ohpc/pub/apps/micromamba/2.0.2-2/bin/micromamba'
@@ -55,8 +58,8 @@ if [ ! -f "${CACHE_DIR}/mrral_train_patches_p7.npy" ]; then
     echo "Cache built."
 fi
 
-# ── Run 1/6: v3 denoising encoder, lr_scale 0.001 ────────────────────────────
-echo "=== Run 1/6: ft_v3_denoising_lrscale0001 ==="
+# ── Run 1/9: v3 denoising encoder, lr_scale 0.001 ────────────────────────────
+echo "=== Run 1/9: ft_v3_denoising_lrscale0001 ==="
 python -u scripts/train.py \
     --model spatial_vit \
     --run_name ft_v3_denoising_lrscale0001 \
@@ -72,8 +75,8 @@ python -u scripts/train.py \
     --patch_size 7 \
     --asl_loss
 
-# ── Run 2/6: v3 denoising encoder, lr_scale 0.01 ─────────────────────────────
-echo "=== Run 2/6: ft_v3_denoising_lrscale001 ==="
+# ── Run 2/9: v3 denoising encoder, lr_scale 0.01 ─────────────────────────────
+echo "=== Run 2/9: ft_v3_denoising_lrscale001 ==="
 python -u scripts/train.py \
     --model spatial_vit \
     --run_name ft_v3_denoising_lrscale001 \
@@ -89,8 +92,8 @@ python -u scripts/train.py \
     --patch_size 7 \
     --asl_loss
 
-# ── Run 3/6: v3 denoising encoder, lr_scale 0.1 ──────────────────────────────
-echo "=== Run 3/6: ft_v3_denoising_lrscale01 ==="
+# ── Run 3/9: v3 denoising encoder, lr_scale 0.1 ──────────────────────────────
+echo "=== Run 3/9: ft_v3_denoising_lrscale01 ==="
 python -u scripts/train.py \
     --model spatial_vit \
     --run_name ft_v3_denoising_lrscale01 \
@@ -106,8 +109,8 @@ python -u scripts/train.py \
     --patch_size 7 \
     --asl_loss
 
-# ── Run 4/6: v4 SPEND encoder, lr_scale 0.001 ────────────────────────────────
-echo "=== Run 4/6: ft_v4_spend_lrscale0001 ==="
+# ── Run 4/9: v4 SPEND encoder, lr_scale 0.001 ────────────────────────────────
+echo "=== Run 4/9: ft_v4_spend_lrscale0001 ==="
 python -u scripts/train.py \
     --model spatial_vit \
     --run_name ft_v4_spend_lrscale0001 \
@@ -123,8 +126,8 @@ python -u scripts/train.py \
     --patch_size 7 \
     --asl_loss
 
-# ── Run 5/6: v4 SPEND encoder, lr_scale 0.01 ─────────────────────────────────
-echo "=== Run 5/6: ft_v4_spend_lrscale001 ==="
+# ── Run 5/9: v4 SPEND encoder, lr_scale 0.01 ─────────────────────────────────
+echo "=== Run 5/9: ft_v4_spend_lrscale001 ==="
 python -u scripts/train.py \
     --model spatial_vit \
     --run_name ft_v4_spend_lrscale001 \
@@ -140,8 +143,8 @@ python -u scripts/train.py \
     --patch_size 7 \
     --asl_loss
 
-# ── Run 6/6: v4 SPEND encoder, lr_scale 0.1 ──────────────────────────────────
-echo "=== Run 6/6: ft_v4_spend_lrscale01 ==="
+# ── Run 6/9: v4 SPEND encoder, lr_scale 0.1 ──────────────────────────────────
+echo "=== Run 6/9: ft_v4_spend_lrscale01 ==="
 python -u scripts/train.py \
     --model spatial_vit \
     --run_name ft_v4_spend_lrscale01 \
@@ -157,4 +160,55 @@ python -u scripts/train.py \
     --patch_size 7 \
     --asl_loss
 
-echo "=== All 6 fine-tune runs complete ==="
+# ── Run 7/9: March plain MAE encoder, lr_scale 0.001 ─────────────────────────
+echo "=== Run 7/9: ft_marchmae_lrscale0001 ==="
+python -u scripts/train.py \
+    --model spatial_vit \
+    --run_name ft_marchmae_lrscale0001 \
+    --pretrain_ckpt "${CKPT_MARCH}" \
+    --encoder_lr_scale 0.001 \
+    --epochs 100 \
+    --patience 25 \
+    --batch_size 256 \
+    --lr 5e-4 \
+    --embed_dim 128 \
+    --n_heads 4 \
+    --n_layers 6 \
+    --patch_size 7 \
+    --asl_loss
+
+# ── Run 8/9: March plain MAE encoder, lr_scale 0.01 ──────────────────────────
+echo "=== Run 8/9: ft_marchmae_lrscale001 ==="
+python -u scripts/train.py \
+    --model spatial_vit \
+    --run_name ft_marchmae_lrscale001 \
+    --pretrain_ckpt "${CKPT_MARCH}" \
+    --encoder_lr_scale 0.01 \
+    --epochs 100 \
+    --patience 25 \
+    --batch_size 256 \
+    --lr 5e-4 \
+    --embed_dim 128 \
+    --n_heads 4 \
+    --n_layers 6 \
+    --patch_size 7 \
+    --asl_loss
+
+# ── Run 9/9: March plain MAE encoder, lr_scale 0.1 ───────────────────────────
+echo "=== Run 9/9: ft_marchmae_lrscale01 ==="
+python -u scripts/train.py \
+    --model spatial_vit \
+    --run_name ft_marchmae_lrscale01 \
+    --pretrain_ckpt "${CKPT_MARCH}" \
+    --encoder_lr_scale 0.1 \
+    --epochs 100 \
+    --patience 25 \
+    --batch_size 256 \
+    --lr 5e-4 \
+    --embed_dim 128 \
+    --n_heads 4 \
+    --n_layers 6 \
+    --patch_size 7 \
+    --asl_loss
+
+echo "=== All 9 fine-tune runs complete ==="
