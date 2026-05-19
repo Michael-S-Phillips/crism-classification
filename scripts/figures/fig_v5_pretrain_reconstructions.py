@@ -1,14 +1,14 @@
 """
-Side-by-side MAE reconstruction quality comparison: v3 (denoising) vs v4 (SPEND).
+Side-by-side MAE reconstruction quality comparison: denoising MAE vs SPEND MAE.
 
 For three representative pixels (olivine, hcp, plagioclase), shows:
   - Col 1: clean center-pixel spectrum (reference, color-coded by class)
-  - Col 2: v3 (denoising MAE) reconstruction overlaid on clean
+  - Col 2: denoising MAE reconstruction overlaid on clean
            solid=clean, dashed=recon, markers at spatially-masked positions
-  - Col 3: v4 (SPEND MAE at spectral_mask_ratio=0) reconstruction — same overlay
+  - Col 3: SPEND MAE (at spectral_mask_ratio=0) reconstruction — same overlay
   - Col 4: residuals at center pixel for both models in one panel
 
-Title: MAE reconstruction quality — v3 denoising vs v4 SPEND
+Title: MAE reconstruction quality — denoising vs SPEND
 Subtitle: encoder sees only ~25% of spatial positions; decoder fills in 75%
           from the spectral prior
 
@@ -38,8 +38,8 @@ from _utils import (
 )
 
 # ── paths ────────────────────────────────────────────────────────────────────
-CKPT_V3 = os.path.join(PROJECT_ROOT, 'checkpoints', 'spatial_mae_denoising_128d_6l_best.pt')
-CKPT_V4 = os.path.join(PROJECT_ROOT, 'checkpoints', 'spatial_mae_spend_128d_6l_best.pt')
+CKPT_DENOISING = os.path.join(PROJECT_ROOT, 'checkpoints', 'spatial_mae_denoising_128d_6l_best.pt')
+CKPT_SPEND = os.path.join(PROJECT_ROOT, 'checkpoints', 'spatial_mae_spend_128d_6l_best.pt')
 OUT_PATH = os.path.join(PROJECT_ROOT, 'reports', 'v5', 'fig_v5_pretrain_reconstructions.png')
 
 CLASSES_TO_SHOW = ['olivine', 'hcp', 'plagioclase']
@@ -50,7 +50,7 @@ CENTER_IDX = 24
 
 # ── model loaders ────────────────────────────────────────────────────────────
 
-def load_v3(path: str) -> DenoisingSpatialSpectralMAE:
+def load_denoising(path: str) -> DenoisingSpatialSpectralMAE:
     ckpt = torch.load(path, map_location='cpu', weights_only=False)
     cfg = ckpt.get('config', {})
     m = DenoisingSpatialSpectralMAE(
@@ -67,7 +67,7 @@ def load_v3(path: str) -> DenoisingSpatialSpectralMAE:
     return m
 
 
-def load_v4(path: str) -> SpendSpatialSpectralMAE:
+def load_spend(path: str) -> SpendSpatialSpectralMAE:
     ckpt = torch.load(path, map_location='cpu', weights_only=False)
     cfg = ckpt.get('config', {})
     m = SpendSpatialSpectralMAE(
@@ -78,7 +78,7 @@ def load_v4(path: str) -> SpendSpatialSpectralMAE:
         decoder_dim=cfg.get('decoder_dim', 64),
         decoder_layers=cfg.get('decoder_layers', 2),
         mask_ratio=cfg.get('mask_ratio', 0.75),
-        spectral_mask_ratio=0.0,  # eval mode: no band masking — apples-to-apples with v3
+        spectral_mask_ratio=0.0,  # eval mode: no band masking — apples-to-apples with denoising
     )
     m.load_state_dict(ckpt['mae_state'])
     m.eval()
@@ -115,10 +115,10 @@ def run_model(model, patch_raw: np.ndarray, seed: int = 42):
 
 def main():
     print('Loading models ...')
-    v3 = load_v3(CKPT_V3)
-    v4 = load_v4(CKPT_V4)
-    print(f'  v3 (denoising) — epoch {torch.load(CKPT_V3, map_location="cpu", weights_only=False)["epoch"]}')
-    print(f'  v4 (SPEND)     — epoch {torch.load(CKPT_V4, map_location="cpu", weights_only=False)["epoch"]}')
+    mae_denoising = load_denoising(CKPT_DENOISING)
+    mae_spend = load_spend(CKPT_SPEND)
+    print(f'  denoising — epoch {torch.load(CKPT_DENOISING, map_location="cpu", weights_only=False)["epoch"]}')
+    print(f'  SPEND     — epoch {torch.load(CKPT_SPEND, map_location="cpu", weights_only=False)["epoch"]}')
 
     print('Loading pixel index ...')
     df = load_mrral_parquet()
@@ -150,11 +150,11 @@ def main():
         center_clean = patch_raw[3, 3, :]  # (59,) I/F
 
         # Run both models with the SAME spatial mask seed
-        recon_v3, mask_v3, _, _ = run_model(v3, patch_raw, seed=42)
-        recon_v4, mask_v4, _, _ = run_model(v4, patch_raw, seed=42)
+        recon_denoising, mask_denoising, _, _ = run_model(mae_denoising, patch_raw, seed=42)
+        recon_spend, mask_spend, _, _ = run_model(mae_spend, patch_raw, seed=42)
 
-        center_recon_v3 = recon_v3[CENTER_IDX]  # (59,)
-        center_recon_v4 = recon_v4[CENTER_IDX]
+        center_recon_denoising = recon_denoising[CENTER_IDX]  # (59,)
+        center_recon_spend = recon_spend[CENTER_IDX]
 
         color = CLASS_COLORS.get(cls, '#333333')
         # valid wavelength mask: skip nodata zeros and saturated values
@@ -168,68 +168,68 @@ def main():
         ax.set_title(f'{cls}\ntile {tid}  ({pr},{pc})', color=color, fontsize=9.5)
         ax.grid(alpha=0.3)
 
-        # ── Col 2: v3 denoising reconstruction ──────────────────────────────
+        # ── Col 2: denoising MAE reconstruction ─────────────────────────────
         ax = axes[row_i, 1]
         ax.plot(wls[valid], center_clean[valid],
                 color='#888', linewidth=1.2, linestyle='-', alpha=0.7, label='clean')
-        ax.plot(wls[valid], center_recon_v3[valid],
-                color=color, linewidth=1.4, linestyle='--', label='v3 recon')
+        ax.plot(wls[valid], center_recon_denoising[valid],
+                color=color, linewidth=1.4, linestyle='--', label='denoising recon')
         # mark center pixel masked or not
-        center_masked_v3 = bool(mask_v3[CENTER_IDX])
-        marker_label = 'masked pos' if center_masked_v3 else 'visible pos'
-        marker_style = 'x' if center_masked_v3 else 'o'
-        ax.scatter(wls[valid][::6], center_recon_v3[valid][::6],
+        center_masked_denoising = bool(mask_denoising[CENTER_IDX])
+        marker_label = 'masked pos' if center_masked_denoising else 'visible pos'
+        marker_style = 'x' if center_masked_denoising else 'o'
+        ax.scatter(wls[valid][::6], center_recon_denoising[valid][::6],
                    color=color, s=20, marker=marker_style,
                    label=marker_label, zorder=4, alpha=0.8)
         ax.set_xlabel('Wavelength (nm)')
         ax.set_ylabel('I/F')
-        center_status_v3 = 'masked' if center_masked_v3 else 'visible'
-        ax.set_title(f'v3 denoising recon\ncenter = {center_status_v3}', fontsize=9.5)
+        center_status_denoising = 'masked' if center_masked_denoising else 'visible'
+        ax.set_title(f'denoising recon\ncenter = {center_status_denoising}', fontsize=9.5)
         ax.legend(fontsize=8, loc='upper right')
         ax.grid(alpha=0.3)
 
-        # ── Col 3: v4 SPEND reconstruction ──────────────────────────────────
+        # ── Col 3: SPEND MAE reconstruction ─────────────────────────────────
         ax = axes[row_i, 2]
         ax.plot(wls[valid], center_clean[valid],
                 color='#888', linewidth=1.2, linestyle='-', alpha=0.7, label='clean')
-        ax.plot(wls[valid], center_recon_v4[valid],
-                color=color, linewidth=1.4, linestyle='--', label='v4 recon')
-        center_masked_v4 = bool(mask_v4[CENTER_IDX])
-        marker_label_v4 = 'masked pos' if center_masked_v4 else 'visible pos'
-        marker_style_v4 = 'x' if center_masked_v4 else 'o'
-        ax.scatter(wls[valid][::6], center_recon_v4[valid][::6],
-                   color=color, s=20, marker=marker_style_v4,
-                   label=marker_label_v4, zorder=4, alpha=0.8)
+        ax.plot(wls[valid], center_recon_spend[valid],
+                color=color, linewidth=1.4, linestyle='--', label='SPEND recon')
+        center_masked_spend = bool(mask_spend[CENTER_IDX])
+        marker_label_spend = 'masked pos' if center_masked_spend else 'visible pos'
+        marker_style_spend = 'x' if center_masked_spend else 'o'
+        ax.scatter(wls[valid][::6], center_recon_spend[valid][::6],
+                   color=color, s=20, marker=marker_style_spend,
+                   label=marker_label_spend, zorder=4, alpha=0.8)
         ax.set_xlabel('Wavelength (nm)')
         ax.set_ylabel('I/F')
-        center_status_v4 = 'masked' if center_masked_v4 else 'visible'
-        ax.set_title(f'v4 SPEND recon\ncenter = {center_status_v4}', fontsize=9.5)
+        center_status_spend = 'masked' if center_masked_spend else 'visible'
+        ax.set_title(f'SPEND recon\ncenter = {center_status_spend}', fontsize=9.5)
         ax.legend(fontsize=8, loc='upper right')
         ax.grid(alpha=0.3)
 
         # ── Col 4: residuals ─────────────────────────────────────────────────
         ax = axes[row_i, 3]
-        resid_v3 = center_recon_v3 - center_clean
-        resid_v4 = center_recon_v4 - center_clean
-        ax.plot(wls[valid], resid_v3[valid],
+        resid_denoising = center_recon_denoising - center_clean
+        resid_spend = center_recon_spend - center_clean
+        ax.plot(wls[valid], resid_denoising[valid],
                 color=color, linewidth=1.3, linestyle='-',
-                label=f'v3  MAE={np.abs(resid_v3[valid]).mean():.4f}')
-        ax.plot(wls[valid], resid_v4[valid],
+                label=f'denoising  MAE={np.abs(resid_denoising[valid]).mean():.4f}')
+        ax.plot(wls[valid], resid_spend[valid],
                 color=color, linewidth=1.3, linestyle='--', alpha=0.7,
-                label=f'v4  MAE={np.abs(resid_v4[valid]).mean():.4f}')
+                label=f'SPEND  MAE={np.abs(resid_spend[valid]).mean():.4f}')
         ax.axhline(0, color='black', linewidth=0.6, linestyle=':')
         ax.set_xlabel('Wavelength (nm)')
         ax.set_ylabel('recon - clean (I/F)')
-        ax.set_title('residuals at center pixel\nsolid=v3  dashed=v4', fontsize=9.5)
+        ax.set_title('residuals at center pixel\nsolid=denoising  dashed=SPEND', fontsize=9.5)
         ax.legend(fontsize=8, loc='upper right')
         ax.grid(alpha=0.3)
 
-        print(f'    v3 residual MAE: {np.abs(resid_v3[valid]).mean():.5f}  '
-              f'v4: {np.abs(resid_v4[valid]).mean():.5f}  '
-              f'center masked: {center_masked_v3}')
+        print(f'    denoising residual MAE: {np.abs(resid_denoising[valid]).mean():.5f}  '
+              f'SPEND: {np.abs(resid_spend[valid]).mean():.5f}  '
+              f'center masked: {center_masked_denoising}')
 
     fig.suptitle(
-        'MAE reconstruction quality — v3 denoising vs v4 SPEND\n'
+        'MAE reconstruction quality — denoising vs SPEND\n'
         'encoder sees only ~25% of spatial positions; decoder fills in 75% from the spectral prior',
         fontsize=11,
     )
