@@ -75,14 +75,18 @@ BAND_OLINDEX3   = 16   # 0-indexed 15 in CLAUDE.md
 BAND_LCPINDEX2  = 19
 BAND_HCPINDEX2  = 20
 
-# Class colors for the multi-label classification visualization (additive RGB).
-# Drop 'other' from the visualization (residual catch-all). 4 mineral classes.
+# Class color contributions for multi-label visualization.
+#   olivine / lcp / hcp use additive RGB (primary colors).
+#   plagioclase uses a SUBTRACTIVE contribution — it darkens whatever base
+#   colors are already present. This avoids the yellow-collision problem
+#   between olivine+hcp (additive yellow) and a yellow plagioclase color.
+# Drop 'other' from the visualization (residual catch-all).
 CLASS_NAMES = ['olivine', 'lcp', 'hcp', 'plagioclase']
 CLASS_COLORS_01 = {
-    'olivine':     np.array([0.86, 0.16, 0.16], dtype=np.float32),  # red
-    'lcp':         np.array([0.16, 0.31, 0.86], dtype=np.float32),  # blue
-    'hcp':         np.array([0.16, 0.70, 0.24], dtype=np.float32),  # green
-    'plagioclase': np.array([0.94, 0.78, 0.12], dtype=np.float32),  # yellow
+    'olivine':     np.array([ 0.85,  0.00,  0.00], dtype=np.float32),  # red
+    'lcp':         np.array([ 0.00,  0.00,  0.85], dtype=np.float32),  # blue
+    'hcp':         np.array([ 0.00,  0.70,  0.00], dtype=np.float32),  # green
+    'plagioclase': np.array([-0.50, -0.50, -0.50], dtype=np.float32),  # darken
 }
 
 # Threshold scheme. val_AP for the best v3 denoising classifier.
@@ -94,7 +98,7 @@ VAL_AP = {
     'other':       0.787,
 }
 INVERSE_THRESH = {c: 0.99 - 0.49 * VAL_AP[c] for c in VAL_AP}
-GLOBAL_MIN_THRESH = 0.7
+GLOBAL_MIN_THRESH = 0.8
 FINAL_THRESH = {c: max(INVERSE_THRESH[c], GLOBAL_MIN_THRESH) for c in VAL_AP}
 
 # Probability channel order in the saved npz (must match
@@ -312,18 +316,35 @@ def main():
     ax.set_xlabel('Longitude (°E)')
     ax.tick_params(labelsize=8, labelleft=False)
 
-    # Build legend with single-class + mixed examples
+    # Build legend with single-class + mixed examples. plagioclase is
+    # subtractive: it darkens whatever color is present, so its single-class
+    # appearance is black, and its 2-class mixes are darkened primaries.
+    def _mix(*classes):
+        c = np.zeros(3, dtype=np.float32)
+        for name in classes:
+            c = c + CLASS_COLORS_01[name]
+        return np.clip(c, 0, 1)
+
     legend_handles = []
-    for cname in CLASS_NAMES:
-        c = CLASS_COLORS_01[cname]
+    for cname in ['olivine', 'lcp', 'hcp']:
         legend_handles.append(
-            mpatches.Patch(facecolor=c, label=f'{cname} (τ={FINAL_THRESH[cname]:.2f})')
+            mpatches.Patch(facecolor=CLASS_COLORS_01[cname],
+                           label=f'{cname} (τ={FINAL_THRESH[cname]:.2f})')
         )
-    # Two-class mixing examples
-    for a, b in [('olivine', 'hcp'), ('olivine', 'lcp'), ('lcp', 'hcp'),
-                 ('olivine', 'plagioclase'), ('hcp', 'plagioclase')]:
-        mix = np.clip(CLASS_COLORS_01[a] + CLASS_COLORS_01[b], 0, 1)
-        legend_handles.append(mpatches.Patch(facecolor=mix, label=f'{a} + {b}'))
+    legend_handles.append(
+        mpatches.Patch(facecolor=_mix('plagioclase'),
+                       label=f'plagioclase (τ={FINAL_THRESH["plagioclase"]:.2f}; darkens)')
+    )
+    # 2-way additive mixes among the three primaries
+    for a, b in [('olivine', 'hcp'), ('olivine', 'lcp'), ('lcp', 'hcp')]:
+        legend_handles.append(mpatches.Patch(facecolor=_mix(a, b),
+                                             label=f'{a} + {b}'))
+    legend_handles.append(mpatches.Patch(facecolor=_mix('olivine', 'lcp', 'hcp'),
+                                         label='olivine + lcp + hcp'))
+    # plagioclase darkening examples
+    for a in ['olivine', 'lcp', 'hcp']:
+        legend_handles.append(mpatches.Patch(facecolor=_mix(a, 'plagioclase'),
+                                             label=f'{a} + plagioclase'))
     legend_handles.append(
         mpatches.Patch(facecolor='white', edgecolor='black', label='unclassified')
     )
