@@ -23,6 +23,8 @@ from qgis.PyQt.QtWidgets import (
 )
 from qgis.core import (
     QgsFeatureRequest,
+    QgsGeometry,
+    QgsPointXY,
     QgsProject,
     QgsRectangle,
     QgsWkbTypes,
@@ -143,19 +145,47 @@ class SpectrumMapTool(QgsMapToolEmitPoint):
             )
             return
 
-        # Build a tiny search rectangle around the click
+        # Build a small bbox query around the click — setFilterRect prunes by
+        # geometry BOUNDING BOX (fast but coarse), so we then test actual
+        # point-in-polygon containment among the candidates.
         point = self.toLayerCoordinates(layer, event.mapPoint())
         tol = self._tolerance_in_layer_units(layer)
         rect = QgsRectangle(
             point.x() - tol, point.y() - tol,
             point.x() + tol, point.y() + tol,
         )
+        click_geom = QgsGeometry.fromPointXY(QgsPointXY(point.x(), point.y()))
 
-        request = QgsFeatureRequest().setFilterRect(rect).setLimit(1)
+        request = QgsFeatureRequest().setFilterRect(rect)
+        candidates = list(layer.getFeatures(request))
+
         feature = None
-        for feat in layer.getFeatures(request):
-            feature = feat
-            break
+        # Prefer the smallest-area polygon that actually CONTAINS the click —
+        # if polygons nest, this picks the most specific one.
+        contained = []
+        for feat in candidates:
+            geom = feat.geometry()
+            if geom is None or geom.isEmpty():
+                continue
+            if geom.contains(click_geom):
+                contained.append((geom.area(), feat))
+        if contained:
+            contained.sort(key=lambda t: t[0])
+            feature = contained[0][1]
+        else:
+            # Fallback: nearest polygon by centroid distance, but only if there
+            # were any candidates (small rounding errors can put the click
+            # slightly outside a polygon edge).
+            if candidates:
+                best_dist = float("inf")
+                for feat in candidates:
+                    geom = feat.geometry()
+                    if geom is None or geom.isEmpty():
+                        continue
+                    d = geom.distance(click_geom)
+                    if d < best_dist:
+                        best_dist = d
+                        feature = feat
 
         if feature is None:
             self._iface.statusBarIface().showMessage(
@@ -180,18 +210,22 @@ class SpectrumMapTool(QgsMapToolEmitPoint):
 
     # ------------------------------------------------------------------
     def _tolerance_in_layer_units(self, layer):
-        """Return a search tolerance in layer CRS units (~3 px on canvas)."""
+        """Return a search tolerance in LAYER CRS units, roughly 5 px on canvas.
+
+        We map two screen pixels (one px apart) into layer coordinates and
+        take their distance. Avoids fragile internal QGIS conversion helpers.
+        """
         canvas = self.canvas()
-        map_units_per_pixel = canvas.mapUnitsPerPixel()
-        # Transform from map units to layer units (approximate — good enough)
         try:
-            extent = layer.extent()
-            if extent.width() > 0:
-                layer_to_map = canvas.mapSettings().layerToMapUnits(layer)
-                return map_units_per_pixel * 5 / layer_to_map
+            p_a = self.toLayerCoordinates(layer, canvas.mapSettings().mapToPixel().toMapCoordinates(0, 0))
+            p_b = self.toLayerCoordinates(layer, canvas.mapSettings().mapToPixel().toMapCoordinates(1, 0))
+            one_pixel = ((p_b.x() - p_a.x()) ** 2 + (p_b.y() - p_a.y()) ** 2) ** 0.5
+            if one_pixel > 0:
+                return one_pixel * 5
         except Exception:
             pass
-        return map_units_per_pixel * 5
+        # Fallback: assume layer ≈ map CRS
+        return canvas.mapUnitsPerPixel() * 5
 
 
 # ---------------------------------------------------------------------------
