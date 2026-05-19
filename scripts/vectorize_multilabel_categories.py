@@ -1,0 +1,235 @@
+"""
+Multi-label-aware vectorization for the v3 (denoising) classifier output
+on the 4 Nili Fossae tiles.
+
+Each polygon corresponds to a contiguous region of pixels with the same
+*combination* of mineral classes passing their per-class thresholds (the
+val_AP-informed inverse-proportional + global floor=0.80 scheme). The
+output GPKG has a single layer; per-polygon columns:
+
+  tile_id       str   — t1249 / t1250 / t1321 / t1322
+  category      str   — e.g. 'olivine', 'olivine + hcp', 'lcp + hcp + plagioclase'
+  n_minerals    int   — 0 (unclassified) … 4 (all mineral classes)
+  prob_olivine, prob_lcp, prob_hcp, prob_plagioclase, prob_other  — mean
+                       per-class probability within the polygon
+  count_px      int   — number of mrral pixels in the polygon
+
+Light morphology applied:
+  - Per-class probability rasters are median-filtered (size=3, 1 iteration)
+    BEFORE thresholding, to suppress single-pixel speckle.
+  - Polygons below `--min_pixels` (default 9 = ~3×3) are dropped.
+  - Geometry simplified to ~200 m tolerance after reprojection.
+
+Source npz: /tmp/v3_nili/t*_probs.npz (from classify_tile_supervised.py)
+Output:    data/vector_v3_denoising/nili_v3_denoising_categories.gpkg
+
+Usage (no args needed):
+    conda run -n crism python scripts/vectorize_multilabel_categories.py
+"""
+from __future__ import annotations
+
+import os
+import sys
+from itertools import combinations
+
+import geopandas as gpd
+import numpy as np
+import pandas as pd
+import rasterio
+import rasterio.features
+import scipy.ndimage
+from affine import Affine
+from pyproj import CRS
+from shapely.geometry import shape as shapely_shape
+
+PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROBS_DIR = '/tmp/v3_nili'
+OUT_PATH = os.path.join(PROJ, 'data', 'vector_v3_denoising',
+                        'nili_v3_denoising_categories.gpkg')
+
+# Mars 2000 geographic CRS
+MARS_GEO_WKT = (
+    'GEOGCS["GCS_Mars_2000",'
+    'DATUM["D_Mars_2000",SPHEROID["Mars_2000_IAU_IAG",3396190,169.8944472]],'
+    'PRIMEM["Reference_Meridian",0],'
+    'UNIT["Degree",0.0174532925199433]]'
+)
+COMMON_CRS = CRS.from_wkt(MARS_GEO_WKT)
+
+# Mineral order in saved probs (must match classify_tile_supervised.py CLASS_NAMES)
+PROB_CHANNELS = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
+# Which classes count toward the "category" string (drop 'other' — it's residual)
+MINERAL_NAMES = ['olivine', 'lcp', 'hcp', 'plagioclase']
+
+# Threshold scheme: max(val_AP-informed inverse-proportional, global floor)
+VAL_AP = {'olivine': 0.860, 'lcp': 0.742, 'hcp': 0.440,
+          'plagioclase': 0.093, 'other': 0.787}
+GLOBAL_FLOOR = 0.80
+INVERSE = {c: 0.99 - 0.49 * v for c, v in VAL_AP.items()}
+THRESH = {c: max(INVERSE[c], GLOBAL_FLOOR) for c in VAL_AP}
+
+TILES = [
+    {'tid': 't1249', 'mrral': '/mnt/mrdr/mc13/t1249_mrral_20n073_0327_4.img'},
+    {'tid': 't1250', 'mrral': '/mnt/mrdr/mc13/t1250_mrral_20n078_0327_4.img'},
+    {'tid': 't1321', 'mrral': '/mnt/mrdr/mc13/t1321_mrral_25n073_0327_4.img'},
+    {'tid': 't1322', 'mrral': '/mnt/mrdr/mc13/t1322_mrral_25n078_0327_4.img'},
+]
+
+MEDIAN_SIZE = 3
+MEDIAN_ITERS = 1
+MIN_PIXELS = 9
+SIMPLIFY_TOL_DEG = 200.0 / (3396190 * np.pi / 180)  # ~200 m in degrees
+
+
+def category_string(bitmask: int) -> str:
+    """Map a 4-bit mineral mask (bit i ↔ MINERAL_NAMES[i]) → human string."""
+    if bitmask == 0:
+        return 'unclassified'
+    parts = [MINERAL_NAMES[i] for i in range(len(MINERAL_NAMES))
+             if bitmask & (1 << i)]
+    return ' + '.join(parts)
+
+
+def all_categories_for_legend() -> dict:
+    """Map every possible bitmask → category string."""
+    out = {0: 'unclassified'}
+    for r in range(1, len(MINERAL_NAMES) + 1):
+        for combo in combinations(range(len(MINERAL_NAMES)), r):
+            mask = sum(1 << i for i in combo)
+            out[mask] = ' + '.join(MINERAL_NAMES[i] for i in combo)
+    return out
+
+
+def vectorize_one_tile(tid: str, mrral_path: str) -> gpd.GeoDataFrame:
+    """Return a GeoDataFrame of category polygons for one tile."""
+    npz_path = os.path.join(PROBS_DIR, f'{tid}_probs.npz')
+    data = np.load(npz_path)
+    probs = data['probs'].astype(np.float32)        # (H, W, 5)
+    valid_mask = data['valid_mask'].astype(bool)    # (H, W)
+    src_transform = Affine(*[float(v) for v in data['transform']])
+    src_crs = CRS.from_wkt(str(data['crs_wkt']))
+
+    H, W, C = probs.shape
+
+    # Median-filter each prob channel (smooths speckle before thresholding)
+    smooth = np.zeros_like(probs)
+    for ci in range(C):
+        ch = probs[:, :, ci].copy()
+        for _ in range(MEDIAN_ITERS):
+            ch = scipy.ndimage.median_filter(ch, size=MEDIAN_SIZE)
+        smooth[:, :, ci] = ch
+
+    # Per-mineral threshold pass
+    bitmask = np.zeros((H, W), dtype=np.uint8)
+    for bit_i, mineral in enumerate(MINERAL_NAMES):
+        ci = PROB_CHANNELS.index(mineral)
+        bitmask[(smooth[:, :, ci] >= THRESH[mineral]) & valid_mask] |= (1 << bit_i)
+
+    # Polygonize using rasterio (preserves topology of contiguous regions)
+    # 0 (unclassified) gets vectorized too — we will optionally drop or keep
+    polygons = []
+    for geom, value in rasterio.features.shapes(
+        bitmask, mask=valid_mask, transform=src_transform, connectivity=4
+    ):
+        mask_val = int(value)
+        polygons.append((mask_val, shapely_shape(geom)))
+    if not polygons:
+        return gpd.GeoDataFrame(columns=[
+            'tile_id', 'category', 'n_minerals',
+            'prob_olivine', 'prob_lcp', 'prob_hcp', 'prob_plagioclase', 'prob_other',
+            'count_px', 'geometry',
+        ], crs=src_crs)
+
+    cats, geoms = zip(*polygons)
+    gdf = gpd.GeoDataFrame({'cat_bits': list(cats)},
+                            geometry=list(geoms), crs=src_crs)
+
+    # Drop polygons in pixel area below MIN_PIXELS. Approximate via geometry
+    # area / per-pixel area. CRS is meters here so this is precise.
+    pixel_area_m2 = abs(src_transform.a * src_transform.e)
+    gdf['count_px'] = (gdf.geometry.area / pixel_area_m2).round().astype(int)
+    gdf = gdf[gdf['count_px'] >= MIN_PIXELS].copy()
+
+    if len(gdf) == 0:
+        return gpd.GeoDataFrame(columns=[
+            'tile_id', 'category', 'n_minerals',
+            'prob_olivine', 'prob_lcp', 'prob_hcp', 'prob_plagioclase', 'prob_other',
+            'count_px', 'geometry',
+        ], crs=src_crs)
+
+    # Compute per-mineral mean prob within each polygon
+    # Use scipy.ndimage.labeled comprehension over the bitmask raster
+    # Faster: rasterize each polygon's mask in-place using its `count_px`-sized footprint
+    # Simpler approach: for each row in gdf, build a small label raster and zonal-stat.
+    # Even simpler: re-rasterize the gdf with each polygon as a unique id,
+    # then do scipy.ndimage.mean on probs[..., ci].
+    label_id_arr = np.zeros((H, W), dtype=np.int32)
+    # rasterio.features.rasterize: each polygon gets its 1-based index
+    shapes = [(g, i + 1) for i, g in enumerate(gdf.geometry.values)]
+    rasterio.features.rasterize(
+        shapes=shapes, out=label_id_arr,
+        transform=src_transform, fill=0,
+    )
+    n_polys = len(gdf)
+
+    polygon_means = {}
+    for mineral in PROB_CHANNELS:
+        ci = PROB_CHANNELS.index(mineral)
+        means = scipy.ndimage.mean(probs[:, :, ci], labels=label_id_arr,
+                                   index=np.arange(1, n_polys + 1))
+        polygon_means[f'prob_{mineral}'] = means.astype(np.float32)
+
+    # Compose final columns
+    gdf['tile_id'] = tid
+    gdf['category'] = gdf['cat_bits'].map(category_string)
+    gdf['n_minerals'] = gdf['cat_bits'].apply(int.bit_count if hasattr(int, 'bit_count')
+                                              else lambda x: bin(x).count('1'))
+    for k, v in polygon_means.items():
+        gdf[k] = v
+
+    # Reproject to common CRS and simplify slightly
+    gdf = gdf.to_crs(COMMON_CRS)
+    gdf['geometry'] = gdf.geometry.simplify(SIMPLIFY_TOL_DEG, preserve_topology=True)
+
+    col_order = ['tile_id', 'category', 'n_minerals',
+                 'prob_olivine', 'prob_lcp', 'prob_hcp', 'prob_plagioclase', 'prob_other',
+                 'count_px', 'geometry']
+    return gdf[col_order]
+
+
+def main():
+    print('Thresholds applied (per class):')
+    for c in PROB_CHANNELS:
+        used = THRESH[c]
+        inv = INVERSE[c]
+        gate = 'floor' if GLOBAL_FLOOR > inv else 'inverse'
+        print(f'  {c:<12} val_AP={VAL_AP[c]:.3f}  inverse={inv:.3f}  '
+              f'floor={GLOBAL_FLOOR:.2f}  → τ={used:.3f}  ({gate})')
+    print()
+
+    frames = []
+    for t in TILES:
+        print(f'Vectorizing {t["tid"]} …')
+        gdf = vectorize_one_tile(t['tid'], t['mrral'])
+        print(f'  {len(gdf):,} polygons')
+        frames.append(gdf)
+
+    merged = pd.concat(frames, ignore_index=True)
+    merged = gpd.GeoDataFrame(merged, geometry='geometry', crs=COMMON_CRS)
+    os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
+    merged.to_file(OUT_PATH, layer='categories', driver='GPKG')
+    print(f'\nWrote {len(merged):,} polygons → {OUT_PATH}')
+
+    # Category counts by tile
+    print('\nCategory polygon counts by tile:')
+    summary = (merged.groupby(['tile_id', 'category'])
+                     .size().unstack(fill_value=0))
+    # Sort columns by total descending for readability
+    if not summary.empty:
+        col_totals = summary.sum(axis=0).sort_values(ascending=False)
+        summary = summary[col_totals.index]
+        print(summary.to_string())
+
+
+if __name__ == '__main__':
+    main()
