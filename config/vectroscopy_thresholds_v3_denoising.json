@@ -1,0 +1,38 @@
+{
+  "generated": "2026-05-19",
+  "classifier": "ft_v3_denoising_lrscale001_best.pt",
+  "classifier_val_mAP": 0.5843,
+  "scheme": "val_AP-informed inverse-proportional with global floor=0.80; 3 tiers per class",
+  "tiles_used": [
+    "t1249_mrral_20n073_0327_4",
+    "t1250_mrral_20n078_0327_4",
+    "t1321_mrral_25n073_0327_4",
+    "t1322_mrral_25n078_0327_4"
+  ],
+  "val_AP_per_class": {
+    "olivine": 0.860,
+    "lcp": 0.742,
+    "hcp": 0.440,
+    "plagioclase": 0.093,
+    "other": 0.787
+  },
+  "tier_meaning": {
+    "1": "lower bound of detection — confident enough to register",
+    "2": "moderate confidence",
+    "3": "high confidence"
+  },
+  "thresholds": {
+    "olivine":     [0.80, 0.87, 0.94],
+    "lcp":         [0.80, 0.87, 0.94],
+    "hcp":         [0.80, 0.87, 0.94],
+    "plagioclase": [0.944, 0.97, 0.99],
+    "other":       [0.80, 0.87, 0.94]
+  },
+  "morphology": {
+    "median_filter_size": 3,
+    "median_filter_iterations": 1,
+    "sieve_min_pixels": 9,
+    "majority_filter_iterations": 3,
+    "simplify_tolerance_meters": 200
+  }
+}
