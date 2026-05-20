@@ -122,6 +122,13 @@ def main():
             tile_id, mrral_path, gpkg_path,
             other_polygon_ids=gate,
         )
+        # In-loop bland subsample keeps peak memory bounded — extracting all
+        # ~1M+ pixels per bland tile and holding them in `all_records` OOMs.
+        if tile_id in BLAND_TILES and len(records) > SAMPLE_PER_TILE:
+            idx = BLAND_TILES_ORDERED.index(tile_id)
+            rng = np.random.default_rng(SEED + idx)
+            chosen = rng.choice(len(records), size=SAMPLE_PER_TILE, replace=False)
+            records = [records[k] for k in chosen]
         logging.info(f"  {len(records)} pixels extracted")
         all_records.extend(records)
 
