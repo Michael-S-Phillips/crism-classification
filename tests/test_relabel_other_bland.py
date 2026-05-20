@@ -142,3 +142,100 @@ class TestBuildBlandOtherGpkgsScript:
         # Should have overwritten the bad file with a real GPKG
         gdf = gpd.read_file(out_path)
         assert len(gdf) == 1
+
+
+class TestSubsampleBlandRows:
+    def test_caps_each_bland_tile_to_sample_size(self):
+        from scripts.build_mrral_dataset import (
+            subsample_bland_other_rows, BLAND_TILES_ORDERED,
+        )
+        # 200K rows per bland tile + some non-bland rows
+        rows = []
+        for tid in BLAND_TILES_ORDERED:
+            for r in range(200):
+                rows.append({'tile_id': tid, 'pixel_row': r, 'pixel_col': 0,
+                              'other': 1, 'olivine_t1': 0})
+        rows.extend([
+            {'tile_id': 't0435', 'pixel_row': r, 'pixel_col': 0,
+             'other': 0, 'olivine_t1': 1}
+            for r in range(50)
+        ])
+        df = pd.DataFrame(rows)
+        out = subsample_bland_other_rows(df, sample_per_tile=100, seed=42)
+        # Each bland tile reduced to 100 rows
+        for tid in BLAND_TILES_ORDERED:
+            n = int((out['tile_id'] == tid).sum())
+            assert n == 100, f'{tid}: got {n}, expected 100'
+        # Non-bland row count unchanged
+        assert int((out['tile_id'] == 't0435').sum()) == 50
+
+    def test_keeps_all_when_tile_has_fewer_than_sample(self):
+        from scripts.build_mrral_dataset import subsample_bland_other_rows
+        df = pd.DataFrame([
+            {'tile_id': 't1241', 'pixel_row': r, 'pixel_col': 0,
+             'other': 1, 'olivine_t1': 0}
+            for r in range(50)
+        ])
+        out = subsample_bland_other_rows(df, sample_per_tile=100, seed=42)
+        assert int((out['tile_id'] == 't1241').sum()) == 50
+
+    def test_reproducible_seed(self):
+        from scripts.build_mrral_dataset import subsample_bland_other_rows
+        rows = [
+            {'tile_id': 't1241', 'pixel_row': r, 'pixel_col': 0,
+             'other': 1, 'olivine_t1': 0}
+            for r in range(200)
+        ]
+        df = pd.DataFrame(rows)
+        out_a = subsample_bland_other_rows(df.copy(), sample_per_tile=50, seed=42)
+        out_b = subsample_bland_other_rows(df.copy(), sample_per_tile=50, seed=42)
+        # Same rows in both runs (compare by pixel_row, since indices may differ)
+        assert sorted(out_a['pixel_row'].tolist()) == sorted(out_b['pixel_row'].tolist())
+
+
+class TestAssignBlandSplits:
+    def test_assigns_70_15_15_split(self):
+        from scripts.build_mrral_dataset import (
+            assign_bland_tile_splits, BLAND_TILES_ORDERED,
+        )
+        # 10000 rows per bland tile (statistical test — need enough samples)
+        rows = []
+        for tid in BLAND_TILES_ORDERED:
+            for r in range(10000):
+                rows.append({'tile_id': tid, 'split': 'train'})
+        df = pd.DataFrame(rows)
+        out = assign_bland_tile_splits(df, seed=42)
+        # Aggregate across all 8 tiles: 80000 rows total
+        n = len(out)
+        n_train = int((out['split'] == 'train').sum())
+        n_val   = int((out['split'] == 'val').sum())
+        n_test  = int((out['split'] == 'test').sum())
+        # Allow ±2% tolerance per split (large samples)
+        assert 0.68 * n <= n_train <= 0.72 * n, n_train / n
+        assert 0.13 * n <= n_val   <= 0.17 * n, n_val / n
+        assert 0.13 * n <= n_test  <= 0.17 * n, n_test / n
+
+    def test_non_bland_rows_untouched(self):
+        from scripts.build_mrral_dataset import assign_bland_tile_splits
+        df = pd.DataFrame([
+            {'tile_id': 't0435', 'split': 'val'},
+            {'tile_id': 't1241', 'split': 'train'},
+            {'tile_id': 't0886', 'split': 'test'},
+        ])
+        out = assign_bland_tile_splits(df, seed=42)
+        # t0435 and t0886 are non-bland → keep original 'val'/'test'
+        assert out.loc[out['tile_id'] == 't0435', 'split'].iloc[0] == 'val'
+        assert out.loc[out['tile_id'] == 't0886', 'split'].iloc[0] == 'test'
+
+    def test_reproducible_seed(self):
+        from scripts.build_mrral_dataset import (
+            assign_bland_tile_splits, BLAND_TILES_ORDERED,
+        )
+        rows = [
+            {'tile_id': BLAND_TILES_ORDERED[0], 'split': 'train'}
+            for _ in range(100)
+        ]
+        df = pd.DataFrame(rows)
+        out_a = assign_bland_tile_splits(df.copy(), seed=42)
+        out_b = assign_bland_tile_splits(df.copy(), seed=42)
+        assert out_a['split'].tolist() == out_b['split'].tolist()
