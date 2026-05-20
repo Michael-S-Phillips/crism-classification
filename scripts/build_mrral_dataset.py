@@ -118,17 +118,26 @@ def main():
         gate = other_polygon_ids_for_tile(tile_id)
         gate_desc = 'BLAND (allow all)' if gate is None else 'block Other'
         logging.info(f"[{i+1}/{len(pairs)}] Processing {tile_id}  ({gate_desc})")
-        records = extract_mrral_pixels_from_pair(
-            tile_id, mrral_path, gpkg_path,
-            other_polygon_ids=gate,
-        )
-        # In-loop bland subsample keeps peak memory bounded — extracting all
-        # ~1M+ pixels per bland tile and holding them in `all_records` OOMs.
-        if tile_id in BLAND_TILES and len(records) > SAMPLE_PER_TILE:
+        # Bland tiles have tile-covering polygons (~1M+ pixels each); building
+        # 1M+ dict records OOMs before we can subsample. Push the cap INTO the
+        # extractor so it only materializes ~SAMPLE_PER_TILE×1.3 dicts.
+        if tile_id in BLAND_TILES:
             idx = BLAND_TILES_ORDERED.index(tile_id)
-            rng = np.random.default_rng(SEED + idx)
-            chosen = rng.choice(len(records), size=SAMPLE_PER_TILE, replace=False)
-            records = [records[k] for k in chosen]
+            records = extract_mrral_pixels_from_pair(
+                tile_id, mrral_path, gpkg_path,
+                other_polygon_ids=gate,
+                max_pixels_per_polygon=SAMPLE_PER_TILE,
+                seed=SEED + idx,
+            )
+            if len(records) > SAMPLE_PER_TILE:
+                rng = np.random.default_rng(SEED + idx)
+                chosen = rng.choice(len(records), size=SAMPLE_PER_TILE, replace=False)
+                records = [records[k] for k in chosen]
+        else:
+            records = extract_mrral_pixels_from_pair(
+                tile_id, mrral_path, gpkg_path,
+                other_polygon_ids=gate,
+            )
         logging.info(f"  {len(records)} pixels extracted")
         all_records.extend(records)
 

@@ -100,6 +100,8 @@ def extract_mrral_pixels_from_pair(
     gpkg_path: str,
     other_polygon_ids: Optional[Set] = None,
     gdf=None,
+    max_pixels_per_polygon: Optional[int] = None,
+    seed: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
     Extract per-pixel mrral spectra (59 bands, 410-2457 nm) from one tile.
@@ -108,8 +110,13 @@ def extract_mrral_pixels_from_pair(
     - reads mrral file instead of mrrsu
     - stores bands as m0..m58 (not b0..b59)
     - reads exactly MRRAL_N_BANDS=59 bands regardless of file band count
+
+    If max_pixels_per_polygon is set, the (pixel_rows, pixel_cols) arrays are
+    subsampled (without replacement) BEFORE record dicts are built — this
+    caps peak memory for tile-covering polygons (e.g. bland-tile labels).
     """
     records = []
+    rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
 
     with rasterio.open(mrral_path) as src:
         raster_crs = src.crs
@@ -150,6 +157,15 @@ def extract_mrral_pixels_from_pair(
             pixel_rows, pixel_cols = np.where(mask)
             if len(pixel_rows) == 0:
                 continue
+
+            if max_pixels_per_polygon is not None and len(pixel_rows) > max_pixels_per_polygon:
+                # Subsample the polygon's pixels in-array BEFORE constructing dicts.
+                # Oversample by 30% to leave headroom for the nodata filter below.
+                target = int(max_pixels_per_polygon * 1.3)
+                if target < len(pixel_rows):
+                    chosen = rng.choice(len(pixel_rows), size=target, replace=False)
+                    pixel_rows = pixel_rows[chosen]
+                    pixel_cols = pixel_cols[chosen]
 
             row_min, row_max = int(pixel_rows.min()), int(pixel_rows.max()) + 1
             col_min, col_max = int(pixel_cols.min()), int(pixel_cols.max()) + 1
