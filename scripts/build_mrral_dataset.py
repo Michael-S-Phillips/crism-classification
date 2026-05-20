@@ -106,7 +106,6 @@ def main():
     logging.info(f"Found {len(pairs)} mrral tile pairs")
 
     # Re-use same train/val/test split as mrrsu parquet — join on tile+polygon+row+col.
-    # Load only the join keys + split column to keep peak memory low.
     mrrsu_parquet = os.path.join(cfg['output_dir'], 'pixels.parquet')
     mrrsu_splits = pd.read_parquet(
         mrrsu_parquet,
@@ -116,19 +115,23 @@ def main():
 
     all_records = []
     for i, (tile_id, gpkg_path, mrral_path) in enumerate(pairs):
-        logging.info(f"[{i+1}/{len(pairs)}] Processing {tile_id}")
-        records = extract_mrral_pixels_from_pair(tile_id, mrral_path, gpkg_path)
+        gate = other_polygon_ids_for_tile(tile_id)
+        gate_desc = 'BLAND (allow all)' if gate is None else 'block Other'
+        logging.info(f"[{i+1}/{len(pairs)}] Processing {tile_id}  ({gate_desc})")
+        records = extract_mrral_pixels_from_pair(
+            tile_id, mrral_path, gpkg_path,
+            other_polygon_ids=gate,
+        )
         logging.info(f"  {len(records)} pixels extracted")
         all_records.extend(records)
 
     df = pd.DataFrame(all_records)
     del all_records
-    logging.info(f"Total pixels before split assignment: {len(df)}")
+    logging.info(f"Total pixels before subsample/merge: {len(df)}")
 
-    # Vectorised left-join to assign split. Pixels not present in the mrrsu
-    # parquet default to 'train'. Using merge instead of df.apply(axis=1) avoids
-    # per-row Python lambdas — required for the 1.7M-row scale here (df.apply
-    # was triggering the OOM killer).
+    df = subsample_bland_other_rows(df)
+    logging.info(f"After bland-tile subsample: {len(df)}")
+
     df = df.merge(
         mrrsu_splits,
         on=['tile_id', 'polygon_id', 'pixel_row', 'pixel_col'],
@@ -136,10 +139,14 @@ def main():
     )
     df['split'] = df['split'].fillna('train')
 
+    df = assign_bland_tile_splits(df)
+
     out = os.path.join(cfg['output_dir'], 'mrral_pixels.parquet')
     df.to_parquet(out, index=False)
     logging.info(f"Wrote {len(df)} pixels to {out}")
     logging.info(f"Splits: {df['split'].value_counts().to_dict()}")
+    logging.info(f"'other' label total: {int(df['other'].sum())}")
+    logging.info(f"'other' by split: {df[df['other']==1]['split'].value_counts().to_dict()}")
     logging.info(f"Columns (first 10): {list(df.columns[:10])}")
 
 
