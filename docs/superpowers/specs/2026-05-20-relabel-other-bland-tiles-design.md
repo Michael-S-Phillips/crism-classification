@@ -102,19 +102,32 @@ Why the full extent vs the valid-pixel mask? Two reasons: (1) bounds + box() is 
 
 A new one-shot script `scripts/build_bland_other_gpkgs.py` reads each mrral tile, builds the GPKG, and writes it to `/mnt/mrdr/categorized_mineral_units/`. Idempotent — skips files that already exist.
 
-## 5. Label parser change
+## 5. Pipeline change — gate at the extraction seam
 
-The label parser in `data/label_parser.py` builds a `Category → label-columns` mapping. The change:
+A code review caught that `data/label_parser.py` is **not** the right seam: `parse_category()` is pure-functional and has no access to `tile_id`. The correct gate is the existing `other_polygon_ids` parameter on `extract_mrral_pixels_from_pair` (see `data/extract_pixels.py:97-131`), which already filters "Other" polygons by polygon index when set.
 
-- Existing categories `"Other (High|Moderate|Low)"` are no longer mapped to the `other` label column **by default**.
-- New rule: `other = 1` is assigned only when EITHER `Mineral ID 1 == "bland"` (the new GPKG marker) OR the source tile_id is in the bland-tile whitelist:
-  ```python
-  BLAND_TILES = {'t1241', 't1242', 't1243', 't1280', 't1313', 't1314', 't1315', 't1336'}
-  ```
+The change lives in **`scripts/build_mrral_dataset.py`** (which currently doesn't pass this parameter — see line 39). We add per-tile gating logic:
 
-Both conditions are belt-and-suspenders — either one suffices. Polygons in other tiles whose Category starts with `"Other"` contribute nothing to the label set (they're skipped during extraction).
+```python
+BLAND_TILES = {'t1241', 't1242', 't1243', 't1280', 't1313', 't1314', 't1315', 't1336'}
 
-This is the minimum invasive change. Edit happens in `data/label_parser.py` (or wherever the category-to-label mapping is centralized). The rest of the build pipeline is unchanged.
+for tile_id, gpkg_path, mrral_path in pairs:
+    if tile_id in BLAND_TILES:
+        # Allow ALL "Other" polygons (the whole tile is bland-labeled).
+        other_polygon_ids = None
+    else:
+        # Block ALL "Other" polygons in non-bland tiles.
+        other_polygon_ids = set()   # empty set → no "Other" polygons pass
+
+    records = extract_mrral_pixels_from_pair(
+        tile_id, mrral_path, gpkg_path,
+        other_polygon_ids=other_polygon_ids,
+    )
+```
+
+This is the entire label-policy change. `label_parser.py` is unchanged. The `Mineral ID 1 = "bland"` value in the new GPKGs is now purely descriptive metadata — it's not used as a gate. (Kept anyway because it helps a human reading the GPKG understand provenance.)
+
+Effect on pre-existing rows with multi-label cells: a pixel that was previously labeled `(olivine=1, other=1)` from two overlapping polygons in t0435 will lose its `other=1` flag (because t0435 isn't in BLAND_TILES → empty `other_polygon_ids` → "Other" polygons drop). Its olivine label survives. This is the intended behavior.
 
 ## 6. Parquet rebuild + subsampling
 
@@ -124,17 +137,21 @@ Run `scripts/build_mrral_dataset.py` after the GPKGs and label-parser change lan
 - Existing tiles' mineral labels unchanged (olivine_t1: 431K, lcp: 546K, hcp: 434K, plag: 353K).
 - The previous 677K "other" rows are gone (or have `other = 0` after the parser change — depending on whether they had concurrent mineral labels).
 
-Then run a subsampling step. Either as the tail of `build_mrral_dataset.py` or as a separate `scripts/subsample_other_labels.py`. The logic:
+Then run a subsampling step. As the tail of `build_mrral_dataset.py` (before the parquet write). The logic:
 
 ```python
 SAMPLE_PER_TILE = 113_000
 SEED = 42
+BLAND_TILES_ORDERED = [
+    't1241', 't1242', 't1243', 't1280',
+    't1313', 't1314', 't1315', 't1336',
+]   # fixed enumeration order → deterministic per-tile seeds
 
-bland_rows = df['tile_id'].isin(BLAND_TILES) & (df['other'] == 1)
+bland_rows = df['tile_id'].isin(BLAND_TILES_ORDERED) & (df['other'] == 1)
 sampled_idx = []
-for tid in BLAND_TILES:
+for i, tid in enumerate(BLAND_TILES_ORDERED):
     tile_idx = df.index[bland_rows & (df['tile_id'] == tid)]
-    rng = np.random.default_rng(SEED + hash(tid) % 1000)
+    rng = np.random.default_rng(SEED + i)   # deterministic across Python runs
     keep = rng.choice(tile_idx, size=min(SAMPLE_PER_TILE, len(tile_idx)),
                       replace=False)
     sampled_idx.extend(keep)
@@ -143,9 +160,9 @@ for tid in BLAND_TILES:
 df_final = pd.concat([df[~bland_rows], df.loc[sampled_idx]], ignore_index=True)
 ```
 
-Per-tile RNG seeding ensures reproducibility AND independence across tiles.
+Per-tile RNG seeding uses fixed enumeration index (`SEED + i`) — reproducible across Python invocations regardless of `PYTHONHASHSEED`. (Using `hash(tid)` would have been salted and non-reproducible.)
 
-Target final counts (approximate):
+Target final counts (approximate; exact unless a tile has < 113K valid pixels):
 
 | class | pixels |
 |---|---|
@@ -153,7 +170,32 @@ Target final counts (approximate):
 | lcp | ~550K |
 | hcp | ~430K |
 | plagioclase | ~350K |
-| other | ~900K (new) |
+| other | ~904K (new, = 8 × 113K) |
+
+### 6.1 Split assignment for the new bland-tile rows
+
+`build_mrral_dataset.py` assigns train/val/test splits via a **left-join** on `(tile_id, polygon_id, pixel_row, pixel_col)` against `data/pixels.parquet` (the mrrsu parquet), with `train` as the fallback for unmatched rows.
+
+The 8 bland tiles have **zero rows in `data/pixels.parquet`** (confirmed) → all 904K "other" rows would default to `train`, leaving val/test free of the "other" class entirely. That would silently break per-class validation.
+
+The fix: explicitly assign splits to the bland-tile rows BEFORE the merge (or immediately after, overwriting the `train` default for those rows). Random per-pixel within each tile, stratified to roughly 70/15/15 train/val/test matching the project convention (`config.yaml:split`). Same fixed-enumeration RNG seeding as §6:
+
+```python
+SPLIT_FRACS = {'train': 0.70, 'val': 0.15, 'test': 0.15}
+
+for i, tid in enumerate(BLAND_TILES_ORDERED):
+    mask = (df_final['tile_id'] == tid)
+    n = int(mask.sum())
+    rng = np.random.default_rng(SEED + 100 + i)
+    splits = rng.choice(
+        list(SPLIT_FRACS.keys()),
+        size=n,
+        p=list(SPLIT_FRACS.values()),
+    )
+    df_final.loc[mask, 'split'] = splits
+```
+
+Result: each bland tile contributes ~79K train + ~17K val + ~17K test = 113K rows. Aggregate val "other" pixel count: ~135K — comparable to mineral classes' val partitions.
 
 ## 7. Patch cache rebuild
 
@@ -188,12 +230,31 @@ Downstream classifier improvement is a future hypothesis to test, not a success 
 
 | risk | mitigation |
 |---|---|
-| One of the 8 tiles is not in fact uniformly bland — some pixels are mineral-bearing | User picked these by hand. If a downstream finetune shows the model now misclassifies some mineral pixels as "other", we can drop the offending tile from `BLAND_TILES` and rebuild. |
-| Polygon-covers-everything causes the build pipeline to extract too many nodata-filtered "other" pixels | `extract_mrral_pixels_from_pair` already drops nodata. Verified in §4.2. |
-| The label parser change inadvertently affects tier handling (Moderate / Low) for existing tiles | The parser change targets categories starting with `"Other"` specifically; mineral categories untouched. Unit test #2 covers this. |
-| Subsampling is per-tile-rng but the build script might re-order rows non-deterministically | The subsampling explicitly seeds + selects by index, not order. Reproducible. |
-| Patch cache `.npy` shapes change (new row count) — downstream slurm scripts assume specific sizes | The cache files use dynamic shape per built dataset; downstream training reads via shape inspection. No fixed-shape assumptions. |
-| The existing 677K "other" pixels in `data/mrral_pixels.parquet` get dropped — old training runs are no longer reproducible from current parquet | Keep a backup: `cp data/mrral_pixels.parquet data/mrral_pixels.pre-bland.parquet` before rebuild. Allows reverting if the new labels regress downstream performance. |
+| One of the 8 tiles is not in fact uniformly bland — some pixels are mineral-bearing | User picked these by hand. If a downstream finetune shows misclassification of mineral pixels as "other", drop the offending tile from `BLAND_TILES_ORDERED` and rebuild. |
+| Polygon-covers-everything extracts nodata pixels | `extract_mrral_pixels_from_pair` already drops nodata at the pixel-read step. Confirmed in `data/extract_pixels.py`. |
+| The extraction gate change inadvertently affects mineral labels for existing tiles | The gate (`other_polygon_ids=set()` for non-bland tiles) only blocks polygons whose category contains `"other"` (case-insensitive, see `extract_pixels.py:129`). Mineral-category polygons are not touched. Covered by unit test #2. |
+| Subsampling reproducibility broken by Python's salted `hash()` | Use fixed enumeration order (`SEED + i`) instead of `hash(tid)`. Documented in §6. |
+| `build_mrral_dataset.py` accumulates ~13M rows in memory before subsampling — ~7–10 GB peak RAM | If this causes OOM on the local box, modify the loop to subsample per-tile during extraction (cap at 113K per bland tile before extending `all_records`). Document as a follow-up fix; the local box has 64 GB so the first run should succeed. |
+| The new GPKG CRS doesn't round-trip cleanly through GeoPandas → corrupt geometry on read | Author the GPKG with `crs = rasterio.open(mrral_path).crs` (string identity with what `extract_mrral_pixels_from_pair` expects). The `gdf.crs != raster_crs` check in extract_pixels.py becomes a no-op. Test #1 asserts `gdf.crs == expected_tile_crs` after read-back. |
+| Existing patch cache `data/patch_cache/mrral_*_patches_p7.npy` overwritten — restoring just the parquet doesn't restore the cache | Back up both: `cp data/mrral_pixels.parquet data/mrral_pixels.pre-bland.parquet` AND `cp data/patch_cache/mrral_*_patches_p7.npy` to `*.pre-bland.npy`. Restore-from-backup procedure documented in §11. |
+| New tiles get default `train` split because `pixels.parquet` doesn't have rows for them — val/test become "other"-free | Explicit split assignment for bland-tile rows BEFORE/AFTER the merge. See §6.1. |
+| `find_mrral_pairs` doesn't pick up new GPKGs because of hard-coded list | Confirmed: `find_mrral_pairs` (extract_pixels.py:76-93) dynamically crawls the GPKG directory via glob. New `T*.gpkg` files are auto-discovered. |
+| `build_bland_other_gpkgs.py` runs twice and silently re-uses bad first-run output (`skip if exists`) | Authoring script validates the file after write: reads it back via `gpd.read_file`, asserts row count = 1 and Category = "Other (High)" and CRS matches the source mrral. On re-run, validates the existing file the same way; only skips if it passes. |
+
+## 10.1 Reversibility procedure
+
+If the new labels regress downstream classifier performance and we need to revert:
+
+```bash
+cp data/mrral_pixels.pre-bland.parquet data/mrral_pixels.parquet
+cp data/patch_cache/mrral_train_patches_p7.pre-bland.npy data/patch_cache/mrral_train_patches_p7.npy
+cp data/patch_cache/mrral_val_patches_p7.pre-bland.npy   data/patch_cache/mrral_val_patches_p7.npy
+cp data/patch_cache/mrral_test_patches_p7.pre-bland.npy  data/patch_cache/mrral_test_patches_p7.npy
+# (Optional) Remove the 8 new GPKGs so a future rebuild reverts cleanly:
+# rm /mnt/mrdr/categorized_mineral_units/T{1241,1242,1243,1280,1313,1314,1315,1336}.gpkg
+```
+
+Model checkpoints trained against the new labels are unaffected by the rollback — they continue to predict whatever they learned. If you want a "pre-bland" checkpoint, restore the labels and retrain.
 
 ## 11. Out of scope
 
@@ -207,6 +268,6 @@ Downstream classifier improvement is a future hypothesis to test, not a success 
 ## 12. Open questions resolved during brainstorming
 
 1. **Replace or append existing "other"?** Replace entirely. The mineral-adjacent "Other" polygons don't represent dust; they represent "within-scene leftovers".
-2. **How many "other" pixels?** Match the largest mineral class: ~113K per tile × 8 tiles ≈ 900K.
-3. **Confidence tier?** High (weight 1.0). User hand-picked these tiles knowing they're dust-covered.
-4. **Integration mechanism?** New GPKGs in `/mnt/mrdr/categorized_mineral_units/` + label parser whitelist — uses the existing build pipeline.
+2. **How many "other" pixels?** Match the largest mineral class (collapsed olivine ≈ 900K): 113K per tile × 8 tiles ≈ 904K.
+3. **Confidence tier?** High. Stored as `confidence_tier='High'` in the parquet. `data/dataset.py:_collapse_labels` maps this to a per-row weight of 1.0 at training time. (Note: the parquet's stored `confidence_weight` column is recomputed inside `_collapse_labels` and the in-code value 1.0/0.85/0.70 takes precedence over the parser's 1.0/0.5/0.25 — both end up correct for High tier; the discrepancy is a pre-existing inconsistency that's intentionally out of scope here.)
+4. **Integration mechanism?** New GPKGs in `/mnt/mrdr/categorized_mineral_units/` + bland-tile gate in `build_mrral_dataset.py` via the existing `other_polygon_ids` parameter. Label parser unchanged.
