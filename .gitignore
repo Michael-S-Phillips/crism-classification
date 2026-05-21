@@ -17,3 +17,4 @@ wandb/
 .worktrees/
 data/vector/
 data/prototypes/
+data/vector_mc13_v3_denoising/
