@@ -88,6 +88,11 @@ def main():
     parser.add_argument('--aug_shift_std', type=float, default=0.005)
     parser.add_argument('--pretrain_ckpt', type=str, default=None,
                         help='Path to MAE pretrain checkpoint; loads encoder into spectral_vit')
+    parser.add_argument('--init_ckpt', type=str, default=None,
+                        help='Path to a finetune checkpoint (model_state) used as a '
+                             'warm start for the FULL classifier (encoder + head). '
+                             'Use this to continue a finished finetune run for more '
+                             'epochs. Mutually exclusive with --pretrain_ckpt.')
     parser.add_argument('--encoder_lr_scale', type=float, default=None,
                         help='LR multiplier for pretrained encoder (e.g. 0.1 → 10× slower than head). '
                              'Only effective when --pretrain_ckpt is set and model has get_param_groups.')
@@ -121,6 +126,10 @@ def main():
 
     if args.freeze_encoder and args.encoder_lr_scale is not None:
         parser.error('--freeze_encoder and --encoder_lr_scale are mutually exclusive.')
+    if args.init_ckpt and args.pretrain_ckpt:
+        parser.error('--init_ckpt and --pretrain_ckpt are mutually exclusive '
+                     '(--init_ckpt loads the full classifier; --pretrain_ckpt '
+                     'loads only the encoder).')
 
     # Parse class_weights once for all torch training paths.
     class_weights_tensor = None
@@ -393,6 +402,22 @@ def main():
                 logging.info(
                     f'Loaded spatial MAE encoder from {args.pretrain_ckpt}. '
                     f'Missing: {missing}, Unexpected: {unexpected}'
+                )
+            elif args.init_ckpt:
+                # Warm start the FULL classifier (encoder + head) from a prior
+                # finetune checkpoint. Used for continuation runs after a finetune
+                # finishes but the loss curve still has slope.
+                ckpt = torch.load(args.init_ckpt, map_location='cpu', weights_only=False)
+                if isinstance(ckpt, dict) and 'model_state' in ckpt:
+                    state = ckpt['model_state']
+                    prev_val_map = ckpt.get('val_mAP', None)
+                else:
+                    state = ckpt
+                    prev_val_map = None
+                missing, unexpected = model.load_state_dict(state, strict=False)
+                logging.info(
+                    f'Warm-started classifier from {args.init_ckpt}. '
+                    f'prev val_mAP={prev_val_map}. Missing: {missing}, Unexpected: {unexpected}'
                 )
             if args.freeze_encoder:
                 for p in model.encoder.parameters():
