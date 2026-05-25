@@ -93,6 +93,16 @@ def main():
                              'warm start for the FULL classifier (encoder + head). '
                              'Use this to continue a finished finetune run for more '
                              'epochs. Mutually exclusive with --pretrain_ckpt.')
+    parser.add_argument('--n_classes', type=int, default=5,
+                        help='Number of output classes (default 5). Use 1 in '
+                             'binary mode (--binary_target_class).')
+    parser.add_argument('--binary_target_class', type=str, default=None,
+                        choices=[None, 'olivine', 'lcp', 'hcp', 'plagioclase', 'other'],
+                        help='Train a binary classifier (target-class vs rest) by '
+                             'collapsing the multi-class labels to a single is-X '
+                             'column. Set --n_classes 1 with this. When warm-starting '
+                             'from a 5-class checkpoint, the head weights are dropped '
+                             'and only the encoder is reused.')
     parser.add_argument('--encoder_lr_scale', type=float, default=None,
                         help='LR multiplier for pretrained encoder (e.g. 0.1 → 10× slower than head). '
                              'Only effective when --pretrain_ckpt is set and model has get_param_groups.')
@@ -390,9 +400,35 @@ def main():
             df_mrral = pd.read_parquet(mrral_parquet)
             dropout = args.dropout if args.dropout is not None else 0.1
 
+            # Binary mode: collapse multi-class labels to a single is-X column.
+            if args.binary_target_class:
+                from data.dataset import _collapse_labels
+                _coll = _collapse_labels(df_mrral)
+                df_mrral = df_mrral.copy()
+                df_mrral['__binary__'] = (
+                    _coll[args.binary_target_class] > 0
+                ).astype('float32')
+                # Re-point LABEL_COLS so train_torch_model and the datasets
+                # consume the single binary target.
+                import data.dataset
+                data.dataset.LABEL_COLS = ['__binary__']
+                if args.n_classes != 1:
+                    logging.warning(
+                        f'--binary_target_class set but --n_classes={args.n_classes}; '
+                        f'forcing n_classes=1.'
+                    )
+                    args.n_classes = 1
+                n_pos = int(df_mrral['__binary__'].sum())
+                logging.info(
+                    f'Binary mode: target_class={args.binary_target_class}, '
+                    f'positives={n_pos}/{len(df_mrral)} '
+                    f'({100 * n_pos / len(df_mrral):.2f}%). '
+                    f'LABEL_COLS overridden to [__binary__]; n_classes=1.'
+                )
+
             from models.spatial_spectral_transformer import SpatialSpectralClassifier
             model = SpatialSpectralClassifier(
-                n_bands=59, patch_size=args.patch_size, n_classes=5,
+                n_bands=59, patch_size=args.patch_size, n_classes=args.n_classes,
                 embed_dim=args.embed_dim, n_heads=args.n_heads,
                 n_layers=args.n_layers, dropout=dropout,
             )
@@ -404,9 +440,6 @@ def main():
                     f'Missing: {missing}, Unexpected: {unexpected}'
                 )
             elif args.init_ckpt:
-                # Warm start the FULL classifier (encoder + head) from a prior
-                # finetune checkpoint. Used for continuation runs after a finetune
-                # finishes but the loss curve still has slope.
                 ckpt = torch.load(args.init_ckpt, map_location='cpu', weights_only=False)
                 if isinstance(ckpt, dict) and 'model_state' in ckpt:
                     state = ckpt['model_state']
@@ -414,6 +447,17 @@ def main():
                 else:
                     state = ckpt
                     prev_val_map = None
+                # Drop head weights when the loaded head shape doesn't match
+                # (e.g. warm-starting a binary classifier from a 5-class one).
+                head_w = state.get('head.weight')
+                if head_w is not None and head_w.shape[0] != args.n_classes:
+                    state = {k: v for k, v in state.items()
+                             if not k.startswith('head.')}
+                    logging.info(
+                        f'Dropping head weights from warm-start ckpt: '
+                        f'ckpt head {head_w.shape[0]}-class vs model '
+                        f'{args.n_classes}-class. Encoder will be reused.'
+                    )
                 missing, unexpected = model.load_state_dict(state, strict=False)
                 logging.info(
                     f'Warm-started classifier from {args.init_ckpt}. '
