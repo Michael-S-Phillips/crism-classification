@@ -36,3 +36,35 @@ def interp_to_mrral_wavelengths(
     refl = lib_refl[valid]
     order = np.argsort(wl)
     return np.interp(np.asarray(target_wl, dtype=np.float64), wl[order], refl[order])
+
+
+def synthesize_patches(
+    spectrum: np.ndarray,
+    n_aug: int,
+    rng: np.random.Generator,
+    patch_size: int = 7,
+    noise_sigma: float = 0.005,
+    jitter_sigma: float = 0.003,
+    continuum_scale_range: tuple[float, float] = (0.97, 1.03),
+) -> np.ndarray:
+    """Tile one 59-band spectrum into n_aug augmented (patch_size, patch_size, 59) patches.
+
+    Each augmentation applies, independently per patch:
+      - a global continuum scale (multiplicative, uniform in continuum_scale_range)
+      - per-band jitter (additive, same across the 49 pixels — a spectral wobble)
+      - per-pixel Gaussian noise (additive, independent per pixel & band)
+    Per-pixel noise is what prevents a flat-tile shortcut: the 49 pixels differ.
+    Output is clipped to [0, CLIP_MAX] to match the real patch normalization.
+    """
+    spectrum = np.asarray(spectrum, dtype=np.float32)
+    n_bands = spectrum.shape[0]
+    P = patch_size
+    out = np.empty((n_aug, P, P, n_bands), dtype=np.float32)
+    for i in range(n_aug):
+        scale = rng.uniform(*continuum_scale_range)
+        band_jitter = rng.normal(0.0, jitter_sigma, size=n_bands).astype(np.float32)
+        base = spectrum * scale + band_jitter                      # (59,)
+        tile = np.broadcast_to(base, (P, P, n_bands)).copy()       # (7,7,59)
+        tile += rng.normal(0.0, noise_sigma, size=tile.shape).astype(np.float32)
+        out[i] = np.clip(tile, 0.0, CLIP_MAX)
+    return out
