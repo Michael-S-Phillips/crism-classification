@@ -9,9 +9,11 @@ the spectrum and adding per-pixel noise — so they can train the spatial encode
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 
 WL_SENTINEL = 65535.0   # invalid-wavelength marker in the ENVI band centers
 CLIP_MAX = 0.5          # matches CRISMSpectralPatchDataset.CLIP_MAX
+N_BANDS = 59
 
 
 def interp_to_mrral_wavelengths(
@@ -68,12 +70,6 @@ def synthesize_patches(
         tile += rng.normal(0.0, noise_sigma, size=tile.shape).astype(np.float32)
         out[i] = np.clip(tile, 0.0, CLIP_MAX)
     return out
-
-
-# append to data/synthetic_plag.py
-import pandas as pd
-
-N_BANDS = 59
 
 
 def build_synth_rows(

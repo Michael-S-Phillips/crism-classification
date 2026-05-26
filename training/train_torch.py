@@ -162,6 +162,12 @@ def train_torch_model(
     val_ds = make_dataset(val_df, 'val')
 
     if use_balanced_sampling:
+        if synth_train_cache and synth_train_parquet:
+            raise ValueError(
+                "use_balanced_sampling is incompatible with synthetic-patch "
+                "concatenation: the sampler weights are built from train_df only "
+                "and would not align with the concatenated dataset length."
+            )
         from torch.utils.data import WeightedRandomSampler
         pw = build_class_balanced_weights(train_df)
         sampler = WeightedRandomSampler(pw, num_samples=len(pw), replacement=True)
