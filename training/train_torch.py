@@ -71,6 +71,7 @@ def train_torch_model(
     encoder_lr_scale: Optional[float] = None,
     freeze_encoder: bool = False,
     class_weights: Optional[torch.Tensor] = None,
+    pos_weight: Optional[torch.Tensor] = None,
     min_delta: float = 0.0,
     decomp_lambda_recon: float = 1.0,
     decomp_lambda_eps: float = 0.1,
@@ -119,15 +120,18 @@ def train_torch_model(
                     f"(down from {n_before})")
     val_df = df[df['split'] == 'val']
 
-    # Compute pos_weight from training label prevalence (caps at 20x for stability)
-    pos_weight = None
-    if use_pos_weight:
+    # Resolve pos_weight: explicit override wins, then auto-compute, else None.
+    if pos_weight is not None:
+        pos_weight = pos_weight.to(device, dtype=torch.float32)
+        logger.info(f"Using explicit pos_weight: {pos_weight.tolist()}")
+    elif use_pos_weight:
         from data.dataset import LABEL_COLS
         y_tr = train_df[LABEL_COLS].values.astype('float32')
         n_pos = (y_tr > 0.4).sum(axis=0).clip(min=1)
         n_neg = len(y_tr) - n_pos
         pw = (n_neg / n_pos).clip(max=20.0)
         pos_weight = torch.tensor(pw, dtype=torch.float32).to(device)
+        logger.info(f"Auto-computed pos_weight from prevalence: {pos_weight.tolist()}")
 
     def make_dataset(sub_df, split_name='train'):
         from data.dataset import MRRAL_BAND_COLS, BAND_COLS, CRISMSpectralDataset, CRISMCombinedDataset

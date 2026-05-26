@@ -141,18 +141,28 @@ def main():
                      '(--init_ckpt loads the full classifier; --pretrain_ckpt '
                      'loads only the encoder).')
 
-    # Parse class_weights once for all torch training paths.
+    # Parse class_weights once for all torch training paths. In binary mode the
+    # single value is routed to pos_weight (BCE positive-sample multiplier),
+    # not class_weights — which is symmetric across pos/neg and a no-op for
+    # n_classes=1.
     class_weights_tensor = None
+    binary_pos_weight_tensor = None
     if args.class_weights:
         import torch as _torch
         try:
             vals = [float(v) for v in args.class_weights.split(',')]
         except ValueError as e:
             parser.error(f'--class_weights values must be floats: {e}')
-        if len(vals) != 5:
-            parser.error(f'--class_weights must have 5 values '
-                         f'(olivine,lcp,hcp,plagioclase,other); got {len(vals)}')
-        class_weights_tensor = _torch.tensor(vals, dtype=_torch.float32)
+        expected = 1 if args.binary_target_class else 5
+        if len(vals) != expected:
+            label = ('pos_weight' if args.binary_target_class
+                     else 'olivine,lcp,hcp,plagioclase,other')
+            parser.error(f'--class_weights must have {expected} value(s) '
+                         f'({label}); got {len(vals)}')
+        if args.binary_target_class:
+            binary_pos_weight_tensor = _torch.tensor(vals, dtype=_torch.float32)
+        else:
+            class_weights_tensor = _torch.tensor(vals, dtype=_torch.float32)
 
     cfg_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -490,6 +500,7 @@ def main():
                 use_balanced_sampling=args.balanced_sampling,
                 encoder_lr_scale=args.encoder_lr_scale,
                 class_weights=class_weights_tensor,
+                pos_weight=binary_pos_weight_tensor,
                 min_delta=args.min_delta,
                 freeze_encoder=args.freeze_encoder,
             )
