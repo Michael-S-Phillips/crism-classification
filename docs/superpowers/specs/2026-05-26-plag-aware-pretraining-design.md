@@ -27,9 +27,13 @@ with a supervised auxiliary objective, warm-started from the existing encoder so
 that already work (olivine 0.87, LCP 0.93, HCP 0.69) do not regress. Secondarily, fold the
 available plagioclase spectral library into the fine-tuning data.
 
-**Success bar:** plag val_AP (on real val pixels) clearing ~0.20 is a meaningful signal;
-olivine/LCP/HCP APs must not regress materially. Below ~0.20 ⇒ escalate to input-level
-changes (inject mrrsu PLG band parameter as an auxiliary channel).
+**Success bar:**
+- **Publishable target:** plag val_AP ≈ **0.6** (on real val pixels). This is the goal that
+  makes the result defensible in peer review.
+- **Minimum signal gate:** plag val_AP > ~0.20. Below this, the encoder approach is not
+  working and we escalate to input-level changes (inject mrrsu PLG band parameter as an
+  auxiliary channel) rather than iterating further on this design.
+- **Guardrail:** olivine/LCP/HCP APs must not regress materially.
 
 ## Decisions (locked during brainstorming)
 
@@ -140,8 +144,9 @@ the lever under test:
 - **Primary metric:** plag val_AP on real val pixels vs the 0.13 baseline.
 - **Guardrail:** olivine/LCP/HCP val_AP must not regress materially (watch for the
   focal-sweep-style HCP dip).
-- **Decision:** plag AP > ~0.20 ⇒ success, proceed. Below ⇒ escalate to input-level change
-  (mrrsu PLG channel injection), out of scope here.
+- **Decision:** publishable target plag AP ≈ 0.6. Minimum signal gate ~0.20 — clearing it
+  means the approach works and is worth tuning (λ, N, epochs) toward 0.6; falling below it
+  means escalate to input-level change (mrrsu PLG channel injection), out of scope here.
 
 ## Files
 
