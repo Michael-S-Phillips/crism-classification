@@ -56,3 +56,32 @@ def test_synthesize_patches_centered_on_spectrum():
                                  continuum_scale_range=(0.97, 1.03))
     mean_spec = patches.mean(axis=(0, 1, 2))
     np.testing.assert_allclose(mean_spec, spectrum, atol=0.02)
+
+
+# append to tests/test_synthetic_plag.py
+from data.synthetic_plag import build_synth_rows
+
+
+def test_build_synth_rows_schema():
+    import pandas as pd
+    rng = np.random.default_rng(3)
+    spectra = {
+        "FRT00008842_07_#1_Plagioclase": np.full(59, 0.2, dtype=np.float32),
+        "FRT000092B4_07_#1_Plagioclase": np.full(59, 0.25, dtype=np.float32),
+    }
+    patches, df = build_synth_rows(spectra, n_aug=5, rng=rng,
+                                   confidence_tier="High")
+    assert patches.shape == (10, 7, 7, 59)              # 2 spectra * 5 aug
+    assert len(df) == 10
+    # schema must match mrral_pixels.parquet label/meta columns
+    for col in ["tile_id", "polygon_id", "pixel_row", "pixel_col",
+                "olivine_t1", "olivine_t2", "lcp", "hcp", "plagioclase",
+                "other", "confidence_tier", "split"]:
+        assert col in df.columns
+    assert (df["plagioclase"] == 1).all()
+    assert (df["other"] == 0).all()
+    assert (df["lcp"] == 0).all() and (df["hcp"] == 0).all()
+    assert (df["olivine_t1"] == 0).all() and (df["olivine_t2"] == 0).all()
+    assert (df["split"] == "train").all()              # train-only, never val/test
+    assert df["tile_id"].str.startswith("SYNTH_PLAG_").all()
+    assert [f"m{i}" for i in range(59)] == [c for c in df.columns if c.startswith("m")]
