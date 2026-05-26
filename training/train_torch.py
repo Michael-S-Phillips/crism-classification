@@ -72,6 +72,8 @@ def train_torch_model(
     freeze_encoder: bool = False,
     class_weights: Optional[torch.Tensor] = None,
     pos_weight: Optional[torch.Tensor] = None,
+    synth_train_cache: Optional[str] = None,
+    synth_train_parquet: Optional[str] = None,
     min_delta: float = 0.0,
     decomp_lambda_recon: float = 1.0,
     decomp_lambda_eps: float = 0.1,
@@ -151,6 +153,12 @@ def train_torch_model(
         return CRISMPixelDataset(sub_df)
 
     train_ds = make_dataset(train_df, 'train')
+    if synth_train_cache and synth_train_parquet:
+        from data.dataset import SyntheticPatchDataset
+        from torch.utils.data import ConcatDataset
+        synth_ds = SyntheticPatchDataset(synth_train_cache, synth_train_parquet)
+        logger.info(f"Concatenating {len(synth_ds)} synthetic plag patches into train set")
+        train_ds = ConcatDataset([train_ds, synth_ds])
     val_ds = make_dataset(val_df, 'val')
 
     if use_balanced_sampling:

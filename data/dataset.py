@@ -391,3 +391,30 @@ class CRISMSpectralPatchDataset(Dataset):
         for src in self._handles.values():
             src.close()
         self._handles.clear()
+
+
+class SyntheticPatchDataset(Dataset):
+    """Serves pre-synthesized plagioclase patches from a .npy + parquet fragment.
+
+    Mirrors CRISMSpectralPatchDataset's __getitem__ contract:
+    returns (patch (7,7,59) float32 tensor, label (5,) tensor in LABEL_COLS order,
+    weight scalar tensor). Patches are read from a memmap'd .npy aligned row-for-row
+    with the parquet fragment.
+    """
+
+    def __init__(self, npy_path: str, parquet_path: str, patch_size: int = 7):
+        df = _collapse_labels(pd.read_parquet(parquet_path)).reset_index(drop=True)
+        self._n = len(df)
+        self.labels = torch.tensor(df[LABEL_COLS].values, dtype=torch.float32)
+        self.weights = torch.tensor(df['confidence_weight'].values, dtype=torch.float32)
+        self._cache = np.load(npy_path, mmap_mode='r')
+        assert self._cache.shape[0] == self._n, (
+            f"patch count {self._cache.shape[0]} != parquet rows {self._n}")
+        assert self._cache.shape[1:] == (patch_size, patch_size, 59)
+
+    def __len__(self):
+        return self._n
+
+    def __getitem__(self, idx):
+        patch = torch.from_numpy(np.asarray(self._cache[idx], dtype=np.float32).copy())
+        return patch, self.labels[idx], self.weights[idx]

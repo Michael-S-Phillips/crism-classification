@@ -115,6 +115,10 @@ def main():
                              'LABEL_COLS order (olivine,lcp,hcp,plagioclase,other). '
                              'e.g. "1,1,1.5,3,1" to boost HCP and plagioclase. '
                              'Default: uniform 1.0 for all classes.')
+    parser.add_argument('--synth_train_cache', type=str, default=None,
+                        help='Path to synth_plag_patches_p7.npy to add to the train split.')
+    parser.add_argument('--synth_train_parquet', type=str, default=None,
+                        help='Path to synth_plag_rows.parquet (row-aligned with the cache).')
     parser.add_argument('--min_delta', type=float, default=0.0,
                         help='Early-stopping tolerance: val_mAP drops up to this '
                              'much below the running best do not tick patience. '
@@ -501,6 +505,8 @@ def main():
                 encoder_lr_scale=args.encoder_lr_scale,
                 class_weights=class_weights_tensor,
                 pos_weight=binary_pos_weight_tensor,
+                synth_train_cache=args.synth_train_cache,
+                synth_train_parquet=args.synth_train_parquet,
                 min_delta=args.min_delta,
                 freeze_encoder=args.freeze_encoder,
             )

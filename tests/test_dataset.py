@@ -244,3 +244,36 @@ def test_spectral_patch_dataset_shape():
     assert weights.shape == ()
     assert patch.min().item() >= 0.0
     assert patch.max().item() <= 0.5
+
+
+def test_synthetic_patch_dataset(tmp_path):
+    import numpy as np
+    import pandas as pd
+    import torch
+    from data.dataset import SyntheticPatchDataset
+
+    n = 6
+    patches = (np.random.rand(n, 7, 7, 59) * 0.5).astype("float32")
+    npy = tmp_path / "synth.npy"
+    np.save(npy, patches)
+    band_cols = [f"m{i}" for i in range(59)]
+    rows = []
+    for i in range(n):
+        r = {"tile_id": f"SYNTH_PLAG_x_{i}", "polygon_id": -1,
+             "pixel_row": -1, "pixel_col": -1,
+             "olivine_t1": 0.0, "olivine_t2": 0.0, "lcp": 0.0, "hcp": 0.0,
+             "plagioclase": 1.0, "other": 0.0,
+             "confidence_tier": "High", "split": "train"}
+        r.update({c: 0.2 for c in band_cols})
+        rows.append(r)
+    pq = tmp_path / "synth.parquet"
+    pd.DataFrame(rows).to_parquet(pq, index=False)
+
+    ds = SyntheticPatchDataset(str(npy), str(pq))
+    assert len(ds) == n
+    patch, label, weight = ds[0]
+    assert patch.shape == (7, 7, 59)
+    assert label.shape == (5,)              # LABEL_COLS order
+    assert float(label[3]) == 1.0           # plagioclase index
+    assert float(label.sum()) == 1.0
+    assert weight.ndim == 0
