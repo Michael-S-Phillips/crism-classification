@@ -19,8 +19,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
 
 SKLEARN_MODELS = {'logreg', 'svc', 'rf', 'xgb', 'lgbm'}
 TORCH_MODELS = {'mlp', 'cnn', 'vit', 'spectral_cnn', 'spectral_vit',
-                'spectral_hybrid', 'spatial_vit', 'decomp_spatial_vit',
-                'decomp_spatial_vit_adv'}
+                'spectral_hybrid', 'spatial_vit', 'spatial_vit_aux',
+                'decomp_spatial_vit', 'decomp_spatial_vit_adv'}
 
 def load_config(config_path):
     try:
@@ -119,6 +119,9 @@ def main():
                         help='Path to synth_plag_patches_p7.npy to add to the train split.')
     parser.add_argument('--synth_train_parquet', type=str, default=None,
                         help='Path to synth_plag_rows.parquet (row-aligned with the cache).')
+    parser.add_argument('--mrrsu_aux_dir', type=str, default=None,
+                        help='Dir with mrrsu_aux_{split}.npy + mrrsu_aux_stats.json '
+                             '(enables the spatial_vit_aux model).')
     parser.add_argument('--min_delta', type=float, default=0.0,
                         help='Early-stopping tolerance: val_mAP drops up to this '
                              'much below the running best do not tick patience. '
@@ -202,8 +205,8 @@ def main():
     elif args.model in TORCH_MODELS:
         import torch
         from training.train_torch import train_torch_model
-        # spatial_vit loads mrral_pixels.parquet directly; skip pixels.parquet
-        if args.model != 'spatial_vit':
+        # spatial_vit / spatial_vit_aux load mrral_pixels.parquet directly; skip pixels.parquet
+        if args.model not in ('spatial_vit', 'spatial_vit_aux'):
             df = pd.read_parquet(parquet_path)
         run_name = args.run_name or args.model
 
@@ -509,6 +512,51 @@ def main():
                 synth_train_parquet=args.synth_train_parquet,
                 min_delta=args.min_delta,
                 freeze_encoder=args.freeze_encoder,
+            )
+
+        elif args.model == 'spatial_vit_aux':
+            if not args.mrrsu_aux_dir:
+                parser.error('--model spatial_vit_aux requires --mrrsu_aux_dir')
+            import glob as _glob
+            data_root = cfg.get('data_root', '/mnt/mrdr')
+            mrral_hdrs = sorted(set(
+                _glob.glob(os.path.join(data_root, 'mc*', 't*mrral*.hdr'))
+                + _glob.glob(os.path.join(data_root, 't*mrral*.hdr'))))
+            mrral_map = {os.path.basename(h).split('_mrral_')[0]: h.replace('.hdr', '.img')
+                         for h in mrral_hdrs}
+            logging.info(f'mrral_map: {len(mrral_map)} tiles found')
+            mrral_parquet = os.path.join(cfg['output_dir'], 'mrral_pixels.parquet')
+            df_mrral = pd.read_parquet(mrral_parquet)
+            dropout = args.dropout if args.dropout is not None else 0.1
+            from models.spatial_spectral_classifier_aux import SpatialSpectralClassifierAux
+            model = SpatialSpectralClassifierAux(
+                n_bands=59, patch_size=args.patch_size, n_classes=args.n_classes,
+                embed_dim=args.embed_dim, n_heads=args.n_heads,
+                n_layers=args.n_layers, dropout=dropout,
+            )
+            if args.pretrain_ckpt:
+                ckpt = torch.load(args.pretrain_ckpt, map_location='cpu', weights_only=False)
+                missing, unexpected = model.load_encoder_state_dict(ckpt['encoder_state'])
+                logging.info(f'Loaded encoder from {args.pretrain_ckpt}. '
+                             f'Missing: {missing}, Unexpected: {unexpected}')
+            mrral_cache_dir = cfg.get('patch_cache_dir')
+            metrics = train_torch_model(
+                model=model, df=df_mrral, model_name=run_name,
+                max_epochs=args.epochs, batch_size=args.batch_size,
+                lr=args.lr, patience=args.patience,
+                use_wandb=use_wandb, checkpoint_dir=checkpoint_dir,
+                mrral_map=mrral_map, patch_size=args.patch_size,
+                cache_dir=mrral_cache_dir,
+                weight_decay=args.weight_decay,
+                warmup_epochs=args.warmup_epochs, lr_t_max=args.lr_t_max,
+                use_focal_loss=args.focal_loss, focal_gamma=args.focal_gamma,
+                use_asl_loss=args.asl_loss, asl_gamma_neg=args.asl_gamma_neg,
+                asl_gamma_pos=args.asl_gamma_pos, asl_clip=args.asl_clip,
+                encoder_lr_scale=args.encoder_lr_scale,
+                class_weights=class_weights_tensor,
+                min_delta=args.min_delta,
+                mrrsu_aux_dir=args.mrrsu_aux_dir,
+                is_aux_model=True,
             )
 
         elif args.model == 'decomp_spatial_vit':

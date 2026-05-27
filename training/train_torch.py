@@ -74,6 +74,8 @@ def train_torch_model(
     pos_weight: Optional[torch.Tensor] = None,
     synth_train_cache: Optional[str] = None,
     synth_train_parquet: Optional[str] = None,
+    mrrsu_aux_dir: Optional[str] = None,
+    is_aux_model: bool = False,
     min_delta: float = 0.0,
     decomp_lambda_recon: float = 1.0,
     decomp_lambda_eps: float = 0.1,
@@ -152,14 +154,27 @@ def train_torch_model(
             return CRISMSpectralDataset(sub_df)
         return CRISMPixelDataset(sub_df)
 
-    train_ds = make_dataset(train_df, 'train')
-    if synth_train_cache and synth_train_parquet:
-        from data.dataset import SyntheticPatchDataset
-        from torch.utils.data import ConcatDataset
-        synth_ds = SyntheticPatchDataset(synth_train_cache, synth_train_parquet)
-        logger.info(f"Concatenating {len(synth_ds)} synthetic plag patches into train set")
-        train_ds = ConcatDataset([train_ds, synth_ds])
-    val_ds = make_dataset(val_df, 'val')
+    if mrrsu_aux_dir is not None:
+        import os as _os
+        from data.dataset import MrrsuAuxPatchDataset
+        stats = _os.path.join(mrrsu_aux_dir, 'mrrsu_aux_stats.json')
+        train_ds = MrrsuAuxPatchDataset(
+            train_df, mrral_map, patch_size,
+            aux_npy=_os.path.join(mrrsu_aux_dir, 'mrrsu_aux_train.npy'),
+            stats_json=stats, cache_dir=cache_dir, split='train')
+        val_ds = MrrsuAuxPatchDataset(
+            val_df, mrral_map, patch_size,
+            aux_npy=_os.path.join(mrrsu_aux_dir, 'mrrsu_aux_val.npy'),
+            stats_json=stats, cache_dir=cache_dir, split='val')
+    else:
+        train_ds = make_dataset(train_df, 'train')
+        if synth_train_cache and synth_train_parquet:
+            from data.dataset import SyntheticPatchDataset
+            from torch.utils.data import ConcatDataset
+            synth_ds = SyntheticPatchDataset(synth_train_cache, synth_train_parquet)
+            logger.info(f"Concatenating {len(synth_ds)} synthetic plag patches into train set")
+            train_ds = ConcatDataset([train_ds, synth_ds])
+        val_ds = make_dataset(val_df, 'val')
 
     if use_balanced_sampling:
         if synth_train_cache and synth_train_parquet:
@@ -278,7 +293,12 @@ def train_torch_model(
             logger.info(
                 f"epoch {epoch}: lambda_adv = {model.lambda_adv:.4f}"
             )
-        for features, labels, weights in train_loader:
+        for batch in train_loader:
+            if is_aux_model:
+                features, aux2, labels, weights = batch
+                aux2 = aux2.to(device)
+            else:
+                features, labels, weights = batch
             features = features.to(device)
             if augment is not None:
                 augment.train()
@@ -309,7 +329,7 @@ def train_torch_model(
                 for k, v in components.items():
                     train_loss_components.setdefault(k, []).append(v.item())
             else:
-                logits = model(features)
+                logits = model(features, aux2) if is_aux_model else model(features)
                 loss = loss_fn(
                     logits, labels, weights,
                     pos_weight=pos_weight, class_weights=class_weights,
@@ -328,7 +348,12 @@ def train_torch_model(
         val_n_norms = []
 
         with torch.no_grad():
-            for features, labels, weights in val_loader:
+            for batch in val_loader:
+                if is_aux_model:
+                    features, aux2, labels, weights = batch
+                    aux2 = aux2.to(device)
+                else:
+                    features, labels, weights = batch
                 features = features.to(device)
                 if is_decomp_adv:
                     logits, _, n_hat, _, disc_logits, _, _ = model(features)
@@ -348,7 +373,7 @@ def train_torch_model(
                     val_b_means.append(b_hat.mean().item())
                     val_eps_norms.append(eps_hat.norm(dim=-1).mean().item())
                 else:
-                    logits = model(features)
+                    logits = model(features, aux2) if is_aux_model else model(features)
                 all_logits.append(torch.sigmoid(logits).cpu().numpy())
                 all_labels.append(labels.numpy())
 
