@@ -1,6 +1,7 @@
 """
 PyTorch Dataset classes and sklearn array loaders for the CRISM pixel dataset.
 """
+import json
 import os
 from typing import Dict, Optional
 
@@ -418,3 +419,35 @@ class SyntheticPatchDataset(Dataset):
     def __getitem__(self, idx):
         patch = torch.from_numpy(np.asarray(self._cache[idx], dtype=np.float32).copy())
         return patch, self.labels[idx], self.weights[idx]
+
+
+class MrrsuAuxPatchDataset(Dataset):
+    """Wraps a CRISMSpectralPatchDataset and appends a z-scored mrrsu aux vector.
+
+    Yields (patch (7,7,59), aux2 (2,), label (5,), weight). aux2 is the z-scored
+    [mean_7x7 RPEAK1, mean_7x7 BD1300] from the aligned mrrsu_aux_{split}.npy cache.
+    NaN aux rows (tiles without a paired mrrsu, or all-NODATA windows) map to 0.0
+    after z-scoring — i.e. the train mean, contributing no information.
+    """
+
+    def __init__(self, df, mrral_map, patch_size, aux_npy, stats_json,
+                 cache_dir=None, split='train'):
+        self.inner = CRISMSpectralPatchDataset(
+            df, mrral_map, patch_size=patch_size, cache_dir=cache_dir, split=split)
+        aux = np.load(aux_npy).astype(np.float32)
+        assert len(aux) == len(self.inner), (
+            f"aux rows {len(aux)} != patch rows {len(self.inner)}")
+        with open(stats_json) as f:
+            st = json.load(f)
+        mean = np.asarray(st['mean'], dtype=np.float32)
+        std = np.asarray(st['std'], dtype=np.float32)
+        z = (aux - mean) / std
+        z[~np.isfinite(z)] = 0.0          # NaN/inf → 0 (== train mean)
+        self.aux = torch.from_numpy(z)
+
+    def __len__(self):
+        return len(self.inner)
+
+    def __getitem__(self, idx):
+        patch, label, weight = self.inner[idx]
+        return patch, self.aux[idx], label, weight
