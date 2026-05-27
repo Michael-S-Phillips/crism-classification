@@ -55,6 +55,33 @@ GPKG_CATEGORY_COLORS = {
 }
 
 
+def derive_mrrsu_path(mrral_path):
+    """t..._mrral_..._.img -> t..._mrrsu_..._.img in the same directory."""
+    base = os.path.basename(mrral_path)
+    return os.path.join(os.path.dirname(mrral_path), base.replace('_mrral_', '_mrrsu_'))
+
+
+def load_mrrsu_aux_rasters(mrrsu_path, stats_json, patch_size=PATCH_SIZE):
+    """Return (H, W, 2) float32 of z-scored [mean7x7 RPEAK1, mean7x7 BD1300].
+    NaN windows -> 0.0 (train mean)."""
+    import json
+    import rasterio
+    from data.mrrsu_aux import mean_pool_nodata, RPEAK1_BAND, BD1300_BAND, NODATA as ND
+    with rasterio.open(mrrsu_path) as src:
+        rpeak = src.read(RPEAK1_BAND + 1).astype(np.float32)
+        bd = src.read(BD1300_BAND + 1).astype(np.float32)
+    rpeak_m = mean_pool_nodata(rpeak, patch_size=patch_size, nodata=ND)
+    bd_m = mean_pool_nodata(bd, patch_size=patch_size, nodata=ND)
+    with open(stats_json) as f:
+        st = json.load(f)
+    mean = np.asarray(st['mean'], dtype=np.float32)
+    std = np.asarray(st['std'], dtype=np.float32)
+    aux = np.stack([rpeak_m, bd_m], axis=-1)
+    z = (aux - mean) / std
+    z[~np.isfinite(z)] = 0.0
+    return z.astype(np.float32)
+
+
 def load_tile(img_path):
     import rasterio
     with rasterio.open(img_path) as src:
@@ -107,12 +134,20 @@ def load_classifier(ckpt_path, device):
     return model
 
 
-def run_supervised(tile, model, device, batch_size=4096):
-    """Returns prob_maps: (H*W, N_CLASSES) float32 in [0,1]."""
+def run_supervised(tile, model, device, batch_size=4096, aux_rasters=None):
+    """Returns prob_maps: (H*W, N_CLASSES) float32 in [0,1].
+
+    If aux_rasters is provided (H, W, 2) float32, feeds per-pixel aux features
+    to SpatialSpectralClassifierAux using the same row-major pixel ordering as
+    extract_patches_batched (which yields idx = np.arange(start, end)).
+    """
     H, W, _ = tile.shape
     n_pixels = H * W
     n_batches = (n_pixels + batch_size - 1) // batch_size
     probs = np.zeros((n_pixels, N_CLASSES), dtype=np.float32)
+
+    # Flatten aux_rasters row-major to (H*W, 2) once; sliced per batch via idx.
+    aux_flat = aux_rasters.reshape(-1, 2) if aux_rasters is not None else None
 
     from tqdm import tqdm
     with torch.no_grad():
@@ -120,8 +155,12 @@ def run_supervised(tile, model, device, batch_size=4096):
                                   total=n_batches, desc='Classifying'):
             patches = normalize_patches(patches)
             x = torch.from_numpy(patches).to(device)
-            logits = model(x)                         # (B, 5)
-            p = torch.sigmoid(logits).cpu().numpy()   # (B, 5)
+            if aux_flat is not None:
+                aux_batch = torch.from_numpy(aux_flat[idx]).to(device)
+                logits = model(x, aux_batch)              # (B, 5) aux path
+            else:
+                logits = model(x)                         # (B, 5)
+            p = torch.sigmoid(logits).cpu().numpy()       # (B, 5)
             probs[idx] = p
 
     return probs
@@ -263,6 +302,14 @@ def main():
                         help='Save (H,W,5) mineral prob raster to .npz for vectorization')
     parser.add_argument('--out', default=None, metavar='PATH',
                         help='Output figure path (overrides --out_dir naming)')
+    parser.add_argument('--mrrsu_aux', action='store_true',
+                        help='Use SpatialSpectralClassifierAux with smoothed mrrsu '
+                             'RPEAK1/BD1300 features.')
+    parser.add_argument('--mrrsu_tile', type=str, default=None,
+                        help='Paired mrrsu .img (default: derive from --tile path).')
+    parser.add_argument('--mrrsu_aux_stats', type=str,
+                        default='data/patch_cache/mrrsu_aux_stats.json',
+                        help='z-score stats json from build_mrrsu_aux.py.')
     args = parser.parse_args()
 
     tile_name = os.path.splitext(os.path.basename(args.tile))[0]
@@ -275,10 +322,29 @@ def main():
     print(f'Tile: {H}×{W}, {valid_mask.sum():,} valid pixels')
 
     print(f'Loading classifier: {args.ckpt}')
-    model = load_classifier(args.ckpt, device)
+    if args.mrrsu_aux:
+        from models.spatial_spectral_classifier_aux import SpatialSpectralClassifierAux
+        model = SpatialSpectralClassifierAux(
+            n_bands=N_BANDS, patch_size=PATCH_SIZE, n_classes=N_CLASSES,
+            embed_dim=128, n_heads=4, n_layers=6,
+        ).to(device)
+        state = torch.load(args.ckpt, map_location=device, weights_only=False)
+        if isinstance(state, dict) and 'model_state' in state:
+            val_map = state.get('val_mAP', None)
+            state = state['model_state']
+            print(f'  val_mAP from checkpoint: {val_map:.4f}' if val_map else '')
+        model.load_state_dict(state)
+        model.eval()
+        mrrsu_path = args.mrrsu_tile or derive_mrrsu_path(args.tile)
+        print(f'Loading mrrsu aux tile: {mrrsu_path}')
+        aux_rasters = load_mrrsu_aux_rasters(mrrsu_path, args.mrrsu_aux_stats)
+    else:
+        model = load_classifier(args.ckpt, device)
+        aux_rasters = None
 
     print('Running supervised inference...')
-    probs_flat = run_supervised(tile, model, device, args.batch_size)  # (H*W, 5)
+    probs_flat = run_supervised(tile, model, device, args.batch_size,
+                                aux_rasters=aux_rasters)  # (H*W, 5)
     probs = probs_flat.reshape(H, W, N_CLASSES)  # (H, W, 5)
 
     if args.save_probs:
