@@ -15,9 +15,9 @@ import glob
 import os
 
 import geopandas as gpd
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 GPKG_DIR = '/mnt/mrdr/categorized_mineral_units'
@@ -25,6 +25,8 @@ RELABEL_CSV = '/mnt/mrdr/crism_classification/data/olivine_relabels.csv'
 
 # 2 um pyroxene band: continuum 1.81 -> 2.46 um, absorption minimum ~2.32 um
 WL_LEFT, WL_MIN, WL_RIGHT = 1809.0, 2318.0, 2457.0
+# Default plot view (nm); drag on the plot to zoom, double-click to reset here.
+DEFAULT_XRANGE = (500.0, 2500.0)
 
 
 def parse_arr(s):
@@ -147,21 +149,40 @@ def main():
     c1, c2 = st.columns([3, 2])
     with c1:
         mode = st.radio('Spectrum', ['Ratio', 'Numerator'], horizontal=True)
-        spec = row.ratio if mode == 'Ratio' else row.num
-        wvl = row.wvl
-        fig, ax = plt.subplots(figsize=(8, 4))
+        spec = np.asarray(row.ratio if mode == 'Ratio' else row.num)
+        wvl = np.asarray(row.wvl)
         if len(wvl) == len(spec) and len(wvl) > 0:
-            ax.plot(wvl, spec, lw=1.5)
-            ax.axvspan(1809, 2457, color='orange', alpha=0.08, label='2µm pyroxene region')
-            ax.axvline(2318, color='red', ls=':', alpha=0.6, label='~2.3µm min')
-            ax.set_xlabel('wavelength (nm)')
-            ax.set_ylabel('ratio' if mode == 'Ratio' else 'reflectance')
-            ax.legend(fontsize=8)
+            # y-range from the points visible in the default window so autoscale
+            # isn't dominated by the far-IR tail
+            vis = (wvl >= DEFAULT_XRANGE[0]) & (wvl <= DEFAULT_XRANGE[1])
+            yv = spec[vis] if vis.any() else spec
+            ypad = 0.05 * (np.nanmax(yv) - np.nanmin(yv) + 1e-6)
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=wvl, y=spec, mode='lines+markers',
+                                     line=dict(width=1.5), marker=dict(size=3),
+                                     name=mode))
+            # 2 um pyroxene diagnostic region + minimum
+            fig.add_vrect(x0=WL_LEFT, x1=WL_RIGHT, fillcolor='orange',
+                          opacity=0.10, line_width=0, annotation_text='2µm pyroxene',
+                          annotation_position='top left')
+            fig.add_vline(x=WL_MIN, line=dict(color='red', dash='dot', width=1))
+            fig.update_layout(
+                height=460, margin=dict(l=10, r=10, t=40, b=10),
+                title=f'{row.tile}  polygon {row.polygon}',
+                xaxis_title='wavelength (nm)',
+                yaxis_title='ratio' if mode == 'Ratio' else 'reflectance',
+                xaxis=dict(range=list(DEFAULT_XRANGE)),
+                yaxis=dict(range=[float(np.nanmin(yv) - ypad),
+                                  float(np.nanmax(yv) + ypad)]),
+                dragmode='zoom', showlegend=False,
+            )
+            # drag to zoom; double-click resets to the default 500-2500 view
+            st.plotly_chart(fig, use_container_width=True,
+                            config={'scrollZoom': True, 'displaylogo': False})
+            st.caption('Drag to box-zoom · double-click to reset to 500–2500 nm · '
+                       'use the modebar (top-right) for pan / autoscale')
         else:
-            ax.text(0.5, 0.5, 'spectrum unavailable', ha='center')
-        ax.set_title(f'{row.tile}  polygon {row.polygon}')
-        st.pyplot(fig)
-        plt.close(fig)
+            st.warning('spectrum unavailable for this polygon')
 
     with c2:
         st.subheader(f'Polygon {i+1} / {n}')
