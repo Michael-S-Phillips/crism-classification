@@ -119,6 +119,10 @@ def main():
                         help='Path to synth_plag_patches_p7.npy to add to the train split.')
     parser.add_argument('--synth_train_parquet', type=str, default=None,
                         help='Path to synth_plag_rows.parquet (row-aligned with the cache).')
+    parser.add_argument('--apply_relabels', type=str, default=None,
+                        help='Path to an olivine_relabels.csv; applies soft pyroxene '
+                             'targets to the matching polygons before training '
+                             '(row order preserved so the patch cache stays valid).')
     parser.add_argument('--mrrsu_aux_dir', type=str, default=None,
                         help='Dir with mrrsu_aux_{split}.npy + mrrsu_aux_stats.json '
                              '(enables the spatial_vit_aux model).')
@@ -415,6 +419,11 @@ def main():
 
             mrral_parquet = os.path.join(cfg['output_dir'], 'mrral_pixels.parquet')
             df_mrral = pd.read_parquet(mrral_parquet)
+            if args.apply_relabels:
+                from data.dataset import apply_olivine_relabels
+                df_mrral, _n_relabel = apply_olivine_relabels(df_mrral, args.apply_relabels)
+                logging.info(f'Applied relabels from {args.apply_relabels}: '
+                             f'{_n_relabel} pixels updated with soft pyroxene targets')
             dropout = args.dropout if args.dropout is not None else 0.1
 
             # Binary mode: collapse multi-class labels to a single is-X column.

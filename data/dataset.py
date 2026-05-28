@@ -421,6 +421,51 @@ class SyntheticPatchDataset(Dataset):
         return patch, self.labels[idx], self.weights[idx]
 
 
+def _parse_relabel_soft(new_label):
+    """Parse a manual relabel string -> {class: soft_target}.
+
+    e.g. 'olivine + hcp (Moderate)' -> {'hcp': 0.6}; 'olivine' / 'alteration +
+    olivine (Low)' -> {} (no pyroxene added). Tier maps High->1.0, Moderate->0.6,
+    Low->0.3; a bare 'hcp'/'lcp' with no tier -> 1.0.
+    """
+    import re
+    s = str(new_label).lower()
+    tier_map = {'high': 1.0, 'moderate': 0.6, 'low': 0.3}
+    m = re.search(r'\((high|moderate|low)\)', s)
+    tier = tier_map[m.group(1)] if m else None
+    out = {}
+    for cls in ('hcp', 'lcp'):
+        if cls in s:
+            out[cls] = tier if tier is not None else 1.0
+    return out
+
+
+def apply_olivine_relabels(df, csv_path):
+    """Apply manual olivine-polygon relabels (soft pyroxene targets) to a copy of df.
+
+    Matches relabel rows to df by (tile_id lowercased, polygon_id) and sets the
+    pyroxene class column(s) to the parsed soft target for those pixels, leaving
+    olivine and all other labels untouched. Returns (df_copy, n_pixels_changed).
+    Row order is preserved so an aligned patch cache stays valid.
+    """
+    rel = pd.read_csv(csv_path, dtype={'polygon': str})
+    df = df.copy()
+    tid = df['tile_id'].astype(str).str.lower()
+    pid = df['polygon_id'].astype(str)
+    n_changed = 0
+    for _, r in rel.iterrows():
+        soft = _parse_relabel_soft(r['new_label'])
+        if not soft:
+            continue
+        mask = (tid == str(r['tile']).lower()) & (pid == str(r['polygon']))
+        if not mask.any():
+            continue
+        for cls, val in soft.items():
+            df.loc[mask, cls] = float(val)
+        n_changed += int(mask.sum())
+    return df, n_changed
+
+
 class MrrsuAuxPatchDataset(Dataset):
     """Wraps a CRISMSpectralPatchDataset and appends a z-scored mrrsu aux vector.
 
