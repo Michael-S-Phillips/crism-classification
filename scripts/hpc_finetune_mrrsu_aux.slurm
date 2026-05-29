@@ -12,13 +12,30 @@
 
 # Fine-tune the aux classifier (encoder + smoothed RPEAK1/BD1300 head) from the best
 # available encoder. Ablation partner: ft_plag_aware_real_only (same encoder, no aux).
-# Requires the aux cache (build_mrrsu_aux.py) to exist in data/patch_cache/.
+#
+# Normalization-mode ablation: this script honors the MRRSU_NORM_MODE env var
+# (one of zscore / minmax / pertile_zscore; default zscore for backwards
+# compatibility). Each mode uses a SEPARATE aux cache dir so the three jobs in
+# the sweep do not clobber each other.
+#
+# To launch the full 3-mode sweep, use scripts/launch_mrrsu_aux_sweep.sh.
 
 WORKDIR="/groups/sbyrne/${USER}/crism_classification"
 DATA_ROOT="/groups/sbyrne/${USER}/CRISM_MRDR"
 CKPT_DIR="${WORKDIR}/checkpoints"
 ENCODER="${CKPT_DIR}/plag_aware_mae_128d_6l_best.pt"
-AUX_DIR="${WORKDIR}/data/patch_cache"
+
+NORM_MODE="${MRRSU_NORM_MODE:-zscore}"
+case "$NORM_MODE" in
+    zscore|minmax|pertile_zscore) ;;
+    *)
+        echo "ERROR: MRRSU_NORM_MODE must be zscore|minmax|pertile_zscore (got '$NORM_MODE')"
+        exit 1
+        ;;
+esac
+# Per-mode cache dir so the three sweep jobs share neither .npy files nor stats.
+AUX_DIR="${WORKDIR}/data/patch_cache_${NORM_MODE}"
+RUN_NAME="ft_mrrsu_aux_${NORM_MODE}"
 
 export MAMBA_EXE='/opt/ohpc/pub/apps/micromamba/2.0.2-2/bin/micromamba'
 export MAMBA_ROOT_PREFIX='/groups/sbyrne/phillipsm/micromamba'
@@ -26,7 +43,7 @@ eval "$($MAMBA_EXE shell hook --shell bash --root-prefix $MAMBA_ROOT_PREFIX)"
 micromamba activate crism
 
 cd "$WORKDIR"
-mkdir -p logs checkpoints
+mkdir -p logs checkpoints "$AUX_DIR"
 
 if [ ! -f config.local.yaml ]; then
     cat > config.local.yaml <<EOF
@@ -38,19 +55,24 @@ patch_cache_dir: ${WORKDIR}/data/patch_cache
 EOF
 fi
 
-# Build the aux cache if missing (cheap: reads mrrsu tiles, 7x7-mean, sample).
+# Build the aux cache for this norm mode if missing.
+# NB: we write to a mode-specific dir (--output_dir) so different modes coexist.
 if [ ! -f "${AUX_DIR}/mrrsu_aux_train.npy" ] || [ ! -f "${AUX_DIR}/mrrsu_aux_stats.json" ]; then
-    echo "=== building mrrsu aux cache ==="
-    python -u scripts/build_mrrsu_aux.py
+    echo "=== building mrrsu aux cache (mode=${NORM_MODE}) ==="
+    python -u scripts/build_mrrsu_aux.py \
+        --norm_mode "${NORM_MODE}" \
+        --output_dir "${AUX_DIR}"
 fi
 
 if [ ! -f "$ENCODER" ]; then
     echo "ERROR: encoder missing: $ENCODER"; exit 1
 fi
 
+echo "=== fine-tune: run_name=${RUN_NAME}  aux_dir=${AUX_DIR} ==="
+
 python -u scripts/train.py \
     --model spatial_vit_aux \
-    --run_name ft_mrrsu_aux \
+    --run_name "${RUN_NAME}" \
     --pretrain_ckpt "${ENCODER}" \
     --mrrsu_aux_dir "${AUX_DIR}" \
     --encoder_lr_scale 0.001 \
@@ -60,4 +82,4 @@ python -u scripts/train.py \
     --patch_size 7 \
     --asl_loss
 
-echo "=== mrrsu-aux fine-tune done ==="
+echo "=== mrrsu-aux fine-tune done (mode=${NORM_MODE}) ==="

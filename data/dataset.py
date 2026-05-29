@@ -467,12 +467,25 @@ def apply_olivine_relabels(df, csv_path):
 
 
 class MrrsuAuxPatchDataset(Dataset):
-    """Wraps a CRISMSpectralPatchDataset and appends a z-scored mrrsu aux vector.
+    """Wraps a CRISMSpectralPatchDataset and appends a normalized mrrsu aux vector.
 
-    Yields (patch (7,7,59), aux2 (2,), label (5,), weight). aux2 is the z-scored
-    [mean_7x7 RPEAK1, mean_7x7 BD1300] from the aligned mrrsu_aux_{split}.npy cache.
-    NaN aux rows (tiles without a paired mrrsu, or all-NODATA windows) map to 0.0
-    after z-scoring — i.e. the train mean, contributing no information.
+    Yields (patch (7,7,59), aux2 (2,), label (5,), weight). aux2 is the
+    normalized [mean_7x7 RPEAK1, mean_7x7 BD1300] from the aligned
+    mrrsu_aux_{split}.npy cache. NaN aux rows (tiles without a paired mrrsu,
+    physically-implausible windows, or all-NODATA windows) map to 0.0
+    post-normalization -- i.e. the sample mean, contributing no information.
+
+    Supported normalization modes (read from ``mrrsu_aux_stats.json["mode"]``):
+      - ``zscore``        : (x - global_mean) / global_std
+      - ``minmax``        : (x - global_min) / (global_max - global_min), clipped to [0, 1]
+      - ``pertile_zscore``: (x - tile_mean) / tile_std, computed per tile from
+                            the physically-valid aux rows belonging to that tile
+                            in the current split. Tiles with fewer than
+                            ``min_valid_per_tile`` valid rows fall back to the
+                            global ``fallback_mean`` / ``fallback_std``.
+
+    The stats JSON must have ``version == 2`` -- legacy v1 JSONs (no ``version``
+    field) raise ``ValueError`` to force a rebuild via ``scripts/build_mrrsu_aux.py``.
     """
 
     def __init__(self, df, mrral_map, patch_size, aux_npy, stats_json,
@@ -484,11 +497,91 @@ class MrrsuAuxPatchDataset(Dataset):
             f"aux rows {len(aux)} != patch rows {len(self.inner)}")
         with open(stats_json) as f:
             st = json.load(f)
+        version = st.get('version')
+        if version != 2:
+            raise ValueError(
+                f"{stats_json} has version={version!r} but this code requires "
+                "version=2. Regenerate the aux cache with "
+                "`scripts/build_mrrsu_aux.py` (which now writes v2 stats)."
+            )
+        mode = st.get('mode')
+        self.mode = mode
+        if mode == 'zscore':
+            z = self._apply_zscore(aux, st)
+        elif mode == 'minmax':
+            z = self._apply_minmax(aux, st)
+        elif mode == 'pertile_zscore':
+            # Reset the dataframe index so positional indexing aligns with `aux`
+            # rows (build_mrrsu_aux.py uses ``reset_index(drop=True)`` per split).
+            df_reset = df.reset_index(drop=True)
+            if 'tile_id' not in df_reset.columns:
+                raise ValueError(
+                    "pertile_zscore mode requires df['tile_id']; got columns="
+                    f"{list(df_reset.columns)}"
+                )
+            z = self._apply_pertile_zscore(aux, st, df_reset['tile_id'].to_numpy())
+        else:
+            raise ValueError(
+                f"unsupported norm mode {mode!r} in {stats_json}; expected one of "
+                "{'zscore', 'minmax', 'pertile_zscore'}"
+            )
+        z[~np.isfinite(z)] = 0.0          # NaN/inf -> 0 (== sample mean post-transform)
+        self.aux = torch.from_numpy(z.astype(np.float32))
+
+    # ------------------------------------------------------------------ transforms
+    @staticmethod
+    def _apply_zscore(aux: np.ndarray, st: dict) -> np.ndarray:
         mean = np.asarray(st['mean'], dtype=np.float32)
         std = np.asarray(st['std'], dtype=np.float32)
-        z = (aux - mean) / std
-        z[~np.isfinite(z)] = 0.0          # NaN/inf → 0 (== train mean)
-        self.aux = torch.from_numpy(z)
+        return (aux - mean) / std
+
+    @staticmethod
+    def _apply_minmax(aux: np.ndarray, st: dict) -> np.ndarray:
+        mn = np.asarray(st['min'], dtype=np.float32)
+        mx = np.asarray(st['max'], dtype=np.float32)
+        denom = np.where((mx - mn) < 1e-8, np.float32(1.0), (mx - mn))
+        out = (aux - mn) / denom
+        return np.clip(out, 0.0, 1.0)
+
+    @staticmethod
+    def _apply_pertile_zscore(aux: np.ndarray, st: dict,
+                              tile_ids: np.ndarray) -> np.ndarray:
+        """Per-tile z-score with a global fallback for tiles below threshold.
+
+        Computed at init time once: each tile-group's mean/std over rows whose
+        aux is finite. Tiles with fewer than ``min_valid_per_tile`` finite rows
+        use ``fallback_mean`` / ``fallback_std`` (== global zscore stats).
+        """
+        from data.mrrsu_aux import (
+            physically_valid_mask as _pvm,
+            AUX_BAND_ORDER as _ORDER,
+        )
+
+        fallback_mean = np.asarray(st['fallback_mean'], dtype=np.float32)
+        fallback_std = np.asarray(st['fallback_std'], dtype=np.float32)
+        min_valid = int(st.get('min_valid_per_tile', 1000))
+
+        # Per-row validity mask (both bands physically valid AND finite)
+        # NB: aux is post-pooling so we just need finite (NaN entries are
+        # already the sentinel for invalid). Use ``_pvm`` for symmetry / safety.
+        row_valid = np.ones(len(aux), dtype=bool)
+        for j, b in enumerate(_ORDER):
+            row_valid &= _pvm(aux[:, j], b)
+
+        out = np.empty_like(aux, dtype=np.float32)
+        tile_ids = np.asarray(tile_ids)
+        # Group rows by tile_id; vectorize per-tile mean/std on valid subset.
+        for tid in np.unique(tile_ids):
+            tile_rows = np.where(tile_ids == tid)[0]
+            tile_valid = tile_rows[row_valid[tile_rows]]
+            if len(tile_valid) >= min_valid:
+                tm = aux[tile_valid].mean(axis=0).astype(np.float32)
+                ts = aux[tile_valid].std(axis=0).astype(np.float32) + np.float32(1e-8)
+            else:
+                tm = fallback_mean
+                ts = fallback_std
+            out[tile_rows] = (aux[tile_rows] - tm) / ts
+        return out
 
     def __len__(self):
         return len(self.inner)

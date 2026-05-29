@@ -62,22 +62,97 @@ def derive_mrrsu_path(mrral_path):
 
 
 def load_mrrsu_aux_rasters(mrrsu_path, stats_json, patch_size=PATCH_SIZE):
-    """Return (H, W, 2) float32 of z-scored [mean7x7 RPEAK1, mean7x7 BD1300].
-    NaN windows -> 0.0 (train mean)."""
+    """Return (H, W, 2) float32 of normalized [mean7x7 RPEAK1, mean7x7 BD1300].
+
+    Branches on ``stats_json["mode"]`` to mirror exactly the transform used at
+    training time:
+
+      - ``zscore``        : (x - mean) / std
+      - ``minmax``        : clip((x - min) / (max - min), 0, 1)
+      - ``pertile_zscore``: per-tile z-score where the tile's mean / std is
+        computed on-the-fly from physically-valid raster pixels. If the tile has
+        fewer than ``min_valid_per_tile`` physically-valid pixels, the global
+        ``fallback_mean`` / ``fallback_std`` from the stats JSON are used --
+        this matches the dataset's tile-level fallback behavior.
+
+    Stats JSONs without ``version == 2`` are rejected (the dataset would refuse
+    them at train time; we refuse them here for symmetry).
+
+    Non-finite pixels (NaN/inf) after normalization map to 0.0 (the sample mean
+    post-transform, i.e. "no information")."""
     import json
     import rasterio
-    from data.mrrsu_aux import mean_pool_nodata, RPEAK1_BAND, BD1300_BAND, NODATA as ND
+    from data.mrrsu_aux import (
+        AUX_BAND_ORDER,
+        BD1300_BAND,
+        NODATA as ND,
+        RPEAK1_BAND,
+        apply_invalid_to_nan,
+        mean_pool_nodata,
+        physically_valid_mask,
+    )
+    with open(stats_json) as f:
+        st = json.load(f)
+    version = st.get('version')
+    if version != 2:
+        raise ValueError(
+            f"{stats_json} has version={version!r}; expected 2. Regenerate "
+            "the aux cache with `scripts/build_mrrsu_aux.py`."
+        )
+    mode = st.get('mode', 'zscore')
+
     with rasterio.open(mrrsu_path) as src:
         rpeak = src.read(RPEAK1_BAND + 1).astype(np.float32)
         bd = src.read(BD1300_BAND + 1).astype(np.float32)
+    # NaN-mask physically-implausible / sentinel pixels before pooling so they
+    # don't pollute neighbour averages.
+    rpeak = apply_invalid_to_nan(rpeak, "RPEAK1")
+    bd = apply_invalid_to_nan(bd, "BD1300")
     rpeak_m = mean_pool_nodata(rpeak, patch_size=patch_size, nodata=ND)
     bd_m = mean_pool_nodata(bd, patch_size=patch_size, nodata=ND)
-    with open(stats_json) as f:
-        st = json.load(f)
-    mean = np.asarray(st['mean'], dtype=np.float32)
-    std = np.asarray(st['std'], dtype=np.float32)
-    aux = np.stack([rpeak_m, bd_m], axis=-1)
-    z = (aux - mean) / std
+    # Belt-and-braces: pooled means that fall outside the physical range
+    # (rare, e.g. at steep gradients) are also NaN.
+    rpeak_m = np.where(physically_valid_mask(rpeak_m, "RPEAK1"), rpeak_m, np.nan)
+    bd_m = np.where(physically_valid_mask(bd_m, "BD1300"), bd_m, np.nan)
+    aux = np.stack([rpeak_m, bd_m], axis=-1).astype(np.float32)
+
+    if mode == 'zscore':
+        mean = np.asarray(st['mean'], dtype=np.float32)
+        std = np.asarray(st['std'], dtype=np.float32)
+        z = (aux - mean) / std
+    elif mode == 'minmax':
+        mn = np.asarray(st['min'], dtype=np.float32)
+        mx = np.asarray(st['max'], dtype=np.float32)
+        denom = np.where((mx - mn) < 1e-8, np.float32(1.0), (mx - mn))
+        z = np.clip((aux - mn) / denom, 0.0, 1.0)
+    elif mode == 'pertile_zscore':
+        fallback_mean = np.asarray(st['fallback_mean'], dtype=np.float32)
+        fallback_std = np.asarray(st['fallback_std'], dtype=np.float32)
+        min_valid = int(st.get('min_valid_per_tile', 1000))
+        # Build a per-band validity mask on the pooled raster -- counts only
+        # physically-valid pixels in the *current* tile.
+        flat = aux.reshape(-1, 2)
+        valid_per_band = np.stack([
+            physically_valid_mask(flat[:, j], AUX_BAND_ORDER[j])
+            for j in range(2)
+        ], axis=1)
+        n_valid_per_band = valid_per_band.sum(axis=0)
+        tile_mean = np.empty(2, dtype=np.float32)
+        tile_std = np.empty(2, dtype=np.float32)
+        for j in range(2):
+            if n_valid_per_band[j] >= min_valid:
+                vals = flat[valid_per_band[:, j], j]
+                tile_mean[j] = vals.mean()
+                tile_std[j] = vals.std() + np.float32(1e-8)
+            else:
+                tile_mean[j] = fallback_mean[j]
+                tile_std[j] = fallback_std[j]
+        z = (aux - tile_mean) / tile_std
+    else:
+        raise ValueError(
+            f"unsupported norm mode {mode!r} in {stats_json}; expected one of "
+            "{'zscore', 'minmax', 'pertile_zscore'}"
+        )
     z[~np.isfinite(z)] = 0.0
     return z.astype(np.float32)
 
