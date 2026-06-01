@@ -1,5 +1,4 @@
 #!/bin/bash
-set -euo pipefail
 #SBATCH --job-name=crism_ft_mrrsu_aux
 #SBATCH --partition=gpu_standard
 #SBATCH --account=sbyrne
@@ -10,6 +9,10 @@ set -euo pipefail
 #SBATCH --time=12:00:00
 #SBATCH --output=logs/ft_mrrsu_aux_%j.log
 #SBATCH --error=logs/ft_mrrsu_aux_%j.log
+
+# Halt on any unhandled error (build failure, missing files, etc.) so we don't
+# cascade a build issue into a misleading train-time error.
+set -euo pipefail
 
 # Fine-tune the aux classifier (encoder + smoothed RPEAK1/BD1300 head) from the best
 # available encoder. Ablation partner: ft_plag_aware_real_only (same encoder, no aux).
