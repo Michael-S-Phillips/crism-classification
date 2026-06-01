@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
-#SBATCH --mem=48gb
+#SBATCH --mem=96gb
 #SBATCH --time=12:00:00
 #SBATCH --output=logs/ft_mrrsu_aux_%j.log
 #SBATCH --error=logs/ft_mrrsu_aux_%j.log

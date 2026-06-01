@@ -30,12 +30,21 @@ fi
 
 MODES=(zscore minmax pertile_zscore)
 
-for mode in "${MODES[@]}"; do
+# Stagger submissions by 60s so that if slurm places multiple jobs on the same
+# node, they don't all hit the memory-intensive dataset-construction phase at
+# the same instant (previous batch all OOM-killed at exactly the same second).
+for i in "${!MODES[@]}"; do
+    mode="${MODES[$i]}"
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "MRRSU_NORM_MODE=${mode} sbatch ${SLURM_SCRIPT}"
-    else
-        echo "=== submitting ${mode} ==="
-        MRRSU_NORM_MODE="${mode}" sbatch "${SLURM_SCRIPT}"
+        continue
+    fi
+    echo "=== submitting ${mode} ==="
+    MRRSU_NORM_MODE="${mode}" sbatch "${SLURM_SCRIPT}"
+    # delay between subsequent submissions, not after the last one
+    if [ "$i" -lt $(( ${#MODES[@]} - 1 )) ]; then
+        echo "  sleeping 60s before next submission to avoid simultaneous placement..."
+        sleep 60
     fi
 done
 
