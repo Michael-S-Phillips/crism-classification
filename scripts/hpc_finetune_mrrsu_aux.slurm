@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 #SBATCH --job-name=crism_ft_mrrsu_aux
 #SBATCH --partition=gpu_standard
 #SBATCH --account=sbyrne
@@ -62,7 +63,20 @@ if [ ! -f "${AUX_DIR}/mrrsu_aux_train.npy" ] || [ ! -f "${AUX_DIR}/mrrsu_aux_sta
     python -u scripts/build_mrrsu_aux.py \
         --norm_mode "${NORM_MODE}" \
         --output_dir "${AUX_DIR}"
+else
+    echo "=== aux cache already present at ${AUX_DIR}, skipping build ==="
 fi
+
+# Verify the build produced what training needs (catches silent build failures).
+for f in mrrsu_aux_train.npy mrrsu_aux_val.npy mrrsu_aux_stats.json; do
+    if [ ! -f "${AUX_DIR}/${f}" ]; then
+        echo "ERROR: build did not produce ${AUX_DIR}/${f}" >&2
+        echo "       check stdout above for the build step's error" >&2
+        exit 2
+    fi
+done
+echo "=== aux cache verified at ${AUX_DIR} ==="
+ls -la "${AUX_DIR}"
 
 if [ ! -f "$ENCODER" ]; then
     echo "ERROR: encoder missing: $ENCODER"; exit 1

@@ -189,7 +189,14 @@ def main():
               f'{len(df):,} rows')
     mrrsu_map = build_mrrsu_map(cfg)
     print(f'mrrsu tiles found: {len(mrrsu_map)}')
+    print(f'data_root from config: {cfg.get("data_root")!r}')
     print(f'norm_mode: {args.norm_mode}')
+    if len(mrrsu_map) == 0:
+        raise FileNotFoundError(
+            f'No mrrsu *.hdr files found under {cfg.get("data_root")!r}. '
+            f'Check that the data_root in config.local.yaml points at a directory '
+            f'with mc*/t*mrrsu*.hdr files. Aborting before producing an empty cache.'
+        )
 
     arrays = {}
     for split in args.splits:
