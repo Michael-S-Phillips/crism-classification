@@ -77,6 +77,7 @@ def train_torch_model(
     mrrsu_aux_dir: Optional[str] = None,
     is_aux_model: bool = False,
     min_delta: float = 0.0,
+    stop_metric: str = 'val_mAP',
     decomp_lambda_recon: float = 1.0,
     decomp_lambda_eps: float = 0.1,
     decomp_lambda_T: float = 0.01,
@@ -271,11 +272,12 @@ def train_torch_model(
         ).to(device)
 
     val_sub = df[df['split'] == 'val']
-    best_val_map = -1.0
+    best_monitored = -1.0
     best_state = None
     patience_counter = 0
     stopped_epoch = max_epochs
     metrics = {}
+    logger.info(f"Early-stop metric: {stop_metric} (patience={patience})")
 
     for epoch in range(1, max_epochs + 1):
         # --- Train ---
@@ -384,8 +386,21 @@ def train_torch_model(
         metrics = compute_full_metrics(y_true, y_score, conf_tiers)
         val_map = metrics['mAP']
         flat = _flatten_metrics(metrics)
+        # Pick the scalar we early-stop on. Default 'val_mAP'. Any flat key works.
+        if stop_metric == 'val_mAP':
+            monitored = val_map
+        elif stop_metric in flat:
+            monitored = float(flat[stop_metric])
+        else:
+            raise KeyError(
+                f"stop_metric={stop_metric!r} not in available metrics: "
+                f"['val_mAP'] + {sorted(flat.keys())}"
+            )
 
-        logger.info(f"Epoch {epoch}/{max_epochs} | train_loss={np.mean(train_losses):.4f} | val_mAP={val_map:.4f}")
+        logger.info(
+            f"Epoch {epoch}/{max_epochs} | train_loss={np.mean(train_losses):.4f} | "
+            f"val_mAP={val_map:.4f} | {stop_metric}={monitored:.4f}"
+        )
 
         if use_wandb:
             import wandb as wb
@@ -413,20 +428,20 @@ def train_torch_model(
                     log_dict['val_eps_norm_mean'] = float(np.mean(val_eps_norms))
             wb.log(log_dict)
 
-        # Early stopping with tolerance band. val_mAP near the running best
-        # (within `min_delta`) is treated as plateau, not regression — patience
-        # only ticks on a meaningful drop. min_delta=0 recovers strict behavior.
-        if val_map > best_val_map:
-            best_val_map = val_map
+        # Early stopping with tolerance band on the monitored metric. Values
+        # near the running best (within `min_delta`) are treated as plateau,
+        # not regression — patience only ticks on a meaningful drop.
+        if monitored > best_monitored:
+            best_monitored = monitored
             best_state = copy.deepcopy(model.state_dict())
             patience_counter = 0
-        elif val_map >= best_val_map - min_delta:
+        elif monitored >= best_monitored - min_delta:
             # Inside tolerance — neither update best nor tick patience.
             pass
         else:
             patience_counter += 1
             if patience_counter >= patience:
-                logger.info(f"Early stopping at epoch {epoch}")
+                logger.info(f"Early stopping at epoch {epoch} ({stop_metric} plateaued at {best_monitored:.4f})")
                 stopped_epoch = epoch
                 break
 
@@ -438,7 +453,11 @@ def train_torch_model(
     if checkpoint_dir:
         os.makedirs(checkpoint_dir, exist_ok=True)
         ckpt_path = os.path.join(checkpoint_dir, f'{model_name}_best.pt')
-        torch.save({'model_state': best_state, 'val_mAP': best_val_map}, ckpt_path)
+        torch.save(
+            {'model_state': best_state, 'stop_metric': stop_metric,
+             'best_monitored': best_monitored},
+            ckpt_path,
+        )
         logger.info(f"Saved checkpoint to {ckpt_path}")
         if use_wandb:
             import wandb as wb
@@ -450,7 +469,7 @@ def train_torch_model(
         import wandb as wb
         wb.finish()
 
-    return {'val_mAP': best_val_map, 'stopped_epoch': stopped_epoch, **_flatten_metrics(metrics)}
+    return {stop_metric: best_monitored, 'stopped_epoch': stopped_epoch, **_flatten_metrics(metrics)}
 
 
 def _flatten_metrics(metrics: dict) -> dict:

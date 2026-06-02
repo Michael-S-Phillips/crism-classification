@@ -130,6 +130,11 @@ def main():
                         help='Early-stopping tolerance: val_mAP drops up to this '
                              'much below the running best do not tick patience. '
                              'Default 0.0 = strict, any non-improvement counts.')
+    parser.add_argument('--stop_metric', type=str, default='val_mAP',
+                        help='Metric watched for early stopping and best-checkpoint '
+                             'selection. Default val_mAP. Example: val_AP_plagioclase '
+                             'lets a run keep going even when overall mAP plateaus, '
+                             'so long as the plag class is still improving.')
     parser.add_argument('--decomp_lambda_recon', type=float, default=1.0,
                         help='Weight on reconstruction MSE for DecompSpVit.')
     parser.add_argument('--decomp_lambda_eps', type=float, default=0.1,
@@ -564,6 +569,7 @@ def main():
                 encoder_lr_scale=args.encoder_lr_scale,
                 class_weights=class_weights_tensor,
                 min_delta=args.min_delta,
+                stop_metric=args.stop_metric,
                 mrrsu_aux_dir=args.mrrsu_aux_dir,
                 is_aux_model=True,
             )

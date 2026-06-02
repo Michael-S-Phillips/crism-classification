@@ -39,7 +39,12 @@ case "$NORM_MODE" in
 esac
 # Per-mode cache dir so the three sweep jobs share neither .npy files nor stats.
 AUX_DIR="${WORKDIR}/data/patch_cache_${NORM_MODE}"
-RUN_NAME="ft_mrrsu_aux_${NORM_MODE}"
+RUN_NAME="ft_mrrsu_aux_${NORM_MODE}${MRRSU_RUN_SUFFIX:-}"
+
+# Optional knobs (defaults preserve original sweep behavior).
+STOP_METRIC="${MRRSU_STOP_METRIC:-val_mAP}"
+PATIENCE="${MRRSU_PATIENCE:-25}"
+EPOCHS="${MRRSU_EPOCHS:-100}"
 
 export MAMBA_EXE='/opt/ohpc/pub/apps/micromamba/2.0.2-2/bin/micromamba'
 export MAMBA_ROOT_PREFIX='/groups/sbyrne/phillipsm/micromamba'
@@ -86,6 +91,7 @@ if [ ! -f "$ENCODER" ]; then
 fi
 
 echo "=== fine-tune: run_name=${RUN_NAME}  aux_dir=${AUX_DIR} ==="
+echo "    stop_metric=${STOP_METRIC}  patience=${PATIENCE}  epochs=${EPOCHS}"
 
 python -u scripts/train.py \
     --model spatial_vit_aux \
@@ -93,7 +99,8 @@ python -u scripts/train.py \
     --pretrain_ckpt "${ENCODER}" \
     --mrrsu_aux_dir "${AUX_DIR}" \
     --encoder_lr_scale 0.001 \
-    --epochs 100 --patience 25 \
+    --epochs "${EPOCHS}" --patience "${PATIENCE}" \
+    --stop_metric "${STOP_METRIC}" \
     --batch_size 256 --lr 5e-4 \
     --embed_dim 128 --n_heads 4 --n_layers 6 \
     --patch_size 7 \
