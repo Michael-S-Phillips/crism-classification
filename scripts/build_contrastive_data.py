@@ -433,6 +433,12 @@ def main():
     ap.add_argument('--sam_max_pixels_per_tile', type=int, default=None,
                     help='Cap on pixels-per-tile taken from each SAM parquet '
                          '(uniform random subsample). None = take everything.')
+    ap.add_argument('--extra_positive_pool_dirs', nargs='*', default=None,
+                    help='Pre-built positive patch pool directories (each must '
+                         'contain patches.npy + meta.parquet matching the '
+                         "positives schema). Currently used to merge in the "
+                         "sensor-space ROI patches from "
+                         'scripts/build_plag_roi_patches.py.')
     ap.add_argument('--debug_limit_polygons', type=int, default=None,
                     help='Process at most N polygons per pool — for fast CPU smoke tests.')
     ap.add_argument('--seed', type=int, default=42)
@@ -487,6 +493,25 @@ def main():
             debug_limit_polygons=args.debug_limit_polygons,
             seed=args.seed,
         )
+        n_gpkg = len(pool.patches)
+        if args.extra_positive_pool_dirs:
+            for extra_dir in args.extra_positive_pool_dirs:
+                npy = os.path.join(extra_dir, 'patches.npy')
+                pq = os.path.join(extra_dir, 'meta.parquet')
+                if not (os.path.exists(npy) and os.path.exists(pq)):
+                    logger.warning(f'  extra positive pool missing files, skipping: {extra_dir}')
+                    continue
+                arr = np.load(npy)
+                if arr.size == 0:
+                    logger.warning(f'  extra positive pool empty: {extra_dir}')
+                    continue
+                meta = pd.read_parquet(pq)
+                for i in range(len(arr)):
+                    pool.patches.append(arr[i].astype(np.float32))
+                    pool.rows.append(meta.iloc[i].to_dict())
+                logger.info(f'  merged {len(arr)} patches from {extra_dir}')
+            logger.info(f'  positives total: {n_gpkg} gpkg + '
+                        f'{len(pool.patches) - n_gpkg} extra = {len(pool.patches)}')
         pool.write(os.path.join(args.output_dir, 'positives'), 'positives')
 
     if not args.skip_soft:
