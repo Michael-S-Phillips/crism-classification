@@ -411,12 +411,19 @@ def harvest_sam_parquet_hard_negatives(
 # ----------------------------------------------------------------- entry point
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--mc13_plag_gpkg',
-                    default='data/vector_mc13_relabeled/plagioclase.gpkg')
+    ap.add_argument('--mc13_plag_gpkg', default=None,
+                    help='Optional MC13 plag gpkg to harvest hard-negative polygons '
+                         'from. If omitted (or --skip_hard_mc13 set), the MC13 polygon '
+                         'harvest is skipped — useful when only SAM hard negatives are '
+                         'available. Default: data/vector_mc13_relabeled/plagioclase.gpkg '
+                         'if that file exists, else None.')
     ap.add_argument('--mc13_threshold_layer', default='thresh_0.92',
                     help='Layer to read from the MC13 plag gpkg. The gpkg ships '
                          'thresh_0.92, 0.94, 0.96, 0.97 — use the lowest to '
                          'maximise hard-negative count.')
+    ap.add_argument('--skip_hard_mc13', action='store_true',
+                    help='Skip the MC13 polygon-based hard-negative harvest even '
+                         'if --mc13_plag_gpkg is provided. SAM parquets still run.')
     ap.add_argument('--labeled_gpkg_dir', default='/mnt/mrdr/categorized_mineral_units')
     ap.add_argument('--output_dir', default='data/contrastive')
     ap.add_argument('--tile_dir', default=None,
@@ -461,14 +468,28 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     if not args.skip_hard:
-        logger.info('=== hard_negatives (MC13 classifier-plag polygons) ===')
-        pool = harvest_hard_negatives(
-            args.mc13_plag_gpkg, args.mc13_threshold_layer,
-            tile_dir=args.tile_dir,
-            max_per_polygon=args.max_per_polygon,
-            debug_limit_polygons=args.debug_limit_polygons,
-            seed=args.seed,
+        do_mc13 = (
+            not args.skip_hard_mc13
+            and args.mc13_plag_gpkg is not None
+            and os.path.exists(args.mc13_plag_gpkg)
         )
+        if do_mc13:
+            logger.info('=== hard_negatives (MC13 classifier-plag polygons) ===')
+            pool = harvest_hard_negatives(
+                args.mc13_plag_gpkg, args.mc13_threshold_layer,
+                tile_dir=args.tile_dir,
+                max_per_polygon=args.max_per_polygon,
+                debug_limit_polygons=args.debug_limit_polygons,
+                seed=args.seed,
+            )
+        else:
+            if args.mc13_plag_gpkg and not os.path.exists(args.mc13_plag_gpkg):
+                logger.warning(f'  MC13 plag gpkg not found at {args.mc13_plag_gpkg}, '
+                               f'skipping that source')
+            else:
+                logger.info('=== skipping MC13 hard-negative harvest (--skip_hard_mc13 '
+                            'or no gpkg given) ===')
+            pool = PoolRecord()
         n_mc13 = len(pool.patches)
         if args.sam_hard_negative_parquets:
             logger.info('=== hard_negatives (SAM-flagged pixel parquets) ===')

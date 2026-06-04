@@ -37,9 +37,12 @@ if [ ! -f "$ENCODER" ]; then
     echo "ERROR: pretrain encoder missing: $ENCODER"
     exit 1
 fi
+USE_MC13=1
 if [ ! -f "$MC13_PLAG_GPKG" ]; then
-    echo "ERROR: MC13 plag gpkg missing: $MC13_PLAG_GPKG"
-    exit 1
+    echo "WARNING: MC13 plag gpkg missing: $MC13_PLAG_GPKG"
+    echo "         proceeding without MC13 polygon hard-negatives — SAM parquets"
+    echo "         (if present) will be the sole hard-negative source"
+    USE_MC13=0
 fi
 
 # ---------- pre-build patch pools if missing ----------
@@ -70,12 +73,16 @@ if [ "$NEED_POOLS" -eq 1 ]; then
     done
 
     BUILD_ARGS=(
-        --mc13_plag_gpkg "$MC13_PLAG_GPKG"
-        --mc13_threshold_layer thresh_0.92
         --labeled_gpkg_dir "$LABELED_GPKG_DIR"
         --output_dir "$POOL_DIR"
         --max_per_polygon 200
     )
+    if [ "$USE_MC13" -eq 1 ]; then
+        BUILD_ARGS+=(--mc13_plag_gpkg "$MC13_PLAG_GPKG" --mc13_threshold_layer thresh_0.92)
+    else
+        # No MC13 gpkg: tell the build script to skip the MC13 polygon harvest.
+        BUILD_ARGS+=(--skip_hard_mc13)
+    fi
     if [ ${#SAM_PARQUETS[@]} -gt 0 ]; then
         echo "  including ${#SAM_PARQUETS[@]} SAM hard-negative parquet(s)"
         BUILD_ARGS+=(--sam_hard_negative_parquets "${SAM_PARQUETS[@]}")
