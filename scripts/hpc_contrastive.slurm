@@ -48,11 +48,18 @@ if [ ! -f "$MC13_PLAG_GPKG" ]; then
     USE_MC13=0
 fi
 
-# ---------- pre-build patch pools if missing ----------
+# ---------- pre-build patch pools if missing OR empty ----------
+# A previous run can leave behind 0-patch patches.npy files (~128 B placeholder
+# for an empty array). Re-build if the file is missing or implausibly small
+# (< 10 KB ~ less than 1 valid 7x7x59 patch).
 NEED_POOLS=0
+MIN_POOL_BYTES=10240
 for sub in hard_negatives positives soft_negatives; do
-    if [ ! -f "${POOL_DIR}/${sub}/patches.npy" ]; then
+    patches_file="${POOL_DIR}/${sub}/patches.npy"
+    size=$(stat -c%s "$patches_file" 2>/dev/null || echo 0)
+    if [ ! -f "$patches_file" ] || [ "$size" -lt "$MIN_POOL_BYTES" ]; then
         NEED_POOLS=1
+        echo "  pool ${sub} needs rebuild (file=${patches_file} size=${size})"
     fi
 done
 if [ "$NEED_POOLS" -eq 1 ]; then
