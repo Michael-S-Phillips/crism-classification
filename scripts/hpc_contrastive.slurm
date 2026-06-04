@@ -16,6 +16,8 @@
 # - Trains InfoNCE with weighted hard/soft negatives.
 # - Runs a linear probe at the end and prints per-class AP.
 
+set -euo pipefail
+
 WORKDIR="/groups/sbyrne/${USER}/crism_classification"
 # CRISM mrral cubes live on xdisk, not groups. Files are stored flat (no mc##
 # subdirs), so build_contrastive_data.py uses its <data_root>/<tile>_mrral*.img
