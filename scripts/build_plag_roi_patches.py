@@ -52,9 +52,7 @@ N_BANDS = 59
 PAD = PATCH_SIZE // 2
 
 FELDSREVIEW_ROOT_DEFAULT = '/mnt/mrdr/categorized_mineral_units/FeldsReview'
-XLSX_SHEET = 'Search through delivery 004'
 EXCLUDE_MARKER = 'ACTUALLY NOT GOOD'
-SUBHEADER_MARKER = 'Found in literature'
 
 # In-file band order (1-indexed for rasterio):
 #   1 VNIR/IR Spectral Continuity Residual
@@ -70,77 +68,208 @@ logger = logging.getLogger(__name__)
 
 
 # ----------------------------------------------------------------- xlsx parser
+def _find_subheader_row(raw: list[tuple]) -> Optional[int]:
+    """Find the row index containing the three ROW/COL subheader pairs."""
+    for i, r in enumerate(raw):
+        if r is None:
+            continue
+        cells = [str(c).strip().lower() if c else '' for c in r]
+        if cells.count('row') >= 3 and cells.count('col') >= 3:
+            return i
+    return None
+
+
+def _parse_columns(raw: list[tuple], subheader_i: int) -> Optional[dict]:
+    """Return positions of {region, id, sig, conf, num_row, num_col,
+    roi_row, roi_col}.
+
+    Both xlsx layouts share three ``ROW/COL`` subheader pairs (Numerator,
+    Denominator, ROI size) in the same row. ``Search through delivery 004``
+    has explicit ``Region`` / ``ID`` / ``Ratioed spectral signature`` /
+    ``Confidence`` text headers in the same subheader row; ``Plag from
+    literature`` does not, and we fall back to hard-coded column positions
+    (col 0 = region, 1 = id, 2 = confidence, 6 = signature) verified against
+    that sheet's data rows.
+    """
+    h = [str(c).strip().lower() if c else '' for c in raw[subheader_i]]
+    row_indices = [i for i, c in enumerate(h) if c == 'row']
+    col_indices = [i for i, c in enumerate(h) if c == 'col']
+    if len(row_indices) < 3 or len(col_indices) < 3:
+        return None
+    cols = {
+        'num_row': row_indices[0],
+        'num_col': col_indices[0],
+        'roi_row': row_indices[2],
+        'roi_col': col_indices[2],
+    }
+    # Try header-based first (Search through delivery 004 layout)
+    cols['region'] = h.index('region') if 'region' in h else None
+    cols['id'] = h.index('id') if 'id' in h else None
+    cols['sig'] = next((i for i, c in enumerate(h)
+                        if 'ratioed' in c or 'signature' in c), None)
+    cols['conf'] = next((i for i, c in enumerate(h)
+                         if 'confidence' in c), None)
+    if cols['region'] is None or cols['id'] is None:
+        # Plag from literature: no text headers in subheader row; use
+        # hard-coded positions verified against actual data rows.
+        cols['region'] = 0
+        cols['id'] = 1
+        cols['conf'] = 2
+        cols['sig'] = 6
+    return cols
+
+
+def _clean_obsid(raw) -> Optional[str]:
+    """Normalize an obsid cell: strip whitespace/non-breaking, remove '_07' /
+    '_09' suffix, lowercase. Returns None if not a valid CRISM obsid pattern."""
+    if not isinstance(raw, str):
+        return None
+    s = raw.strip().rstrip('\xa0').lower()
+    s = re.sub(r'_0[79].*$', '', s)
+    if not re.match(r'^(frt|hrl|hrs|frs)[0-9a-f]+$', s):
+        return None
+    return s
+
+
 def parse_roi_rows(xlsx_path: str,
                    include_low: bool = False,
-                   include_non_plag: bool = False) -> pd.DataFrame:
-    """Return a DataFrame with columns:
-       region, obsid, signature, confidence, num_row, num_col, roi_row, roi_col.
-    Skips rows after the 'ACTUALLY NOT GOOD' marker.
+                   include_non_plag: bool = False,
+                   sheets: Optional[list[str]] = None) -> pd.DataFrame:
+    """Return a DataFrame of plag ROI rows from one or more xlsx sheets.
+
+    Columns: sheet, region, obsid, signature, confidence,
+             num_row, num_col, roi_row, roi_col.
+    Deduplicated by (obsid, num_row, num_col, roi_row, roi_col).
     """
     wb = openpyxl.load_workbook(xlsx_path)
-    ws = wb[XLSX_SHEET]
-    raw = list(ws.iter_rows(values_only=True))
+    sheets_to_read = sheets if sheets is not None else list(wb.sheetnames)
+    out_rows: list[dict] = []
+    for sn in sheets_to_read:
+        if sn not in wb.sheetnames:
+            logger.warning(f'sheet not found: {sn!r}')
+            continue
+        ws = wb[sn]
+        raw = list(ws.iter_rows(values_only=True))
+        header_i = _find_subheader_row(raw)
+        if header_i is None:
+            logger.info(f'  sheet {sn!r}: no ROW/COL subheader row found, skipping')
+            continue
+        cols = _parse_columns(raw, header_i)
+        if cols is None:
+            logger.warning(f'  sheet {sn!r}: could not parse columns, skipping')
+            continue
 
-    rows: list[dict] = []
-    last_region = None
-    last_obsid = None
-    in_exclude = False
-    past_header = False
-    for r in raw:
-        if r is None or all(c is None for c in r):
-            continue
-        first = r[0]
-        if isinstance(first, str) and EXCLUDE_MARKER in first:
-            in_exclude = True
-            continue
-        if in_exclude:
-            continue
-        # Detect the column-header row by value, not position (the xlsx has a
-        # leading blank line and a section-label row above it).
-        if not past_header:
-            if isinstance(first, str) and first.strip().lower() == 'region':
-                past_header = True
-            continue
-        # Skip the "Found in literature" subheader (no obsid)
-        if isinstance(first, str) and SUBHEADER_MARKER in first:
-            continue
-        # Forward-fill region + obsid (the xlsx leaves them blank for repeats)
-        region = r[0] if r[0] is not None else last_region
-        last_region = region or last_region
-        obsid = r[1] if r[1] is not None else last_obsid
-        last_obsid = obsid or last_obsid
-        signature = r[2]
-        confidence = r[3]
-        num_row, num_col = r[6], r[7]
-        roi_row, roi_col = r[10], r[11]
-        if obsid is None or num_row is None or num_col is None:
-            continue
-        # Guard against non-numeric values sneaking through
-        if not (isinstance(num_row, (int, float)) and isinstance(num_col, (int, float))):
-            continue
-        if not (isinstance(roi_row, (int, float)) and isinstance(roi_col, (int, float))):
-            continue
-        rows.append({
-            'region': region or '',
-            'obsid': str(obsid).strip().lower().replace('_07', ''),
-            'signature': (signature or '').strip(),
-            'confidence': (confidence or '').strip(),
-            'num_row': int(num_row),
-            'num_col': int(num_col),
-            'roi_row': int(roi_row),
-            'roi_col': int(roi_col),
-        })
-    df = pd.DataFrame(rows)
+        last_region = None
+        last_obsid = None
+        in_exclude = False
+        kept_in_sheet = 0
+        for r in raw[header_i + 1:]:
+            if r is None or all(c is None for c in r):
+                continue
+            first = r[0]
+            if isinstance(first, str) and EXCLUDE_MARKER in first:
+                in_exclude = True
+                continue
+            if in_exclude:
+                continue
+            # Skip subsection / legend rows (e.g. starting with '*' or
+            # 'Found in literature')
+            if isinstance(first, str) and (
+                first.startswith('*') or 'found in literature' in first.lower()
+            ):
+                continue
+            region = r[cols['region']] if r[cols['region']] is not None else last_region
+            last_region = region or last_region
+            obsid_raw = r[cols['id']] if r[cols['id']] is not None else last_obsid
+            last_obsid = obsid_raw or last_obsid
+            obsid = _clean_obsid(obsid_raw)
+            if obsid is None:
+                continue
+            signature = r[cols['sig']] if cols['sig'] is not None else None
+            confidence = r[cols['conf']] if cols['conf'] is not None else None
+            num_row = r[cols['num_row']]
+            num_col = r[cols['num_col']]
+            roi_row = r[cols['roi_row']]
+            roi_col = r[cols['roi_col']]
+            if not all(isinstance(x, (int, float))
+                       for x in (num_row, num_col, roi_row, roi_col)):
+                # "No MTRDR" / "nd" rows have '-' for numeric cols
+                continue
+            out_rows.append({
+                'sheet': sn,
+                'region': region or '',
+                'obsid': obsid,
+                'signature': str(signature).strip() if signature else '',
+                'confidence': str(confidence).strip() if confidence else '',
+                'num_row': int(num_row),
+                'num_col': int(num_col),
+                'roi_row': int(roi_row),
+                'roi_col': int(roi_col),
+            })
+            kept_in_sheet += 1
+        logger.info(f'  sheet {sn!r}: kept {kept_in_sheet} candidate rows')
+
+    df = pd.DataFrame(out_rows)
+    if df.empty:
+        return df
     if not include_non_plag:
         df = df[df['signature'].str.lower().str.contains('plagioclase')]
     if not include_low:
         df = df[~df['confidence'].str.lower().str.startswith('low')]
-    return df.reset_index(drop=True)
+    # Dedup across sheets (same ROI may appear in both tabs)
+    df = df.drop_duplicates(
+        subset=['obsid', 'num_row', 'num_col', 'roi_row', 'roi_col']
+    ).reset_index(drop=True)
+    return df
 
 
 # ----------------------------------------------------------------- file lookup
-def find_pair_for_obsid(obsid: str, root: str) -> Optional[Tuple[str, str]]:
-    """Return ``(if_path, in_path)`` if both exist for this obsid, else None."""
+def build_inventory(root: str) -> dict:
+    """One-shot recursive walk of ``root`` for ``*_if*_mtr3.img`` and
+    ``*_in*_mtr3.img`` files. Returns ``{obsid: {'if': [paths], 'in': [paths]}}``.
+
+    Avoids per-obsid recursive globs (which are O(N_obsids * tree_size) on the
+    network share). Single walk is ~one minute even on a slow mount.
+    """
+    paths = glob.glob(os.path.join(root, '**', '*_mtr3.img'), recursive=True)
+    inv: dict = {}
+    for p in paths:
+        fname = os.path.basename(p).lower()
+        m = re.match(r'^((?:frt|hrl|hrs|frs)[0-9a-f]+)', fname)
+        if not m:
+            continue
+        oid = m.group(1)
+        kind = 'if' if '_if' in fname else 'in' if '_in' in fname else None
+        if kind is None:
+            continue
+        inv.setdefault(oid, {'if': [], 'in': []})[kind].append(p)
+    return inv
+
+
+def find_pair_for_obsid(
+    obsid: str,
+    root: str,
+    inventory: Optional[dict] = None,
+) -> Optional[Tuple[str, str]]:
+    """Return ``(if_path, in_path)`` if both exist for this obsid, else None.
+
+    Prefers ``inventory`` (built once via :func:`build_inventory`) for O(1)
+    lookups. Falls back to per-obsid recursive globs if no inventory is
+    provided.
+    """
+    obsid = obsid.lower()
+    if inventory is not None:
+        info = inventory.get(obsid) or {}
+        ifs = info.get('if', [])
+        ins = info.get('in', [])
+        if ifs and ins:
+            # Prefer pairs from the same directory (sibling files).
+            if_path = ifs[0]
+            sib = os.path.dirname(if_path)
+            sib_in = [p for p in ins if os.path.dirname(p) == sib]
+            in_path = sib_in[0] if sib_in else ins[0]
+            return if_path, in_path
+        return None
     short = re.sub(r'^frt0+', 'frt', obsid)  # 'frt000064b3' -> 'frt64b3' fallback
     for tag in (obsid, short):
         if_candidates = glob.glob(os.path.join(
@@ -150,7 +279,6 @@ def find_pair_for_obsid(obsid: str, root: str) -> Optional[Tuple[str, str]]:
         if not if_candidates or not in_candidates:
             continue
         if_path = if_candidates[0]
-        # Find the in file in the *same* directory as the if file (paired).
         sib_dir = os.path.dirname(if_path)
         sib_in = [p for p in in_candidates if os.path.dirname(p) == sib_dir]
         if sib_in:
@@ -270,13 +398,17 @@ def main():
                         include_low=args.include_low,
                         include_non_plag=args.include_non_plag)
     logger.info(f'parsed {len(df)} plag ROI rows from {args.xlsx_path}')
+    logger.info(f'building one-shot inventory under {args.feldsreview_root} ...')
+    inventory = build_inventory(args.feldsreview_root)
+    logger.info(f'  inventory: {len(inventory)} obsids with mtr3 files on disk')
 
     all_patches: list[np.ndarray] = []
     all_rows: list[dict] = []
     n_skipped_missing = 0
     for idx, row in df.iterrows():
         obsid = row['obsid']
-        pair = find_pair_for_obsid(obsid, args.feldsreview_root)
+        pair = find_pair_for_obsid(obsid, args.feldsreview_root,
+                                   inventory=inventory)
         if pair is None:
             logger.warning(f'  [{obsid}] if/in pair not found, skipping')
             n_skipped_missing += 1
