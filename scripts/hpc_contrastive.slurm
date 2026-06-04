@@ -113,10 +113,29 @@ python -u scripts/train_contrastive.py \
 
 # ---------- linear probe (fast) ----------
 echo "=== linear probe ==="
+PROBE_EXTRA_ARGS=()
+if [ ${#EXTRA_POS_DIRS[@]:-0} -gt 0 ]; then
+    PROBE_EXTRA_ARGS+=(--extra_positive_pool_dirs "${EXTRA_POS_DIRS[@]}")
+fi
+# (Re-discover the pool dirs in case the build was skipped and the variable
+# wasn't set above.)
+if [ ${#PROBE_EXTRA_ARGS[@]} -eq 0 ]; then
+    PROBE_EXTRA=()
+    for d in "${WORKDIR}/data/contrastive/extra_plag_roi"; do
+        if [ -f "${d}/patches.npy" ] && [ -f "${d}/meta.parquet" ]; then
+            PROBE_EXTRA+=("$d")
+        fi
+    done
+    if [ ${#PROBE_EXTRA[@]} -gt 0 ]; then
+        PROBE_EXTRA_ARGS+=(--extra_positive_pool_dirs "${PROBE_EXTRA[@]}")
+        echo "  probe: including ${#PROBE_EXTRA[@]} extra positive pool dir(s)"
+    fi
+fi
 python -u scripts/eval_contrastive.py \
     --ckpt "${CKPT_DIR}/${RUN_NAME}_best.pt" \
     --mode linear \
     --probe_epochs 5 \
-    --batch_size 256
+    --batch_size 256 \
+    "${PROBE_EXTRA_ARGS[@]}"
 
 echo "=== contrastive pipeline done ==="

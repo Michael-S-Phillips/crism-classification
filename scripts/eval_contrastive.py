@@ -116,7 +116,8 @@ def _make_val_loader(cfg, batch_size: int, apply_relabels: str | None,
 
 
 def _make_train_loader(cfg, batch_size: int, apply_relabels: str | None,
-                       debug_rows: int | None = None):
+                       debug_rows: int | None = None,
+                       extra_positive_pool_dirs: list[str] | None = None):
     df = pd.read_parquet(os.path.join(cfg['output_dir'], 'mrral_pixels.parquet'))
     if apply_relabels:
         df, n = apply_olivine_relabels(df, apply_relabels)
@@ -125,10 +126,27 @@ def _make_train_loader(cfg, batch_size: int, apply_relabels: str | None,
     if debug_rows:
         sub = sub.head(debug_rows).reset_index(drop=True)
     cache_dir = None if debug_rows else cfg.get('patch_cache_dir')
-    ds = CRISMSpectralPatchDataset(
+    base_ds = CRISMSpectralPatchDataset(
         sub, build_mrral_map(cfg), patch_size=7,
         cache_dir=cache_dir, split='train',
     )
+    if extra_positive_pool_dirs:
+        from torch.utils.data import ConcatDataset
+        from data.contrastive_dataset import ExtraPositivesDataset
+        extras = []
+        for d in extra_positive_pool_dirs:
+            try:
+                ex = ExtraPositivesDataset(d, positive_class='plagioclase')
+                extras.append(ex)
+                print(f'  augmenting train loader with {len(ex)} extra positive patches from {d}')
+            except FileNotFoundError as e:
+                print(f'  skipping extra positive pool {d}: {e}')
+        if extras:
+            ds = ConcatDataset([base_ds] + extras)
+        else:
+            ds = base_ds
+    else:
+        ds = base_ds
     loader = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=0)
     return loader
 
@@ -153,7 +171,8 @@ def run_linear_probe(args, cfg, device):
     probe = LinearProbe(encoder, n_classes=len(LABEL_COLS)).to(device)
 
     train_loader = _make_train_loader(cfg, args.batch_size, args.apply_relabels,
-                                       debug_rows=args.debug_rows)
+                                       debug_rows=args.debug_rows,
+                                       extra_positive_pool_dirs=args.extra_positive_pool_dirs)
     val_loader, val_df, val_tiers = _make_val_loader(
         cfg, args.batch_size, args.apply_relabels, split='val',
         debug_rows=args.debug_rows)
@@ -205,7 +224,8 @@ def run_finetune(args, cfg, device):
     print(f'transplanted encoder: missing={len(missing)} unexpected={len(unexpected)}')
 
     train_loader = _make_train_loader(cfg, args.batch_size, args.apply_relabels,
-                                       debug_rows=args.debug_rows)
+                                       debug_rows=args.debug_rows,
+                                       extra_positive_pool_dirs=args.extra_positive_pool_dirs)
     val_loader, val_df, val_tiers = _make_val_loader(
         cfg, args.batch_size, args.apply_relabels, split='val',
         debug_rows=args.debug_rows)
@@ -250,6 +270,11 @@ def main():
     ap.add_argument('--config', default='config.yaml')
     ap.add_argument('--apply_relabels', default=None,
                     help='Path to olivine_relabels.csv to apply corrected val labels.')
+    ap.add_argument('--extra_positive_pool_dirs', nargs='*', default=None,
+                    help='Pre-built positive patch pool directories (each contains '
+                         'patches.npy + meta.parquet). Concatenated with the standard '
+                         'train loader so the linear-probe / fine-tune head sees these '
+                         'hand-vetted plag patches in addition to the parquet train split.')
     ap.add_argument('--batch_size', type=int, default=256)
     # linear probe
     ap.add_argument('--probe_epochs', type=int, default=5)

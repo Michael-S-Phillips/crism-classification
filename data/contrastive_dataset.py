@@ -106,3 +106,51 @@ class ContrastiveTripletDataset(Dataset):
             torch.from_numpy(hard),
             torch.from_numpy(soft),
         )
+
+
+class ExtraPositivesDataset(Dataset):
+    """Wraps a pre-built positive patch pool for supervised use in eval.
+
+    Yields ``(patch, label_vec, weight)`` matching the
+    ``CRISMSpectralPatchDataset`` contract, so it can be concatenated with the
+    standard supervised train loader (e.g. inside ``eval_contrastive.py``).
+
+    ``label_vec`` is one-hot over ``LABEL_COLS`` with the configured class
+    (default ``'plagioclase'``) set to 1.0. ``weight`` is a constant per-sample
+    confidence weight (default 1.0; these patches are hand-vetted).
+    """
+
+    def __init__(
+        self,
+        pool_dir: str,
+        positive_class: str = 'plagioclase',
+        weight: float = 1.0,
+        label_cols: Optional[tuple] = None,
+    ):
+        if label_cols is None:
+            # Import lazily so this module doesn't pull rasterio at import time.
+            from data.dataset import LABEL_COLS as _LBL
+            label_cols = tuple(_LBL)
+        if positive_class not in label_cols:
+            raise ValueError(
+                f"positive_class={positive_class!r} not in label_cols={label_cols!r}"
+            )
+        npy_path = os.path.join(pool_dir, 'patches.npy')
+        self.patches = _load_patches(npy_path)
+        self.n_classes = len(label_cols)
+        self.plag_idx = label_cols.index(positive_class)
+        self.weight = float(weight)
+        # Pre-build the static label vector (every sample gets the same one)
+        self._label_vec = np.zeros(self.n_classes, dtype=np.float32)
+        self._label_vec[self.plag_idx] = 1.0
+
+    def __len__(self) -> int:
+        return len(self.patches)
+
+    def __getitem__(self, idx: int):
+        patch = np.asarray(self.patches[idx], dtype=np.float32).copy()
+        return (
+            torch.from_numpy(patch),
+            torch.from_numpy(self._label_vec.copy()),
+            torch.tensor(self.weight, dtype=torch.float32),
+        )
