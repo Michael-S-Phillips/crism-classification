@@ -59,24 +59,34 @@ if [ "$NEED_POOLS" -eq 1 ]; then
         "${WORKDIR}/sam_analysis/outputs/argyre/t0435_hard_negatives_mrdr.parquet"; do
         if [ -f "$p" ]; then SAM_PARQUETS+=("$p"); fi
     done
+    # Optional extra positive pool: sensor-space ROI plag patches from
+    # scripts/build_plag_roi_patches.py. Auto-detected if present.
+    EXTRA_POS_DIRS=()
+    for d in \
+        "${WORKDIR}/data/contrastive/extra_plag_roi"; do
+        if [ -f "${d}/patches.npy" ] && [ -f "${d}/meta.parquet" ]; then
+            EXTRA_POS_DIRS+=("$d")
+        fi
+    done
+
+    BUILD_ARGS=(
+        --mc13_plag_gpkg "$MC13_PLAG_GPKG"
+        --mc13_threshold_layer thresh_0.92
+        --labeled_gpkg_dir "$LABELED_GPKG_DIR"
+        --output_dir "$POOL_DIR"
+        --max_per_polygon 200
+    )
     if [ ${#SAM_PARQUETS[@]} -gt 0 ]; then
         echo "  including ${#SAM_PARQUETS[@]} SAM hard-negative parquet(s)"
-        python -u scripts/build_contrastive_data.py \
-            --mc13_plag_gpkg "$MC13_PLAG_GPKG" \
-            --mc13_threshold_layer thresh_0.92 \
-            --labeled_gpkg_dir "$LABELED_GPKG_DIR" \
-            --output_dir "$POOL_DIR" \
-            --max_per_polygon 200 \
-            --sam_hard_negative_parquets "${SAM_PARQUETS[@]}"
+        BUILD_ARGS+=(--sam_hard_negative_parquets "${SAM_PARQUETS[@]}")
     else
-        echo "  no SAM parquets found, using MC13 polygons only"
-        python -u scripts/build_contrastive_data.py \
-            --mc13_plag_gpkg "$MC13_PLAG_GPKG" \
-            --mc13_threshold_layer thresh_0.92 \
-            --labeled_gpkg_dir "$LABELED_GPKG_DIR" \
-            --output_dir "$POOL_DIR" \
-            --max_per_polygon 200
+        echo "  no SAM parquets found, using MC13 polygons only for hard negatives"
     fi
+    if [ ${#EXTRA_POS_DIRS[@]} -gt 0 ]; then
+        echo "  including ${#EXTRA_POS_DIRS[@]} extra positive pool dir(s) (ROI patches)"
+        BUILD_ARGS+=(--extra_positive_pool_dirs "${EXTRA_POS_DIRS[@]}")
+    fi
+    python -u scripts/build_contrastive_data.py "${BUILD_ARGS[@]}"
 else
     echo "=== patch pools already present, skipping build ==="
 fi
