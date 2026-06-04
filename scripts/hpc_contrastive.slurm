@@ -17,7 +17,10 @@
 # - Runs a linear probe at the end and prints per-class AP.
 
 WORKDIR="/groups/sbyrne/${USER}/crism_classification"
-DATA_ROOT="/groups/sbyrne/${USER}/CRISM_MRDR"
+# CRISM mrral cubes live on xdisk, not groups. Files are stored flat (no mc##
+# subdirs), so build_contrastive_data.py uses its <data_root>/<tile>_mrral*.img
+# fallback.
+DATA_ROOT="/xdisk/sbyrne/${USER}/CRISM_MRDR"
 CKPT_DIR="${WORKDIR}/checkpoints"
 ENCODER="${CKPT_DIR}/plag_aware_mae_128d_6l_best.pt"
 POOL_DIR="${WORKDIR}/data/contrastive"
@@ -73,6 +76,7 @@ if [ "$NEED_POOLS" -eq 1 ]; then
     done
 
     BUILD_ARGS=(
+        --data_root "$DATA_ROOT"
         --labeled_gpkg_dir "$LABELED_GPKG_DIR"
         --output_dir "$POOL_DIR"
         --max_per_polygon 200
@@ -120,23 +124,19 @@ python -u scripts/train_contrastive.py \
 
 # ---------- linear probe (fast) ----------
 echo "=== linear probe ==="
+# Re-discover extra positive pool dirs at probe time (the EXTRA_POS_DIRS
+# variable from the build block isn't reliable here — the build may have
+# been skipped, leaving the var unset).
 PROBE_EXTRA_ARGS=()
-if [ ${#EXTRA_POS_DIRS[@]:-0} -gt 0 ]; then
-    PROBE_EXTRA_ARGS+=(--extra_positive_pool_dirs "${EXTRA_POS_DIRS[@]}")
-fi
-# (Re-discover the pool dirs in case the build was skipped and the variable
-# wasn't set above.)
-if [ ${#PROBE_EXTRA_ARGS[@]} -eq 0 ]; then
-    PROBE_EXTRA=()
-    for d in "${WORKDIR}/data/contrastive/extra_plag_roi"; do
-        if [ -f "${d}/patches.npy" ] && [ -f "${d}/meta.parquet" ]; then
-            PROBE_EXTRA+=("$d")
-        fi
-    done
-    if [ ${#PROBE_EXTRA[@]} -gt 0 ]; then
-        PROBE_EXTRA_ARGS+=(--extra_positive_pool_dirs "${PROBE_EXTRA[@]}")
-        echo "  probe: including ${#PROBE_EXTRA[@]} extra positive pool dir(s)"
+PROBE_EXTRA=()
+for d in "${WORKDIR}/data/contrastive/extra_plag_roi"; do
+    if [ -f "${d}/patches.npy" ] && [ -f "${d}/meta.parquet" ]; then
+        PROBE_EXTRA+=("$d")
     fi
+done
+if [ ${#PROBE_EXTRA[@]} -gt 0 ]; then
+    PROBE_EXTRA_ARGS+=(--extra_positive_pool_dirs "${PROBE_EXTRA[@]}")
+    echo "  probe: including ${#PROBE_EXTRA[@]} extra positive pool dir(s)"
 fi
 python -u scripts/eval_contrastive.py \
     --ckpt "${CKPT_DIR}/${RUN_NAME}_best.pt" \

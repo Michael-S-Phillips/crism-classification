@@ -62,11 +62,15 @@ CLIP_MAX = 0.5
 PATCH_SIZE = 7
 N_BANDS = 59
 PAD = PATCH_SIZE // 2
-DEFAULT_TILE_GLOBS = (
-    '/mnt/mrdr/mc*/{tile}_mrral_*.img',
-    '/mnt/mrdr/mc*/{tile}_mrral*.img',
-    '/mnt/mrdr/{tile}_mrral*.img',
-)
+DEFAULT_DATA_ROOT = '/mnt/mrdr'
+
+
+def make_tile_globs(data_root: str) -> tuple:
+    return (
+        os.path.join(data_root, 'mc*', '{tile}_mrral_*.img'),
+        os.path.join(data_root, 'mc*', '{tile}_mrral*.img'),
+        os.path.join(data_root, '{tile}_mrral*.img'),
+    )
 
 PLAG_CATS = {
     'plagioclase (high)',
@@ -81,14 +85,24 @@ logger = logging.getLogger(__name__)
 
 
 # ----------------------------------------------------------------- helpers
-def find_mrral_for_tile(tile_id: str, tile_dir: Optional[str] = None) -> Optional[str]:
-    """Locate the mrral cube for ``tile_id`` (case-insensitive 't1234')."""
+def find_mrral_for_tile(
+    tile_id: str,
+    tile_dir: Optional[str] = None,
+    data_root: str = DEFAULT_DATA_ROOT,
+) -> Optional[str]:
+    """Locate the mrral cube for ``tile_id`` (case-insensitive 't1234').
+
+    Searches ``tile_dir`` first if provided, then falls back to
+    ``<data_root>/mc*/{tile}_mrral*.img`` patterns. On HPC ``data_root`` is
+    typically ``$DATA_ROOT`` (e.g. ``/groups/sbyrne/$USER/CRISM_MRDR``);
+    locally it defaults to ``/mnt/mrdr``.
+    """
     tile = tile_id.lower()
     if tile_dir is not None:
         matches = sorted(glob.glob(os.path.join(tile_dir, f'{tile}_mrral*.img')))
         if matches:
             return matches[0]
-    for gtmpl in DEFAULT_TILE_GLOBS:
+    for gtmpl in make_tile_globs(data_root):
         matches = sorted(glob.glob(gtmpl.format(tile=tile)))
         if matches:
             return matches[0]
@@ -246,6 +260,7 @@ def harvest_hard_negatives(
     max_per_polygon: int,
     debug_limit_polygons: Optional[int] = None,
     seed: Optional[int] = None,
+    data_root: str = DEFAULT_DATA_ROOT,
 ) -> PoolRecord:
     """MC13-classifier-confident plag polygons -> hard negatives."""
     import geopandas as gpd
@@ -263,7 +278,7 @@ def harvest_hard_negatives(
     # Group by tile for fewer rasterio opens
     for tid, tile_group in g.groupby('tile_id'):
         tile_id = str(tid).lower()
-        mrral_path = find_mrral_for_tile(tile_id, tile_dir=tile_dir)
+        mrral_path = find_mrral_for_tile(tile_id, tile_dir=tile_dir, data_root=data_root)
         if not mrral_path:
             logger.warning(f'  [{tile_id}] no mrral cube found, skipping')
             continue
@@ -297,6 +312,7 @@ def harvest_labeled_pool(
     max_per_polygon: int,
     debug_limit_polygons: Optional[int] = None,
     seed: Optional[int] = None,
+    data_root: str = DEFAULT_DATA_ROOT,
 ) -> PoolRecord:
     """Walk T*.gpkg files, keep polygons whose Category matches ``target_cats``."""
     import geopandas as gpd
@@ -318,7 +334,7 @@ def harvest_labeled_pool(
         if len(subset) == 0:
             continue
         tile_id = tile_id_from_t_gpkg(gp)
-        mrral_path = find_mrral_for_tile(tile_id, tile_dir=tile_dir)
+        mrral_path = find_mrral_for_tile(tile_id, tile_dir=tile_dir, data_root=data_root)
         if not mrral_path:
             logger.warning(f'  [{tile_id}] no mrral cube found, skipping ({len(subset)} polys lost)')
             continue
@@ -355,6 +371,7 @@ def harvest_sam_parquet_hard_negatives(
     tile_dir: Optional[str],
     max_per_tile: Optional[int] = None,
     seed: Optional[int] = None,
+    data_root: str = DEFAULT_DATA_ROOT,
 ) -> PoolRecord:
     """Per-pixel hard negatives from SAM-flagged classifier-plag pixels.
 
@@ -381,7 +398,7 @@ def harvest_sam_parquet_hard_negatives(
         added_this_file = 0
         for tid, grp in df.groupby('tile_id'):
             tile_id = str(tid).lower()
-            mrral_path = find_mrral_for_tile(tile_id, tile_dir=tile_dir)
+            mrral_path = find_mrral_for_tile(tile_id, tile_dir=tile_dir, data_root=data_root)
             if not mrral_path:
                 logger.warning(f'    [{tile_id}] no mrral cube found, skipping')
                 continue
@@ -429,6 +446,11 @@ def main():
     ap.add_argument('--tile_dir', default=None,
                     help='Restrict mrral-cube search to this directory '
                          '(e.g. /mnt/mrdr/mc13/ for MC13-only).')
+    ap.add_argument('--data_root', default=DEFAULT_DATA_ROOT,
+                    help='Base dir for mrral cube search. On HPC, point this '
+                         'at e.g. /xdisk/sbyrne/$USER/CRISM_MRDR. The script tries '
+                         f'<data_root>/mc*/<tile>_mrral*.img and the flat layout '
+                         f'<data_root>/<tile>_mrral*.img. Default: {DEFAULT_DATA_ROOT}')
     ap.add_argument('--patch_size', type=int, default=PATCH_SIZE)
     ap.add_argument('--max_per_polygon', type=int, default=200)
     ap.add_argument('--sam_hard_negative_parquets', nargs='*', default=None,
@@ -481,6 +503,7 @@ def main():
                 max_per_polygon=args.max_per_polygon,
                 debug_limit_polygons=args.debug_limit_polygons,
                 seed=args.seed,
+                data_root=args.data_root,
             )
         else:
             if args.mc13_plag_gpkg and not os.path.exists(args.mc13_plag_gpkg):
@@ -498,6 +521,7 @@ def main():
                 tile_dir=args.tile_dir,
                 max_per_tile=args.sam_max_pixels_per_tile,
                 seed=args.seed,
+                data_root=args.data_root,
             )
             pool.extend(sam_pool)
             logger.info(f'merged: {n_mc13} mc13 + {len(sam_pool.patches)} sam = '
@@ -513,6 +537,7 @@ def main():
             max_per_polygon=args.max_per_polygon,
             debug_limit_polygons=args.debug_limit_polygons,
             seed=args.seed,
+            data_root=args.data_root,
         )
         n_gpkg = len(pool.patches)
         if args.extra_positive_pool_dirs:
@@ -544,6 +569,7 @@ def main():
             max_per_polygon=args.max_per_polygon,
             debug_limit_polygons=args.debug_limit_polygons,
             seed=args.seed,
+            data_root=args.data_root,
         )
         pool.write(os.path.join(args.output_dir, 'soft_negatives'), 'soft_negatives')
 
