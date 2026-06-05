@@ -44,6 +44,24 @@ from data.dataset import (CRISMSpectralPatchDataset, LABEL_COLS, _collapse_label
 from evaluation.metrics import compute_full_metrics
 from models.contrastive_encoder import ContrastiveEncoder
 from models.spatial_spectral_transformer import SpatialSpectralClassifier
+from training.losses import AsymmetricLoss
+
+
+def _make_loss(args):
+    """Return (loss_fn, name) — ASL by default to match the rest of the
+    project's supervised FTs; pass ``--bce_loss`` to switch to BCE."""
+    if args.bce_loss:
+        bce = torch.nn.BCEWithLogitsLoss(reduction='none')
+        def loss_fn(logits, labels, weights):
+            return (bce(logits, labels).mean(dim=-1) * weights).mean()
+        return loss_fn, 'bce'
+    asl = AsymmetricLoss(
+        gamma_neg=args.asl_gamma_neg, gamma_pos=args.asl_gamma_pos,
+        clip=args.asl_clip,
+    )
+    def loss_fn(logits, labels, weights):
+        return asl(logits, labels, weights)
+    return loss_fn, f'asl(g-={args.asl_gamma_neg},g+={args.asl_gamma_pos},clip={args.asl_clip})'
 
 
 def build_mrral_map(cfg):
@@ -179,7 +197,8 @@ def run_linear_probe(args, cfg, device):
 
     optim = torch.optim.AdamW(probe.head.parameters(), lr=args.probe_lr,
                               weight_decay=1e-4)
-    bce = nn.BCEWithLogitsLoss(reduction='none')
+    loss_fn, loss_name = _make_loss(args)
+    print(f'  probe loss: {loss_name}')
 
     for epoch in range(1, args.probe_epochs + 1):
         probe.train()
@@ -189,7 +208,7 @@ def run_linear_probe(args, cfg, device):
             labels = labels.to(device)
             weights = weights.to(device)
             logits = probe(feats)
-            loss = (bce(logits, labels).mean(dim=-1) * weights).mean()
+            loss = loss_fn(logits, labels, weights)
             optim.zero_grad(set_to_none=True)
             loss.backward()
             optim.step()
@@ -235,8 +254,12 @@ def run_finetune(args, cfg, device):
                              encoder_lr=args.lr * args.encoder_lr_scale),
         weight_decay=1e-4,
     )
-    bce = nn.BCEWithLogitsLoss(reduction='none')
+    loss_fn, loss_name = _make_loss(args)
+    print(f'  finetune loss: {loss_name}  (patience={args.patience})')
     best_map = -1.0
+    best_metrics = None
+    best_epoch = -1
+    patience_counter = 0
     for epoch in range(1, args.epochs + 1):
         clf.train()
         for step, (feats, labels, weights) in enumerate(train_loader):
@@ -244,21 +267,40 @@ def run_finetune(args, cfg, device):
             labels = labels.to(device)
             weights = weights.to(device)
             logits = clf(feats)
-            loss = (bce(logits, labels).mean(dim=-1) * weights).mean()
+            loss = loss_fn(logits, labels, weights)
             optim.zero_grad(set_to_none=True)
             loss.backward()
             optim.step()
             if args.debug_steps and step + 1 >= args.debug_steps:
                 break
         m = _score(clf, val_loader, device, val_tiers)
-        print(f'epoch {epoch}: val_mAP={m["mAP"]:.4f}')
+        per_class = m['per_class_ap']
+        plag = per_class.get('plagioclase', float('nan'))
+        hcp = per_class.get('hcp', float('nan'))
+        print(f'epoch {epoch}: val_mAP={m["mAP"]:.4f}  plag={plag:.4f}  hcp={hcp:.4f}')
         if m['mAP'] > best_map:
             best_map = m['mAP']
+            best_metrics = m
+            best_epoch = epoch
+            patience_counter = 0
             torch.save({'model_state': clf.state_dict(), 'epoch': epoch,
                         'val_mAP': best_map},
                        os.path.join(args.output_dir,
                                     f'{args.run_name}_finetune_best.pt'))
-    print(f'best val_mAP = {best_map:.4f}')
+        else:
+            patience_counter += 1
+            if patience_counter >= args.patience:
+                print(f'early-stopping at epoch {epoch} (no mAP improvement '
+                      f'since epoch {best_epoch})')
+                break
+
+    print(f'\nFULL FINETUNE  ckpt={os.path.basename(args.ckpt)}  '
+          f'n_val={len(val_df):,}  best_epoch={best_epoch}')
+    print(f'  val_mAP = {best_map:.4f}')
+    if best_metrics is not None:
+        for cls, apv in best_metrics['per_class_ap'].items():
+            print(f'  val_AP_{cls:<12s} = {apv:.4f}')
+    return best_metrics
 
 
 # ---------------------------------------------------------- entry point
@@ -285,6 +327,15 @@ def main():
     ap.add_argument('--encoder_lr_scale', type=float, default=0.001)
     ap.add_argument('--run_name', default='eval_contrastive')
     ap.add_argument('--output_dir', default='checkpoints')
+    ap.add_argument('--patience', type=int, default=25,
+                    help='Early-stop patience (finetune mode only).')
+    # loss config
+    ap.add_argument('--bce_loss', action='store_true',
+                    help='Use BCE instead of ASL. Default is ASL to match the '
+                         'project\'s other supervised FTs.')
+    ap.add_argument('--asl_gamma_neg', type=float, default=4.0)
+    ap.add_argument('--asl_gamma_pos', type=float, default=0.0)
+    ap.add_argument('--asl_clip', type=float, default=0.05)
     # encoder shape
     ap.add_argument('--n_bands', type=int, default=59)
     ap.add_argument('--patch_size', type=int, default=7)
