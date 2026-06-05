@@ -50,18 +50,30 @@ if [ ! -f "$MC13_PLAG_GPKG" ]; then
     USE_MC13=0
 fi
 
-# ---------- pre-build patch pools if missing OR empty ----------
+# ---------- pre-build patch pools if missing, empty, or stale ----------
 # A previous run can leave behind 0-patch patches.npy files (~128 B placeholder
 # for an empty array). Re-build if the file is missing or implausibly small
 # (< 10 KB ~ less than 1 valid 7x7x59 patch).
+#
+# Also re-build positives whenever the upstream ROI pool
+# (data/contrastive/extra_plag_roi/patches.npy) has a newer mtime than the
+# cached positives/patches.npy — otherwise scp'ing a fresh ROI pool up doesn't
+# trigger a rebuild (size check passes since both files are large enough).
 NEED_POOLS=0
 MIN_POOL_BYTES=10240
+EXTRA_ROI_NPY="${WORKDIR}/data/contrastive/extra_plag_roi/patches.npy"
 for sub in hard_negatives positives soft_negatives; do
     patches_file="${POOL_DIR}/${sub}/patches.npy"
     size=$(stat -c%s "$patches_file" 2>/dev/null || echo 0)
     if [ ! -f "$patches_file" ] || [ "$size" -lt "$MIN_POOL_BYTES" ]; then
         NEED_POOLS=1
         echo "  pool ${sub} needs rebuild (file=${patches_file} size=${size})"
+    elif [ "$sub" = "positives" ] && [ -f "$EXTRA_ROI_NPY" ] \
+         && [ "$EXTRA_ROI_NPY" -nt "$patches_file" ]; then
+        NEED_POOLS=1
+        echo "  pool positives needs rebuild: upstream ROI npy is newer"
+        echo "    ROI: $(stat -c '%Y %s' "$EXTRA_ROI_NPY") $EXTRA_ROI_NPY"
+        echo "    pos: $(stat -c '%Y %s' "$patches_file") $patches_file"
     fi
 done
 if [ "$NEED_POOLS" -eq 1 ]; then
