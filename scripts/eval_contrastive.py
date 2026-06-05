@@ -47,6 +47,38 @@ from models.spatial_spectral_transformer import SpatialSpectralClassifier
 from training.losses import AsymmetricLoss
 
 
+def _maybe_init_wandb(args, mode: str):
+    """Spin up a wandb run if not disabled. Returns the run object or None."""
+    if args.no_wandb:
+        return None
+    try:
+        import wandb as wb
+    except ImportError:
+        print('  wandb not installed, skipping logging')
+        return None
+    run_name = f'{args.run_name}_{mode}'
+    return wb.init(
+        project='crism-mineral-classification',
+        entity='space-imagery-center',
+        name=run_name,
+        config={**vars(args), 'mode': mode, 'wrapper': 'eval_contrastive'},
+        reinit=True,
+    )
+
+
+def _wandb_log(run, payload: dict):
+    if run is not None:
+        run.log(payload)
+
+
+def _wandb_summary(run, metrics: dict, prefix: str = ''):
+    if run is None:
+        return
+    run.summary[f'{prefix}val_mAP'] = metrics['mAP']
+    for cls, ap in metrics['per_class_ap'].items():
+        run.summary[f'{prefix}val_AP_{cls}'] = ap
+
+
 def _make_loss(args):
     """Return (loss_fn, name) — ASL by default to match the rest of the
     project's supervised FTs; pass ``--bce_loss`` to switch to BCE."""
@@ -199,6 +231,7 @@ def run_linear_probe(args, cfg, device):
                               weight_decay=1e-4)
     loss_fn, loss_name = _make_loss(args)
     print(f'  probe loss: {loss_name}')
+    run = _maybe_init_wandb(args, 'linear_probe')
 
     for epoch in range(1, args.probe_epochs + 1):
         probe.train()
@@ -216,13 +249,21 @@ def run_linear_probe(args, cfg, device):
             n += feats.shape[0]
             if args.debug_steps and step + 1 >= args.debug_steps:
                 break
-        print(f'  probe epoch {epoch}: train_loss={running/max(n,1):.4f}')
+        train_loss = running / max(n, 1)
+        print(f'  probe epoch {epoch}: train_loss={train_loss:.4f}')
+        _wandb_log(run, {'epoch': epoch, 'train_loss': train_loss})
 
     m = _score(probe, val_loader, device, val_tiers)
     print(f'\nLINEAR PROBE  ckpt={os.path.basename(args.ckpt)}  n_val={len(val_df):,}')
     print(f'  val_mAP = {m["mAP"]:.4f}')
     for cls, apv in m['per_class_ap'].items():
         print(f'  val_AP_{cls:<12s} = {apv:.4f}')
+    payload = {'val_mAP': m['mAP']}
+    payload.update({f'val_AP_{cls}': ap for cls, ap in m['per_class_ap'].items()})
+    _wandb_log(run, payload)
+    _wandb_summary(run, m)
+    if run is not None:
+        run.finish()
     return m
 
 
@@ -256,12 +297,15 @@ def run_finetune(args, cfg, device):
     )
     loss_fn, loss_name = _make_loss(args)
     print(f'  finetune loss: {loss_name}  (patience={args.patience})')
+    run = _maybe_init_wandb(args, 'finetune')
+
     best_map = -1.0
     best_metrics = None
     best_epoch = -1
     patience_counter = 0
     for epoch in range(1, args.epochs + 1):
         clf.train()
+        running_loss = 0.0; n_seen = 0
         for step, (feats, labels, weights) in enumerate(train_loader):
             feats = feats.to(device)
             labels = labels.to(device)
@@ -271,13 +315,21 @@ def run_finetune(args, cfg, device):
             optim.zero_grad(set_to_none=True)
             loss.backward()
             optim.step()
+            running_loss += float(loss.item()) * feats.shape[0]
+            n_seen += feats.shape[0]
             if args.debug_steps and step + 1 >= args.debug_steps:
                 break
+        train_loss = running_loss / max(n_seen, 1)
         m = _score(clf, val_loader, device, val_tiers)
         per_class = m['per_class_ap']
         plag = per_class.get('plagioclase', float('nan'))
         hcp = per_class.get('hcp', float('nan'))
-        print(f'epoch {epoch}: val_mAP={m["mAP"]:.4f}  plag={plag:.4f}  hcp={hcp:.4f}')
+        print(f'epoch {epoch}: train_loss={train_loss:.4f}  val_mAP={m["mAP"]:.4f}  '
+              f'plag={plag:.4f}  hcp={hcp:.4f}')
+        payload = {'epoch': epoch, 'train_loss': train_loss,
+                   'val_mAP': m['mAP']}
+        payload.update({f'val_AP_{cls}': ap for cls, ap in per_class.items()})
+        _wandb_log(run, payload)
         if m['mAP'] > best_map:
             best_map = m['mAP']
             best_metrics = m
@@ -300,6 +352,11 @@ def run_finetune(args, cfg, device):
     if best_metrics is not None:
         for cls, apv in best_metrics['per_class_ap'].items():
             print(f'  val_AP_{cls:<12s} = {apv:.4f}')
+        _wandb_summary(run, best_metrics, prefix='best_')
+        if run is not None:
+            run.summary['best_epoch'] = best_epoch
+    if run is not None:
+        run.finish()
     return best_metrics
 
 
@@ -336,6 +393,8 @@ def main():
     ap.add_argument('--asl_gamma_neg', type=float, default=4.0)
     ap.add_argument('--asl_gamma_pos', type=float, default=0.0)
     ap.add_argument('--asl_clip', type=float, default=0.05)
+    ap.add_argument('--no_wandb', action='store_true',
+                    help='Disable wandb logging (on by default).')
     # encoder shape
     ap.add_argument('--n_bands', type=int, default=59)
     ap.add_argument('--patch_size', type=int, default=7)
