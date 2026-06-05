@@ -71,6 +71,14 @@ def main():
     ap.add_argument('--n_layers', type=int, default=6)
     ap.add_argument('--proj_dim', type=int, default=64)
     ap.add_argument('--dropout', type=float, default=0.1)
+    # noise augmentation
+    ap.add_argument('--noise_aug', action='store_true',
+                    help='Apply CrismNoiseAugmentation to all patches during '
+                         'training (gaussian + 1µm spike + column bias). '
+                         'Defaults match the denoising MAE pretraining.')
+    ap.add_argument('--noise_sigma_gauss', type=float, default=0.0087)
+    ap.add_argument('--noise_sigma_spike', type=float, default=0.0058)
+    ap.add_argument('--noise_sigma_column', type=float, default=0.0049)
     # misc
     ap.add_argument('--seed', type=int, default=42)
     ap.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
@@ -144,8 +152,23 @@ def main():
         grad_clip=args.grad_clip,
         device=args.device,
     )
+    # ---------------------------------------------------------- noise aug
+    noise_aug = None
+    if args.noise_aug:
+        from models.noise_augmentation import CrismNoiseAugmentation
+        noise_aug = CrismNoiseAugmentation(
+            sigma_gauss=args.noise_sigma_gauss,
+            sigma_spike=args.noise_sigma_spike,
+            sigma_column=args.noise_sigma_column,
+            n_bands=args.n_bands,
+            patch_size=args.patch_size,
+        )
+        print(f'noise_aug enabled: σ_gauss={args.noise_sigma_gauss} '
+              f'σ_spike={args.noise_sigma_spike} σ_column={args.noise_sigma_column}')
+
     history = train_contrastive(
         model, loader, cfg,
+        noise_aug=noise_aug,
         wandb_run=wandb_run,
         ckpt_dir=args.output_dir,
         run_name=args.run_name,

@@ -24,11 +24,19 @@ WORKDIR="/groups/sbyrne/${USER}/crism_classification"
 # fallback.
 DATA_ROOT="/xdisk/sbyrne/${USER}/CRISM_MRDR"
 CKPT_DIR="${WORKDIR}/checkpoints"
-ENCODER="${CKPT_DIR}/plag_aware_mae_128d_6l_best.pt"
 POOL_DIR="${WORKDIR}/data/contrastive"
-RUN_NAME="contrastive_plag_v1"
 LABELED_GPKG_DIR="${DATA_ROOT}/categorized_mineral_units"
 MC13_PLAG_GPKG="${WORKDIR}/data/vector_mc13_relabeled/plagioclase.gpkg"
+
+# Sweep knobs — env-var driven, defaults match the original successful run.
+ENCODER="${CONTRASTIVE_ENCODER:-${CKPT_DIR}/plag_aware_mae_128d_6l_best.pt}"
+RUN_SUFFIX="${CONTRASTIVE_RUN_SUFFIX:-}"
+RUN_NAME="contrastive_plag_v1${RUN_SUFFIX}"
+EPOCHS="${CONTRASTIVE_EPOCHS:-30}"
+TAU="${CONTRASTIVE_TAU:-0.07}"
+HARD_WEIGHT="${CONTRASTIVE_HARD_WEIGHT:-2.0}"
+ENCODER_LR_SCALE="${CONTRASTIVE_ENCODER_LR_SCALE:-0.01}"
+NOISE_AUG="${CONTRASTIVE_NOISE_AUG:-0}"   # 1 = enable noise augmentation
 
 export MAMBA_EXE='/opt/ohpc/pub/apps/micromamba/2.0.2-2/bin/micromamba'
 export MAMBA_ROOT_PREFIX='/groups/sbyrne/phillipsm/micromamba'
@@ -124,24 +132,32 @@ else
 fi
 
 # ---------- train ----------
+NOISE_FLAG=()
+if [ "$NOISE_AUG" = "1" ] || [ "$NOISE_AUG" = "true" ]; then
+    NOISE_FLAG=(--noise_aug)
+fi
 echo "=== contrastive training ==="
+echo "    run_name=${RUN_NAME}"
+echo "    encoder=${ENCODER}"
+echo "    epochs=${EPOCHS} tau=${TAU} hard_weight=${HARD_WEIGHT} encoder_lr_scale=${ENCODER_LR_SCALE} noise_aug=${NOISE_AUG}"
 python -u scripts/train_contrastive.py \
     --pretrain_ckpt "$ENCODER" \
     --pool_dir "$POOL_DIR" \
     --output_dir "$CKPT_DIR" \
     --run_name "$RUN_NAME" \
-    --epochs 30 \
+    --epochs "$EPOCHS" \
     --batch_size 64 \
     --lr 1e-4 \
-    --encoder_lr_scale 0.01 \
-    --tau 0.07 \
-    --hard_weight 2.0 \
+    --encoder_lr_scale "$ENCODER_LR_SCALE" \
+    --tau "$TAU" \
+    --hard_weight "$HARD_WEIGHT" \
     --soft_weight 1.0 \
     --n_hard_per_batch 8 \
     --n_soft_per_batch 8 \
     --proj_dim 64 \
     --embed_dim 128 --n_heads 4 --n_layers 6 \
-    --num_workers 4
+    --num_workers 4 \
+    "${NOISE_FLAG[@]}"
 
 # ---------- linear probe (fast) ----------
 echo "=== linear probe ==="

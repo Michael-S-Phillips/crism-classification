@@ -112,6 +112,7 @@ def train_contrastive(
     val_every_epochs: int = 5,
     ckpt_dir: Optional[str] = None,
     run_name: str = 'contrastive',
+    noise_aug: Optional[nn.Module] = None,
 ):
     """Train ``model`` (a ``ContrastiveEncoder``) with weighted InfoNCE.
 
@@ -128,6 +129,8 @@ def train_contrastive(
     """
     device = torch.device(cfg.device)
     model.to(device)
+    if noise_aug is not None:
+        noise_aug = noise_aug.to(device)
 
     optim = torch.optim.AdamW(
         _param_groups(model, cfg.lr, cfg.encoder_lr_scale),
@@ -152,11 +155,22 @@ def train_contrastive(
             N_h = hard.shape[1]
             N_s = soft.shape[1]
 
+            # Optional input-space noise augmentation. The CrismNoiseAugmentation
+            # is no-op in eval mode; here we're in train mode so noise is applied.
+            if noise_aug is not None:
+                anchor = noise_aug(anchor)
+                pos = noise_aug(pos)
+                hard_flat = noise_aug(hard.reshape(B * N_h, *hard.shape[2:]))
+                soft_flat = noise_aug(soft.reshape(B * N_s, *soft.shape[2:]))
+            else:
+                hard_flat = hard.reshape(B * N_h, *hard.shape[2:])
+                soft_flat = soft.reshape(B * N_s, *soft.shape[2:])
+
             # Encode anchors and positives one patch per row, negatives flat-batched
             z_anchor = model(anchor)                                    # (B, D)
             z_pos = model(pos)                                          # (B, D)
-            z_hard = model(hard.reshape(B * N_h, *hard.shape[2:]))      # (B*N_h, D)
-            z_soft = model(soft.reshape(B * N_s, *soft.shape[2:]))      # (B*N_s, D)
+            z_hard = model(hard_flat)                                   # (B*N_h, D)
+            z_soft = model(soft_flat)                                   # (B*N_s, D)
             z_hard = z_hard.view(B, N_h, -1)
             z_soft = z_soft.view(B, N_s, -1)
 
