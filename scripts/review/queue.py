@@ -26,10 +26,10 @@ class PolygonItem:
     geometry: BaseGeometry
     area_m2: float
     pred_prob: float           # parsed from layer name
-    source_gpkg: str           # basename, e.g. "vector_mc13_relabeled/hcp.gpkg"
+    source_gpkg: str           # parent/basename, e.g. "vector_mc13_relabeled/hcp.gpkg"
 
 
-_LAYER_RE = re.compile(r'^thresh_(?P<p>\d+\.\d+)$')
+_LAYER_RE = re.compile(r'^thresh_(?P<p>\d+(?:\.\d+)?)$')
 
 
 def _layer_threshold(name: str) -> Optional[float]:

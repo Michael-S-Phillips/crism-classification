@@ -1,4 +1,3 @@
-import os
 import geopandas as gpd
 import pandas as pd
 import pytest
@@ -6,7 +5,6 @@ from shapely.geometry import Polygon
 
 from scripts.review.queue import PolygonItem, PolygonQueue
 
-LAYERS = ['thresh_0.85', 'thresh_0.90', 'thresh_0.93', 'thresh_0.95', 'thresh_0.97']
 MARS_2000_WKT = 'PROJCS["Mars 2000 Equirect",GEOGCS["Mars 2000",DATUM["Mars 2000",SPHEROID["Mars 2000",3396190,169.8944472]],PRIMEM["Reference Meridian",0],UNIT["degree",0.0174532925199433]],PROJECTION["Equirectangular"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",0],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1]]'
 
 
@@ -64,15 +62,24 @@ def test_queue_sorts_by_area_within_layer(tmp_path):
 
 
 def test_polygon_uid_is_stable(tmp_path):
+    """polygon_uid must use the file-order index (not the post-sort index)."""
     gpkg = tmp_path / 'hcp.gpkg'
+    # File-order: smaller polygon first, bigger second. After area-sort,
+    # the bigger one yields first — but its uid must reflect file order, not
+    # iteration order.
     _write_layered_gpkg(str(gpkg), {
-        'thresh_0.95': [(0, 0, 100, 't0001'), (10, 10, 50, 't0002')],
+        'thresh_0.95': [(0, 0, 50, 't0001'), (10, 10, 200, 't0002')],
     })
-    uids_run1 = [i.polygon_uid for i in PolygonQueue(gpkg_path=str(gpkg), mineral='hcp')]
+    items = list(PolygonQueue(gpkg_path=str(gpkg), mineral='hcp'))
+    # The bigger polygon (t0002) yields first
+    assert items[0].tile_id == 't0002'
+    # but its uid carries index 1 (it was written second)
+    assert items[0].polygon_uid.endswith('::1')
+    # the smaller (file-order-first) polygon yields second with index 0
+    assert items[1].polygon_uid.endswith('::0')
+    # And the whole sequence is stable across re-instantiation
     uids_run2 = [i.polygon_uid for i in PolygonQueue(gpkg_path=str(gpkg), mineral='hcp')]
-    assert uids_run1 == uids_run2
-    # Format: "{tile_id}::{layer}::{index_in_layer}"
-    assert all('::' in u for u in uids_run1)
+    assert [i.polygon_uid for i in items] == uids_run2
 
 
 def test_queue_skips_decided_polygons(tmp_path):
