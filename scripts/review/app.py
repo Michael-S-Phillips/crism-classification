@@ -43,7 +43,7 @@ HISTORY_REHYDRATE_N = 30
 DEFAULT_WAVELENGTHS = '/mnt/mrdr/crism_classification/data/vector_mc13_contrastive/vector_mc13_contrastive_wavelengths.json'
 TARGET_PIXELS_PER_CLASS = 30000
 
-MINERALS = ['olivine', 'lcp', 'hcp']
+MINERALS = ['olivine', 'lcp', 'hcp', 'plagioclase']
 
 
 # ---- pure helpers (covered by tests) ---------------------------------------
@@ -341,7 +341,7 @@ def main():
     # positive label (use it for rejections you can't categorize).
     corrected = st.selectbox(
         'if rejected, actually:',
-        options=['', 'olivine', 'lcp', 'hcp', 'bland', 'ambiguous'],
+        options=['', 'olivine', 'lcp', 'hcp', 'plagioclase', 'bland', 'ambiguous'],
         index=0,
     )
     p1, b1, b2, b3, n1 = st.columns([1, 1, 1, 1, 1])
