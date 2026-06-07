@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import hashlib
 import os
 from typing import Optional
 
@@ -65,6 +66,16 @@ class DecisionLog:
         return set(df['polygon_uid'].astype(str).tolist())
 
 
+def _polygon_id_int(polygon_uid: str) -> int:
+    """Deterministic int64-safe integer from a polygon_uid string.
+
+    Stable across processes (md5 has no PYTHONHASHSEED dependence). 32-bit
+    range to keep small + parquet-friendly.
+    """
+    h = hashlib.md5(polygon_uid.encode('utf-8')).hexdigest()
+    return int(h[:8], 16)
+
+
 def _label_dict_for(label_class: str) -> dict[str, float]:
     out = {c: 0.0 for c in _LABEL_COLS}
     if label_class == 'olivine':
@@ -83,7 +94,7 @@ def _rows_for_polygon(
     label_dict: dict[str, float],
 ) -> pd.DataFrame:
     n = spectra.shape[0]
-    polygon_id_int = abs(hash(polygon_uid)) % (2**31)  # stable, int64-safe
+    polygon_id_int = _polygon_id_int(polygon_uid)
     data = {
         'tile_id': [tile_id] * n,
         'polygon_id': np.full(n, polygon_id_int, dtype=np.int64),
@@ -120,7 +131,7 @@ class ConfirmedPixelsWriter:
         if os.path.exists(self.parquet_path):
             existing = pd.read_parquet(self.parquet_path)
             # Rows in existing whose polygon_id maps to a uid we're rewriting
-            buf_polygon_ids = {abs(hash(uid)) % (2**31) for uid in self._buf}
+            buf_polygon_ids = {_polygon_id_int(uid) for uid in self._buf}
             existing = existing[~existing['polygon_id'].isin(buf_polygon_ids)]
         else:
             existing = pd.DataFrame(columns=confirmed_schema_columns())
@@ -157,7 +168,7 @@ class HardNegativesWriter:
     def flush(self) -> None:
         if os.path.exists(self.parquet_path):
             existing = pd.read_parquet(self.parquet_path)
-            buf_polygon_ids = {abs(hash(uid)) % (2**31) for uid in self._buf}
+            buf_polygon_ids = {_polygon_id_int(uid) for uid in self._buf}
             existing = existing[~existing['polygon_id'].isin(buf_polygon_ids)]
         else:
             existing = pd.DataFrame(columns=hard_negatives_schema_columns())
