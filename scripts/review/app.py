@@ -153,10 +153,15 @@ def main():
         st.session_state['queue_iter'] = iter(PolygonQueue(
             gpkg_path=gpkg_path, mineral=mineral, decisions_csv=decisions_csv,
         ))
-        # history[i] = polygon_uid in visit order; cache[uid] = (item, bundle)
+        # history[i] = polygon_uid in visit order; cache[uid] = (item, bundle, thumb)
         st.session_state['history'] = []
         st.session_state['cache'] = {}
         st.session_state['cursor'] = -1  # index into history; -1 = nothing loaded yet
+        # Drop the stale current_* (it points at a uid from the previous queue
+        # that is no longer in the cache).
+        st.session_state['current_item'] = None
+        st.session_state['current_bundle'] = None
+        st.session_state['current_thumb'] = None
 
     def _set_current(uid: str):
         item, bundle, thumb = st.session_state['cache'][uid]
@@ -204,10 +209,14 @@ def main():
         except Exception as e:
             st.warning(f'thumbnail unavailable: {e}')
             return
-        # Update both the cache and current_thumb in place.
-        cached_item, cached_bundle, _ = st.session_state['cache'][uid]
-        st.session_state['cache'][uid] = (cached_item, cached_bundle, thumb)
+        # Update both the cache and current_thumb in place. If the cache was
+        # reset (e.g. mineral switch) the uid may be missing — still display
+        # the thumbnail this turn, just skip the cache update.
         st.session_state['current_thumb'] = thumb
+        cached = st.session_state['cache'].get(uid)
+        if cached is not None:
+            cached_item, cached_bundle, _ = cached
+            st.session_state['cache'][uid] = (cached_item, cached_bundle, thumb)
 
     def _go_previous():
         if st.session_state['cursor'] > 0:
