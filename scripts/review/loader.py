@@ -70,19 +70,42 @@ def load_polygon_pixels(
                 transformer = pyproj.Transformer.from_crs(
                     src_crs, dst_crs, always_xy=True)
                 geometry = shapely_transform(transformer.transform, geometry)
-        # Rasterize the polygon onto the tile grid → boolean mask
+
+        # Convert polygon bbox to tile pixel space → narrow window read.
+        # Without this we'd read all 59 bands of the whole tile (~220 MB)
+        # per polygon over a 9p network mount — minutes per session.
+        minx, miny, maxx, maxy = geometry.bounds
+        inv = ~src.transform
+        c0a, r0a = inv * (minx, maxy)
+        c1a, r1a = inv * (maxx, miny)
+        c0, c1 = sorted((c0a, c1a))
+        r0, r1 = sorted((r0a, r1a))
+        c0 = max(0, int(np.floor(c0)) - 1)
+        r0 = max(0, int(np.floor(r0)) - 1)
+        c1 = min(src.width, int(np.ceil(c1)) + 1)
+        r1 = min(src.height, int(np.ceil(r1)) + 1)
+        w = c1 - c0
+        h = r1 - r0
+        if w <= 0 or h <= 0:
+            return empty
+
+        window = rasterio.windows.Window(c0, r0, w, h)
+        win_transform = rasterio.windows.transform(window, src.transform)
+
+        # Rasterize polygon onto the window → boolean mask (window-local coords)
         mask = rasterio.features.rasterize(
             [(geometry, 1)],
-            out_shape=(src.height, src.width),
-            transform=src.transform,
+            out_shape=(h, w),
+            transform=win_transform,
             fill=0,
             dtype='uint8',
         ).astype(bool)
         if not mask.any():
             return empty
 
-        # Read all 59 bands once → (n_bands, h, w)
-        cube = src.read(list(range(1, N_BANDS + 1))).astype(np.float32)
+        # Read all 59 bands WITHIN the window only → (n_bands, h, w)
+        cube = src.read(list(range(1, N_BANDS + 1)),
+                         window=window).astype(np.float32)
 
     # Build NODATA mask (any band == NODATA → drop that pixel)
     nodata_mask = (cube == NODATA).any(axis=0)
@@ -90,11 +113,11 @@ def load_polygon_pixels(
     if not keep.any():
         return empty
 
-    rows, cols = np.where(keep)
+    rows, cols = np.where(keep)                       # window-relative
     spectra = cube[:, rows, cols].T.copy()           # (n_pixels, 59)
     return PixelBundle(
-        rows=rows.astype(np.int64),
-        cols=cols.astype(np.int64),
+        rows=(rows + r0).astype(np.int64),           # back to tile-absolute
+        cols=(cols + c0).astype(np.int64),
         spectra=spectra,
         mean=spectra.mean(axis=0),
         std=spectra.std(axis=0),
