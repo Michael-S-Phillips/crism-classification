@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 from shapely.geometry import Polygon
 
-from scripts.review.queue import PolygonItem, PolygonQueue
+from scripts.review.polygon_queue import PolygonItem, PolygonQueue
 
 MARS_2000_WKT = 'PROJCS["Mars 2000 Equirect",GEOGCS["Mars 2000",DATUM["Mars 2000",SPHEROID["Mars 2000",3396190,169.8944472]],PRIMEM["Reference Meridian",0],UNIT["degree",0.0174532925199433]],PROJECTION["Equirectangular"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",0],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1]]'
 

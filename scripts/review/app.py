@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-from scripts.review.queue import PolygonQueue
+from scripts.review.polygon_queue import PolygonQueue
 from scripts.review.loader import load_polygon_pixels
 from scripts.review.persistence import (
     DecisionLog, ConfirmedPixelsWriter, HardNegativesWriter,
