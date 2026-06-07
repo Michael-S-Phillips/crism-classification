@@ -310,3 +310,71 @@ def test_hard_negatives_drop_polygon(tmp_path):
     assert len(pd.read_parquet(pq)) == 1
     w.drop_polygon('hn::a::0')
     assert len(pd.read_parquet(pq)) == 0
+
+
+# ---- decisions.csv durability (no overwrites, header-race-safe) ------------
+
+def test_decision_log_many_appends_no_lost_rows(tmp_path):
+    csv = tmp_path / 'decisions.csv'
+    log = DecisionLog(str(csv))
+    for i in range(250):
+        log.append(_record(uid=f'bulk::a::{i}'))
+    df = pd.read_csv(csv)
+    assert len(df) == 250
+    assert df['polygon_uid'].iloc[0] == 'bulk::a::0'
+    assert df['polygon_uid'].iloc[-1] == 'bulk::a::249'
+    # Header appears exactly once
+    with open(csv) as fp:
+        lines = fp.readlines()
+    assert sum(1 for L in lines if L.startswith('ts,source_gpkg')) == 1
+
+
+def test_decision_log_header_safe_when_empty_file_preexists(tmp_path):
+    """If something else (e.g. a touch) created an empty csv before us, the
+    next append must still write the header — checked via file POSITION
+    after open, not pre-open existence."""
+    csv = tmp_path / 'decisions.csv'
+    csv.touch()  # 0-byte file exists
+    assert os.path.exists(csv) and csv.stat().st_size == 0
+    log = DecisionLog(str(csv))
+    log.append(_record(uid='post::touch::0'))
+    df = pd.read_csv(csv)
+    assert list(df.columns)[0] == 'ts'
+    assert df['polygon_uid'].iloc[0] == 'post::touch::0'
+
+
+def test_atomic_parquet_no_stray_tmp_file(tmp_path):
+    """After a successful flush there must be no .tmp file left behind."""
+    pq = tmp_path / 'confirmed.parquet'
+    w = ConfirmedPixelsWriter(str(pq))
+    w.append_polygon(tile_id='t0001', polygon_uid='atomic::a::0',
+                     rows=np.zeros(1, dtype=np.int64),
+                     cols=np.zeros(1, dtype=np.int64),
+                     spectra=np.zeros((1, 59), dtype=np.float32),
+                     label_class='hcp')
+    w.flush()
+    assert pq.exists()
+    assert not (tmp_path / 'confirmed.parquet.tmp').exists()
+
+
+def test_atomic_parquet_second_flush_preserves_first(tmp_path):
+    """A second flush from a fresh writer must add to the existing parquet,
+    not destroy the prior content (atomic-rename writes the unioned data)."""
+    pq = tmp_path / 'confirmed.parquet'
+    w = ConfirmedPixelsWriter(str(pq))
+    w.append_polygon(tile_id='t0001', polygon_uid='r::a::0',
+                     rows=np.zeros(1, dtype=np.int64),
+                     cols=np.zeros(1, dtype=np.int64),
+                     spectra=np.zeros((1, 59), dtype=np.float32),
+                     label_class='hcp')
+    w.flush()
+    w2 = ConfirmedPixelsWriter(str(pq))
+    w2.append_polygon(tile_id='t0002', polygon_uid='r::b::0',
+                      rows=np.zeros(1, dtype=np.int64),
+                      cols=np.zeros(1, dtype=np.int64),
+                      spectra=np.ones((1, 59), dtype=np.float32),
+                      label_class='hcp')
+    w2.flush()
+    df = pd.read_parquet(pq)
+    assert len(df) == 2
+    assert df['polygon_id'].nunique() == 2  # both polygons preserved

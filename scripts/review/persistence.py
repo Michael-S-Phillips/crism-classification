@@ -46,10 +46,12 @@ class DecisionLog:
     def append(self, record: dict) -> None:
         row = {k: record.get(k, '') for k in _DECISION_COLS}
         row['ts'] = dt.datetime.now(dt.timezone.utc).isoformat()
-        write_header = not os.path.exists(self.csv_path)
+        # Use file POSITION after open instead of pre-open exists() check, so
+        # concurrent appends can't both decide to write a header. 'a' mode
+        # seeks to end on open; tell()==0 means we just created the file.
         with open(self.csv_path, 'a', newline='') as fp:
             w = csv.DictWriter(fp, fieldnames=_DECISION_COLS)
-            if write_header:
+            if fp.tell() == 0:
                 w.writeheader()
             w.writerow(row)
 
@@ -91,6 +93,14 @@ def _label_dict_for(label_class: str) -> dict[str, float]:
     elif label_class in out:
         out[label_class] = 1.0
     return out
+
+
+def _atomic_write_parquet(df: pd.DataFrame, path: str) -> None:
+    """Write parquet via .tmp + os.replace so a crash mid-write can't corrupt
+    an existing parquet at ``path``."""
+    tmp = path + '.tmp'
+    df.to_parquet(tmp, index=False)
+    os.replace(tmp, path)
 
 
 def _rows_for_polygon(
@@ -147,7 +157,7 @@ class ConfirmedPixelsWriter:
                   if self._buf else pd.DataFrame(columns=confirmed_schema_columns())
         out = pd.concat([existing, all_new], ignore_index=True)
         out = out[confirmed_schema_columns()]  # enforce column order
-        out.to_parquet(self.parquet_path, index=False)
+        _atomic_write_parquet(out, self.parquet_path)
         self._buf.clear()
 
     def drop_polygon(self, polygon_uid: str) -> None:
@@ -159,7 +169,7 @@ class ConfirmedPixelsWriter:
         kept = existing[existing['polygon_id'] != pid]
         if len(kept) == len(existing):
             return
-        kept.to_parquet(self.parquet_path, index=False)
+        _atomic_write_parquet(kept, self.parquet_path)
 
 
 class HardNegativesWriter:
@@ -195,7 +205,7 @@ class HardNegativesWriter:
                   if self._buf else pd.DataFrame(columns=hard_negatives_schema_columns())
         out = pd.concat([existing, all_new], ignore_index=True)
         out = out[hard_negatives_schema_columns()]
-        out.to_parquet(self.parquet_path, index=False)
+        _atomic_write_parquet(out, self.parquet_path)
         self._buf.clear()
 
     def drop_polygon(self, polygon_uid: str) -> None:
@@ -207,4 +217,4 @@ class HardNegativesWriter:
         kept = existing[existing['polygon_id'] != pid]
         if len(kept) == len(existing):
             return
-        kept.to_parquet(self.parquet_path, index=False)
+        _atomic_write_parquet(kept, self.parquet_path)
