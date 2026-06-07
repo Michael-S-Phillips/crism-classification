@@ -8,6 +8,15 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+
+# When launched via ``streamlit run scripts/review/app.py``, only the script's
+# directory is on sys.path — not the project root. Add the project root so the
+# ``scripts.review.*`` imports below resolve. (pytest adds the root for us, so
+# this is only needed for the streamlit entrypoint path.)
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 import numpy as np
 import pandas as pd
