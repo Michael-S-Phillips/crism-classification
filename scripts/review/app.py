@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from typing import Optional
 
 # When launched via ``streamlit run scripts/review/app.py``, only the script's
 # directory is on sys.path — not the project root. Add the project root so the
@@ -31,6 +32,10 @@ from scripts.review.persistence import (
 DEFAULT_GPKG_DIR = '/mnt/mrdr/crism_classification/data/vector_mc13_relabeled'
 DEFAULT_MRRAL_DIR = '/mnt/mrdr/mc13'
 DEFAULT_OUT_DIR = '/mnt/mrdr/crism_classification/data/mc13_review'
+# How many recent decisions to pull into the Previous-button history on
+# startup. Each rehydrated polygon is metadata-only; its spectrum is
+# loaded on demand when the user actually navigates back to it.
+HISTORY_REHYDRATE_N = 30
 # Wavelengths are tile-invariant across mc13 — the contrastive run wrote the
 # sidecar, the relabeled run did not. Both gpkg sources point at the same
 # 59-band mrral cubes, so this file is the right reference regardless of which
@@ -42,6 +47,30 @@ MINERALS = ['olivine', 'lcp', 'hcp']
 
 
 # ---- pure helpers (covered by tests) ---------------------------------------
+
+def _last_n_decided_uids(decisions_csv: str, mineral: str, n: int,
+                          source_gpkg: Optional[str] = None) -> list[str]:
+    """Most recent N decisions for ``mineral`` (and optionally ``source_gpkg``).
+
+    Source-gpkg filtering matters because the same uid format can collide
+    across different vector products (e.g. `vector_mc13_relabeled/hcp.gpkg`
+    vs `vector_mc13_v3_denoising/hcp.gpkg` — same tile_id+layer+idx pattern,
+    completely different polygons). Used to rehydrate the Previous-button
+    history. Multiple decisions for the same uid collapse to the latest.
+    """
+    if not os.path.exists(decisions_csv):
+        return []
+    df = pd.read_csv(decisions_csv)
+    if 'predicted_class' not in df.columns or 'polygon_uid' not in df.columns:
+        return []
+    df = df[df['predicted_class'] == mineral]
+    if source_gpkg and 'source_gpkg' in df.columns:
+        df = df[df['source_gpkg'] == source_gpkg]
+    if df.empty:
+        return []
+    df = df.drop_duplicates(subset='polygon_uid', keep='last')
+    return df['polygon_uid'].astype(str).tail(n).tolist()
+
 
 def compute_progress(decisions_csv: str, mineral: str,
                      target_pixels: int) -> dict:
@@ -150,21 +179,50 @@ def main():
     queue_key = f'queue::{gpkg_path}::{mineral}'
     if st.session_state.get('queue_key') != queue_key:
         st.session_state['queue_key'] = queue_key
-        st.session_state['queue_iter'] = iter(PolygonQueue(
+        queue = PolygonQueue(
             gpkg_path=gpkg_path, mineral=mineral, decisions_csv=decisions_csv,
-        ))
+        )
+        st.session_state['queue_iter'] = iter(queue)
         # history[i] = polygon_uid in visit order; cache[uid] = (item, bundle, thumb)
         st.session_state['history'] = []
         st.session_state['cache'] = {}
-        st.session_state['cursor'] = -1  # index into history; -1 = nothing loaded yet
-        # Drop the stale current_* (it points at a uid from the previous queue
-        # that is no longer in the cache).
+        st.session_state['cursor'] = -1
         st.session_state['current_item'] = None
         st.session_state['current_bundle'] = None
         st.session_state['current_thumb'] = None
 
+        # Rehydrate Previous-button history from decisions.csv. Items are
+        # metadata-only here; their spectra (and thumbnails) are loaded the
+        # first time the user actually navigates to them via Previous.
+        current_source_gpkg = (
+            f'{os.path.basename(os.path.dirname(os.path.abspath(gpkg_path)))}/'
+            f'{os.path.basename(gpkg_path)}')
+        last_uids = _last_n_decided_uids(
+            decisions_csv, mineral, HISTORY_REHYDRATE_N,
+            source_gpkg=current_source_gpkg)
+        if last_uids:
+            items_map = queue.lookup_items(last_uids)
+            for uid in last_uids:
+                item = items_map.get(uid)
+                if item is None:
+                    continue
+                st.session_state['cache'][uid] = (item, None, None)
+                st.session_state['history'].append(uid)
+            # Cursor points one past the end so the next _advance pulls a
+            # fresh polygon from the queue (not a rehydrated one).
+            st.session_state['cursor'] = len(st.session_state['history'])
+
     def _set_current(uid: str):
         item, bundle, thumb = st.session_state['cache'][uid]
+        if bundle is None:  # rehydrated history entry — load spectra now
+            try:
+                bundle = load_polygon_pixels(
+                    geometry=item.geometry, tile_id=item.tile_id,
+                    mrral_dir=mrral_dir, source_crs=item.source_crs,
+                )
+                st.session_state['cache'][uid] = (item, bundle, thumb)
+            except Exception as e:
+                st.warning(f'failed to load spectra for {uid}: {e}')
         st.session_state['current_item'] = item
         st.session_state['current_bundle'] = bundle
         st.session_state['current_thumb'] = thumb
@@ -223,7 +281,7 @@ def main():
             st.session_state['cursor'] -= 1
             _set_current(st.session_state['history'][st.session_state['cursor']])
 
-    if st.session_state.get('current_item') is None and st.session_state['cursor'] == -1:
+    if st.session_state.get('current_item') is None:
         _advance()
 
     item = st.session_state.get('current_item')

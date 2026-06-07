@@ -96,3 +96,47 @@ def test_queue_skips_decided_polygons(tmp_path):
     items = list(q)
     assert len(items) == 1
     assert items[0].tile_id == 't0002'
+
+
+def test_lookup_items_returns_polygons_by_uid(tmp_path):
+    """lookup_items must return PolygonItems for arbitrary uids regardless of
+    decision-skip state — used for cross-restart Previous-button rehydration."""
+    gpkg = tmp_path / 'hcp.gpkg'
+    _write_layered_gpkg(str(gpkg), {
+        'thresh_0.95': [(0, 0, 100, 't0001'), (10, 10, 50, 't0002')],
+        'thresh_0.97': [(20, 20, 80, 't0003')],
+    })
+    # Mark both polygons in 0.95 as decided
+    decisions_csv = tmp_path / 'decisions.csv'
+    decided_uids = [u.polygon_uid for u in
+                     PolygonQueue(gpkg_path=str(gpkg), mineral='hcp')
+                     if u.layer == 'thresh_0.95']
+    pd.DataFrame([{'polygon_uid': u, 'decision': 'confirm'} for u in decided_uids]
+                  ).to_csv(decisions_csv, index=False)
+
+    q = PolygonQueue(gpkg_path=str(gpkg), mineral='hcp',
+                      decisions_csv=str(decisions_csv))
+    # Even though these uids are "decided", lookup_items still returns them
+    found = q.lookup_items(decided_uids)
+    assert set(found.keys()) == set(decided_uids)
+    for uid, item in found.items():
+        assert item.polygon_uid == uid
+        assert item.layer == 'thresh_0.95'
+        assert item.predicted_class == 'hcp'
+        assert item.geometry is not None
+        assert item.area_m2 > 0
+
+
+def test_lookup_items_silently_drops_unknown_uids(tmp_path):
+    gpkg = tmp_path / 'hcp.gpkg'
+    _write_layered_gpkg(str(gpkg), {
+        'thresh_0.95': [(0, 0, 100, 't0001')],
+    })
+    q = PolygonQueue(gpkg_path=str(gpkg), mineral='hcp')
+    found = q.lookup_items([
+        'badformat',                      # malformed uid
+        't9999::thresh_0.95::99',         # idx out of range
+        't0000::thresh_0.80::0',          # nonexistent layer
+        't0001::thresh_0.95::0',          # valid
+    ])
+    assert list(found.keys()) == ['t0001::thresh_0.95::0']

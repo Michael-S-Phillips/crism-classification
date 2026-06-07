@@ -114,3 +114,50 @@ class PolygonQueue:
                     source_gpkg=self._source_gpkg,
                     source_crs=layer_crs_wkt,
                 )
+
+    def lookup_items(self, polygon_uids: list[str]) -> dict[str, PolygonItem]:
+        """Look up PolygonItems by uid regardless of decision-skip state.
+
+        Used to rehydrate the session's Previous-button history from
+        decisions.csv on app restart. Reads only the layers referenced by the
+        requested uids; unknown uids are silently omitted from the result.
+        """
+        wanted_by_layer: dict[str, list[tuple[str, int]]] = {}
+        for uid in polygon_uids:
+            parts = uid.split('::')
+            if len(parts) != 3:
+                continue
+            try:
+                idx = int(parts[2])
+            except ValueError:
+                continue
+            wanted_by_layer.setdefault(parts[1], []).append((uid, idx))
+
+        results: dict[str, PolygonItem] = {}
+        for layer, wanted in wanted_by_layer.items():
+            if layer not in self._layers:
+                continue
+            prob = _layer_threshold(layer)
+            gdf = gpd.read_file(self.gpkg_path, layer=layer).reset_index(drop=True)
+            if gdf.empty:
+                continue
+            layer_crs = gdf.crs
+            layer_crs_wkt = layer_crs.to_wkt() if layer_crs is not None else None
+            for uid, idx in wanted:
+                if idx < 0 or idx >= len(gdf):
+                    continue
+                row = gdf.iloc[idx]
+                tile_id = str(row.get('tile_id', ''))
+                area = _polygon_area_m2(row.geometry, layer_crs)
+                results[uid] = PolygonItem(
+                    polygon_uid=uid,
+                    tile_id=tile_id,
+                    layer=layer,
+                    predicted_class=self.mineral,
+                    geometry=row.geometry,
+                    area_m2=area,
+                    pred_prob=prob,
+                    source_gpkg=self._source_gpkg,
+                    source_crs=layer_crs_wkt,
+                )
+        return results
