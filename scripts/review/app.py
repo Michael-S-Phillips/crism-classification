@@ -334,10 +334,14 @@ def main():
             _load_thumb_for_current()
             st.rerun()
 
-    # Decision buttons + corrected-class dropdown
+    # Decision buttons + corrected-class dropdown.
+    # 'bland' is the UI name for the schema's 'other' label column (the
+    # featureless / dust-dominated spectra harvested from known dust regions).
+    # 'ambiguous' is a non-mineral tag — recorded as a hard negative with no
+    # positive label (use it for rejections you can't categorize).
     corrected = st.selectbox(
         'if rejected, actually:',
-        options=['', 'olivine', 'lcp', 'hcp', 'other'],
+        options=['', 'olivine', 'lcp', 'hcp', 'bland', 'ambiguous'],
         index=0,
     )
     p1, b1, b2, b3 = st.columns([1, 1, 1, 1])

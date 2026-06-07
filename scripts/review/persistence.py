@@ -86,13 +86,28 @@ def _polygon_id_int(polygon_uid: str) -> int:
     return int(h[:8], 16)
 
 
+# UI labels → parquet label column. The parquet schema name 'other' is fixed
+# (it matches mrral_pixels.parquet) but the UI exposes the more accurate
+# 'bland' / 'dust' names. Both aliases map to the same label column.
+_BLAND_ALIASES = ('bland', 'dust', 'dusty', 'other')
+
+
 def _label_dict_for(label_class: str) -> dict[str, float]:
     out = {c: 0.0 for c in _LABEL_COLS}
     if label_class == 'olivine':
         out['olivine_t1'] = 1.0  # use the more-confident tier slot for new confirmed olivine
+    elif label_class in _BLAND_ALIASES:
+        out['other'] = 1.0       # 'bland'/'dust'/'other' all share the schema column
     elif label_class in out:
         out[label_class] = 1.0
     return out
+
+
+def _is_mineral_class(label_class: str) -> bool:
+    """True if ``label_class`` denotes a positive mineral assignment (vs. a
+    non-mineral tag like 'ambiguous' that should be recorded as a negative)."""
+    return label_class in ('olivine', 'lcp', 'hcp', 'plagioclase') \
+           or label_class in _BLAND_ALIASES
 
 
 def _atomic_write_parquet(df: pd.DataFrame, path: str) -> None:
@@ -183,12 +198,19 @@ class HardNegativesWriter:
                         spectra: np.ndarray,
                         predicted_class: str,
                         corrected_class: Optional[str]) -> None:
-        if corrected_class:
+        # Three cases for the reject:
+        #  - no corrected_class:    "not {predicted_class}" with no positive label
+        #  - mineral corrected:     positive label for the corrected class
+        #  - non-mineral tag (e.g. 'ambiguous'): all-zero labels, negative_of=tag
+        if not corrected_class:
+            label = {c: 0.0 for c in _LABEL_COLS}
+            negative_of = predicted_class
+        elif _is_mineral_class(corrected_class):
             label = _label_dict_for(corrected_class)
             negative_of = ''
         else:
             label = {c: 0.0 for c in _LABEL_COLS}
-            negative_of = predicted_class
+            negative_of = corrected_class
         df = _rows_for_polygon(tile_id, polygon_uid, rows, cols, spectra, label)
         df['negative_of'] = negative_of
         df = df[hard_negatives_schema_columns()]

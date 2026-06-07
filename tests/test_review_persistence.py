@@ -378,3 +378,65 @@ def test_atomic_parquet_second_flush_preserves_first(tmp_path):
     df = pd.read_parquet(pq)
     assert len(df) == 2
     assert df['polygon_id'].nunique() == 2  # both polygons preserved
+
+
+# ---- new UI categories: bland (alias of 'other') + ambiguous (tag-only) ----
+
+def test_confirmed_writer_bland_maps_to_other_column(tmp_path):
+    """The UI exposes 'bland' as the friendly name for the schema's 'other'
+    label column. A confirmed bland polygon must set other=1.0 (and nothing
+    else) in the parquet, so downstream pipelines see the same column."""
+    pq = tmp_path / 'confirmed.parquet'
+    w = ConfirmedPixelsWriter(str(pq))
+    w.append_polygon(tile_id='t0001', polygon_uid='bland::poly::0',
+                     rows=np.zeros(1, dtype=np.int64),
+                     cols=np.zeros(1, dtype=np.int64),
+                     spectra=np.zeros((1, 59), dtype=np.float32),
+                     label_class='bland')
+    w.flush()
+    df = pd.read_parquet(pq)
+    assert df['other'].iloc[0] == 1.0
+    assert df['olivine_t1'].iloc[0] == 0.0
+    assert df['lcp'].iloc[0] == 0.0
+    assert df['hcp'].iloc[0] == 0.0
+
+
+def test_hard_neg_bland_writes_other_column(tmp_path):
+    """If a rejected polygon is tagged 'bland' via the dropdown, treat it
+    like a positive bland confirmation in the negatives parquet (positive
+    'other' label, blank negative_of) — same downstream semantics as
+    confirming bland directly."""
+    pq = tmp_path / 'hardneg.parquet'
+    w = HardNegativesWriter(str(pq))
+    w.append_polygon(
+        tile_id='t0001', polygon_uid='bn::a::0',
+        rows=np.zeros(1, dtype=np.int64),
+        cols=np.zeros(1, dtype=np.int64),
+        spectra=np.zeros((1, 59), dtype=np.float32),
+        predicted_class='hcp', corrected_class='bland',
+    )
+    w.flush()
+    df = pd.read_parquet(pq)
+    assert df['other'].iloc[0] == 1.0
+    assert df['hcp'].iloc[0] == 0.0
+    assert pd.isna(df['negative_of'].iloc[0]) or df['negative_of'].iloc[0] == ''
+
+
+def test_hard_neg_ambiguous_is_negative_tag_not_positive_class(tmp_path):
+    """'ambiguous' is a non-mineral tag: rejected polygon, no positive label
+    anywhere, negative_of='ambiguous' (NOT predicted_class)."""
+    pq = tmp_path / 'hardneg.parquet'
+    w = HardNegativesWriter(str(pq))
+    w.append_polygon(
+        tile_id='t0001', polygon_uid='amb::a::0',
+        rows=np.zeros(1, dtype=np.int64),
+        cols=np.zeros(1, dtype=np.int64),
+        spectra=np.zeros((1, 59), dtype=np.float32),
+        predicted_class='hcp', corrected_class='ambiguous',
+    )
+    w.flush()
+    df = pd.read_parquet(pq)
+    # All label columns zero — ambiguous is NOT a positive class
+    for col in ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']:
+        assert df[col].iloc[0] == 0.0, f'{col} should be 0 for ambiguous'
+    assert df['negative_of'].iloc[0] == 'ambiguous'
