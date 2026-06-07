@@ -40,8 +40,16 @@ from matplotlib.figure import Figure
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-BAND_COLUMNS = [f"band_{i:02d}" for i in range(59)]
+BAND_COLUMNS = [f"band_{i:02d}" for i in range(59)]  # MRDR default; layers may have more (VRDR=87)
 MAX_TRACES = 5
+
+
+def _feature_band_columns(field_names):
+    """All band_NN columns present on the layer, sorted by index (any count).
+    Replaces the hardcoded 59-band assumption so VRDR (87) and MRDR (59) both work."""
+    import re
+    cols = [n for n in field_names if re.fullmatch(r"band_\d+", n)]
+    return sorted(cols, key=lambda s: int(s.split("_", 1)[1]))
 TRACE_COLORS = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00"]
 PLUGIN_NAME = "CRISM Spectrum Viewer"
 MENU_LABEL = "View CRISM Spectrum"
@@ -139,9 +147,10 @@ class SpectrumMapTool(QgsMapToolEmitPoint):
 
         # Check the layer has the expected band columns
         field_names = {f.name() for f in layer.fields()}
-        if not all(b in field_names for b in BAND_COLUMNS):
+        band_cols = _feature_band_columns(field_names)
+        if not band_cols:
             self._iface.statusBarIface().showMessage(
-                "CRISM Spectrum Viewer: active layer has no band_00..band_58 columns.", 4000
+                "CRISM Spectrum Viewer: active layer has no band_NN columns.", 4000
             )
             return
 
@@ -193,16 +202,18 @@ class SpectrumMapTool(QgsMapToolEmitPoint):
             )
             return
 
-        # Extract reflectance values
-        reflectances = [float(feature[b]) for b in BAND_COLUMNS]
+        # Extract reflectance values (however many band_NN columns the layer has)
+        reflectances = [float(feature[b]) for b in band_cols]
 
         # Load wavelengths from sidecar (or fall back to indices)
-        wavelengths = _load_wavelengths(layer)
+        wavelengths = _load_wavelengths(layer, len(band_cols))
 
         # Build a human-readable label
         label = _make_label(feature, field_names)
 
-        self._dock.add_trace(label, wavelengths, reflectances)
+        # Guard against any wavelength/reflectance length mismatch (mixed instruments)
+        n = min(len(wavelengths), len(reflectances))
+        self._dock.add_trace(label, wavelengths[:n], reflectances[:n])
 
         # Ensure dock is visible
         if self._dock.isHidden():
@@ -231,12 +242,12 @@ class SpectrumMapTool(QgsMapToolEmitPoint):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _load_wavelengths(layer):
+def _load_wavelengths(layer, n_default=59):
     """Load wavelengths from sidecar JSON next to the layer source file.
 
     Accepts files named <stem>_wavelengths.json; falls back to any
     *_wavelengths.json in the same directory; finally falls back to
-    band indices 0..58.
+    band indices 0..n_default-1.
     """
     source = layer.source()
     # source may be "/path/to/file.gpkg|layername=foo"
@@ -255,7 +266,7 @@ def _load_wavelengths(layer):
         return _parse_wavelength_json(candidates[0])
 
     # 3. Fall back: band indices
-    return list(range(59))
+    return list(range(n_default))
 
 
 def _parse_wavelength_json(path):
