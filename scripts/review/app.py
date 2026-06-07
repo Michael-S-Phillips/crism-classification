@@ -23,7 +23,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from scripts.review.polygon_queue import PolygonQueue
-from scripts.review.loader import load_polygon_pixels
+from scripts.review.loader import load_polygon_pixels, load_thumbnail
 from scripts.review.persistence import (
     DecisionLog, ConfirmedPixelsWriter, HardNegativesWriter,
 )
@@ -159,9 +159,10 @@ def main():
         st.session_state['cursor'] = -1  # index into history; -1 = nothing loaded yet
 
     def _set_current(uid: str):
-        item, bundle = st.session_state['cache'][uid]
+        item, bundle, thumb = st.session_state['cache'][uid]
         st.session_state['current_item'] = item
         st.session_state['current_bundle'] = bundle
+        st.session_state['current_thumb'] = thumb
 
     def _advance():
         cur = st.session_state['cursor']
@@ -179,14 +180,23 @@ def main():
                 geometry=item.geometry, tile_id=item.tile_id,
                 mrral_dir=mrral_dir, source_crs=item.source_crs,
             )
+            thumb = None
+            try:
+                thumb = load_thumbnail(
+                    geometry=item.geometry, tile_id=item.tile_id,
+                    mrral_dir=mrral_dir, source_crs=item.source_crs,
+                )
+            except Exception as e:
+                st.warning(f'thumbnail unavailable: {e}')
             uid = item.polygon_uid
-            st.session_state['cache'][uid] = (item, bundle)
+            st.session_state['cache'][uid] = (item, bundle, thumb)
             hist.append(uid)
             st.session_state['cursor'] = len(hist) - 1
             _set_current(uid)
         except StopIteration:
             st.session_state['current_item'] = None
             st.session_state['current_bundle'] = None
+            st.session_state['current_thumb'] = None
 
     def _go_previous():
         if st.session_state['cursor'] > 0:
@@ -229,8 +239,19 @@ def main():
         )
 
     wavelengths = _load_wavelengths(DEFAULT_WAVELENGTHS)
-    st.plotly_chart(make_spectrum_figure(bundle.spectra, wavelengths),
-                     use_container_width=True)
+    thumb = st.session_state.get('current_thumb')
+    if thumb is not None:
+        c_thumb, c_spec = st.columns([1, 2])
+        c_thumb.image(
+            thumb.rgb,
+            caption='context (false-color RGB ~2.2/1.5/0.8 µm, polygon outlined red)',
+            use_container_width=True,
+        )
+        c_spec.plotly_chart(make_spectrum_figure(bundle.spectra, wavelengths),
+                             use_container_width=True)
+    else:
+        st.plotly_chart(make_spectrum_figure(bundle.spectra, wavelengths),
+                         use_container_width=True)
 
     # Decision buttons + corrected-class dropdown
     corrected = st.selectbox(
