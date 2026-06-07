@@ -15,7 +15,9 @@ from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QColor, QIcon
 from qgis.PyQt.QtWidgets import (
     QAction,
+    QCheckBox,
     QDockWidget,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QVBoxLayout,
@@ -75,6 +77,10 @@ class SpectrumDock(QDockWidget):
         # --- controls ---
         self._clear_btn = QPushButton("Clear")
         self._clear_btn.clicked.connect(self.clear)
+        self._legend_chk = QCheckBox("Show legend")
+        self._legend_chk.setChecked(True)
+        self._legend_chk.setToolTip("Toggle the legend; when shown, drag it anywhere on the plot.")
+        self._legend_chk.toggled.connect(self._redraw)
         self._status = QLabel("")
         self._status.setWordWrap(True)
 
@@ -84,7 +90,11 @@ class SpectrumDock(QDockWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
         layout.addWidget(self._canvas, stretch=1)
-        layout.addWidget(self._clear_btn)
+        controls = QHBoxLayout()
+        controls.addWidget(self._clear_btn)
+        controls.addWidget(self._legend_chk)
+        controls.addStretch(1)
+        layout.addLayout(controls)
         layout.addWidget(self._status)
         self.setWidget(container)
 
@@ -116,8 +126,13 @@ class SpectrumDock(QDockWidget):
             color = TRACE_COLORS[i % len(TRACE_COLORS)]
             self._ax.plot(wl, rf, color=color, linewidth=1.2, label=label)
 
-        if self._traces:
-            self._ax.legend(fontsize=6, loc="upper right", framealpha=0.7)
+        if self._traces and self._legend_chk.isChecked():
+            leg = self._ax.legend(fontsize=6, loc="upper right", framealpha=0.7)
+            if leg is not None:
+                try:
+                    leg.set_draggable(True)   # click-drag the legend anywhere on the plot
+                except Exception:
+                    pass
 
         self._canvas.draw()
 
