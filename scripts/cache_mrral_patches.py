@@ -53,6 +53,14 @@ def main():
     parser.add_argument('--patch_size', type=int, default=7)
     parser.add_argument('--config', default='config.yaml')
     parser.add_argument('--splits', nargs='+', default=['train', 'val', 'test'])
+    parser.add_argument(
+        '--parquets', nargs='+', default=None,
+        help='One or more mrral pixels parquets to cache. Concatenated in '
+             'order. Default: cfg.output_dir/mrral_pixels.parquet only.')
+    parser.add_argument(
+        '--cache_dir', default=None,
+        help='Override cfg.patch_cache_dir. Use a separate dir per '
+             'parquet-set so caches stay aligned with their source.')
     args = parser.parse_args()
 
     cfg_path = os.path.join(
@@ -62,12 +70,19 @@ def main():
     from config_loader import load_config
     cfg = load_config(cfg_path)
 
-    mrral_parquet = os.path.join(cfg['output_dir'], 'mrral_pixels.parquet')
-    cache_dir = cfg['patch_cache_dir']
+    parquets = args.parquets or [os.path.join(cfg['output_dir'],
+                                                'mrral_pixels.parquet')]
+    cache_dir = args.cache_dir or cfg['patch_cache_dir']
     os.makedirs(cache_dir, exist_ok=True)
 
-    print(f'Loading {mrral_parquet} ...')
-    df = pd.read_parquet(mrral_parquet)
+    print(f'Loading {len(parquets)} parquet(s):')
+    parts = []
+    for p in parquets:
+        df_part = pd.read_parquet(p)
+        print(f'  {p}: {len(df_part):,} rows')
+        parts.append(df_part)
+    df = pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0]
+    print(f'concat: {len(df):,} rows total')
 
     print('Building mrral tile map ...')
     data_root = cfg.get('data_root', '/mnt/crism/MRDR')

@@ -119,6 +119,19 @@ def main():
                         help='Path to synth_plag_patches_p7.npy to add to the train split.')
     parser.add_argument('--synth_train_parquet', type=str, default=None,
                         help='Path to synth_plag_rows.parquet (row-aligned with the cache).')
+    parser.add_argument('--mrral_parquets', nargs='+', type=str, default=None,
+                        help='One or more mrral pixels parquets to use as the '
+                             'training table (e.g. data/mrral_pixels.parquet '
+                             'plus data/mrral_pixels_with_review.parquet). '
+                             'Concatenated in order. Default: '
+                             'cfg.output_dir/mrral_pixels.parquet only. The '
+                             'patch cache pointed at by --patch_cache_dir must '
+                             'be built from the SAME parquet list, in the same '
+                             'order — use cache_mrral_patches.py --parquets ...')
+    parser.add_argument('--patch_cache_dir', type=str, default=None,
+                        help='Override cfg.patch_cache_dir. Set this when '
+                             '--mrral_parquets differs from the default so the '
+                             'trainer reads the matching pre-built cache.')
     parser.add_argument('--apply_relabels', type=str, default=None,
                         help='Path to an olivine_relabels.csv; applies soft pyroxene '
                              'targets to the matching polygons before training '
@@ -188,6 +201,27 @@ def main():
     parquet_path = os.path.join(cfg['output_dir'], 'pixels.parquet')
     checkpoint_dir = cfg['checkpoints_dir']
     use_wandb = not args.no_wandb
+
+    def _load_mrral_table() -> pd.DataFrame:
+        """Resolve --mrral_parquets (or default) and concat in order. The
+        patch cache pointed at by --patch_cache_dir or cfg.patch_cache_dir
+        MUST have been built from the same parquet list in the same order;
+        the cache is row-aligned with the concatenated dataframe."""
+        paths = args.mrral_parquets or [
+            os.path.join(cfg['output_dir'], 'mrral_pixels.parquet')]
+        logging.info(f'Loading {len(paths)} mrral parquet(s): {paths}')
+        parts = []
+        for p in paths:
+            part = pd.read_parquet(p)
+            logging.info(f'  {p}: {len(part):,} rows')
+            parts.append(part)
+        df_out = pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0]
+        logging.info(f'  concat: {len(df_out):,} rows total')
+        return df_out
+
+    if args.patch_cache_dir:
+        cfg['patch_cache_dir'] = args.patch_cache_dir
+        logging.info(f'patch_cache_dir overridden to {args.patch_cache_dir}')
 
     if args.model in SKLEARN_MODELS:
         from data.dataset import load_sklearn_arrays
@@ -294,8 +328,7 @@ def main():
             )
 
         elif args.model in ('spectral_cnn', 'spectral_vit'):
-            mrral_parquet = os.path.join(os.path.dirname(parquet_path), 'mrral_pixels.parquet')
-            df_mrral = pd.read_parquet(mrral_parquet)
+            df_mrral = _load_mrral_table()
             dropout = args.dropout if args.dropout is not None else 0.3
 
             if args.model == 'spectral_cnn':
@@ -347,11 +380,8 @@ def main():
         elif args.model == 'spectral_hybrid':
             from models.hybrid_classifier import SpectralHybridClassifier
             from data.dataset import BAND_COLS
-            mrral_parquet = os.path.join(os.path.dirname(parquet_path), 'mrral_pixels.parquet')
-            mrrsu_parquet = parquet_path  # pixels.parquet has b0..b59
-
-            df_mrral = pd.read_parquet(mrral_parquet)
-            df_mrrsu = pd.read_parquet(mrrsu_parquet)
+            df_mrral = _load_mrral_table()
+            df_mrrsu = pd.read_parquet(parquet_path)  # pixels.parquet has b0..b59
             MERGE_KEYS = ['tile_id', 'polygon_id', 'pixel_row', 'pixel_col']
             df_combined = df_mrral.merge(
                 df_mrrsu[MERGE_KEYS + BAND_COLS],
@@ -422,8 +452,7 @@ def main():
                 mrral_map[tid] = hdr.replace('.hdr', '.img')
             logging.info(f'mrral_map: {len(mrral_map)} tiles found')
 
-            mrral_parquet = os.path.join(cfg['output_dir'], 'mrral_pixels.parquet')
-            df_mrral = pd.read_parquet(mrral_parquet)
+            df_mrral = _load_mrral_table()
             if args.apply_relabels:
                 from data.dataset import apply_olivine_relabels
                 df_mrral, _n_relabel = apply_olivine_relabels(df_mrral, args.apply_relabels)
@@ -539,8 +568,7 @@ def main():
             mrral_map = {os.path.basename(h).split('_mrral_')[0]: h.replace('.hdr', '.img')
                          for h in mrral_hdrs}
             logging.info(f'mrral_map: {len(mrral_map)} tiles found')
-            mrral_parquet = os.path.join(cfg['output_dir'], 'mrral_pixels.parquet')
-            df_mrral = pd.read_parquet(mrral_parquet)
+            df_mrral = _load_mrral_table()
             dropout = args.dropout if args.dropout is not None else 0.1
             from models.spatial_spectral_classifier_aux import SpatialSpectralClassifierAux
             model = SpatialSpectralClassifierAux(
@@ -592,8 +620,7 @@ def main():
                 mrral_map[tid] = hdr.replace('.hdr', '.img')
             logging.info(f'mrral_map: {len(mrral_map)} tiles found')
 
-            mrral_parquet = os.path.join(cfg['output_dir'], 'mrral_pixels.parquet')
-            df_mrral = pd.read_parquet(mrral_parquet)
+            df_mrral = _load_mrral_table()
             dropout = args.dropout if args.dropout is not None else 0.1
 
             from models.decomp_spatial_vit import DecompSpVit
@@ -663,8 +690,7 @@ def main():
                 mrral_map[tid] = hdr.replace('.hdr', '.img')
             logging.info(f'mrral_map: {len(mrral_map)} tiles found')
 
-            mrral_parquet = os.path.join(cfg['output_dir'], 'mrral_pixels.parquet')
-            df_mrral = pd.read_parquet(mrral_parquet)
+            df_mrral = _load_mrral_table()
             dropout = args.dropout if args.dropout is not None else 0.1
 
             from models.decomp_spatial_vit_adv import DecompSpVitAdv
