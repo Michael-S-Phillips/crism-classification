@@ -46,10 +46,6 @@ class DecisionLog:
     def append(self, record: dict) -> None:
         row = {k: record.get(k, '') for k in _DECISION_COLS}
         row['ts'] = dt.datetime.now(dt.timezone.utc).isoformat()
-        # Pass-through caller-supplied keys
-        for k in _DECISION_COLS:
-            if k != 'ts' and k in record:
-                row[k] = record[k]
         write_header = not os.path.exists(self.csv_path)
         with open(self.csv_path, 'a', newline='') as fp:
             w = csv.DictWriter(fp, fieldnames=_DECISION_COLS)
