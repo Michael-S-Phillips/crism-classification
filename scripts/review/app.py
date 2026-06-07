@@ -180,16 +180,9 @@ def main():
                 geometry=item.geometry, tile_id=item.tile_id,
                 mrral_dir=mrral_dir, source_crs=item.source_crs,
             )
-            thumb = None
-            try:
-                thumb = load_thumbnail(
-                    geometry=item.geometry, tile_id=item.tile_id,
-                    mrral_dir=mrral_dir, source_crs=item.source_crs,
-                )
-            except Exception as e:
-                st.warning(f'thumbnail unavailable: {e}')
+            # Thumbnail is lazy — only loaded when user clicks "Show context".
             uid = item.polygon_uid
-            st.session_state['cache'][uid] = (item, bundle, thumb)
+            st.session_state['cache'][uid] = (item, bundle, None)
             hist.append(uid)
             st.session_state['cursor'] = len(hist) - 1
             _set_current(uid)
@@ -197,6 +190,24 @@ def main():
             st.session_state['current_item'] = None
             st.session_state['current_bundle'] = None
             st.session_state['current_thumb'] = None
+
+    def _load_thumb_for_current():
+        item = st.session_state['current_item']
+        if item is None:
+            return
+        uid = item.polygon_uid
+        try:
+            thumb = load_thumbnail(
+                geometry=item.geometry, tile_id=item.tile_id,
+                mrral_dir=mrral_dir, source_crs=item.source_crs,
+            )
+        except Exception as e:
+            st.warning(f'thumbnail unavailable: {e}')
+            return
+        # Update both the cache and current_thumb in place.
+        cached_item, cached_bundle, _ = st.session_state['cache'][uid]
+        st.session_state['cache'][uid] = (cached_item, cached_bundle, thumb)
+        st.session_state['current_thumb'] = thumb
 
     def _go_previous():
         if st.session_state['cursor'] > 0:
@@ -252,6 +263,9 @@ def main():
     else:
         st.plotly_chart(make_spectrum_figure(bundle.spectra, wavelengths),
                          use_container_width=True)
+        if st.button('Show context image', key='show_thumb'):
+            _load_thumb_for_current()
+            st.rerun()
 
     # Decision buttons + corrected-class dropdown
     corrected = st.selectbox(
