@@ -4,11 +4,14 @@ from __future__ import annotations
 import glob
 import os
 from dataclasses import dataclass
+from typing import Optional, Union
 
 import numpy as np
+import pyproj
 import rasterio
 import rasterio.features
 from shapely.geometry.base import BaseGeometry
+from shapely.ops import transform as shapely_transform
 
 NODATA = 65535
 N_BANDS = 59
@@ -35,7 +38,15 @@ def load_polygon_pixels(
     geometry: BaseGeometry,
     tile_id: str,
     mrral_dir: str,
+    source_crs: Optional[Union[str, pyproj.CRS]] = None,
 ) -> PixelBundle:
+    """Pull all interior pixel spectra for a polygon from its mrral tile.
+
+    ``source_crs`` is the geometry's CRS (gpkg CRS). If provided and it differs
+    from the tile CRS, the geometry is reprojected before rasterizing. mc13
+    vector outputs are in geographic degrees while mrral tiles are per-tile
+    equirectangular meters — passing ``source_crs`` is required for those.
+    """
     img_path = _find_mrral_img(tile_id, mrral_dir)
     empty = PixelBundle(
         rows=np.zeros(0, dtype=np.int64),
@@ -46,6 +57,13 @@ def load_polygon_pixels(
     )
 
     with rasterio.open(img_path) as src:
+        if source_crs is not None and src.crs is not None:
+            src_crs = pyproj.CRS.from_user_input(source_crs)
+            dst_crs = pyproj.CRS.from_user_input(src.crs.to_wkt())
+            if src_crs != dst_crs:
+                transformer = pyproj.Transformer.from_crs(
+                    src_crs, dst_crs, always_xy=True)
+                geometry = shapely_transform(transformer.transform, geometry)
         # Rasterize the polygon onto the tile grid → boolean mask
         mask = rasterio.features.rasterize(
             [(geometry, 1)],

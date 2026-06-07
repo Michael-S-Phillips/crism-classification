@@ -14,7 +14,20 @@ from typing import Iterator, Optional
 import fiona
 import geopandas as gpd
 import pandas as pd
+import pyproj
 from shapely.geometry.base import BaseGeometry
+
+# Mars 2000 sphere — used to compute polygon areas in m² when the source gpkg
+# is in geographic degrees (mc13 vector outputs are). 3396190 m matches the
+# IAU 2000 spheroid used by the rest of the pipeline.
+_MARS_GEOD = pyproj.Geod(a=3396190.0, b=3396190.0)
+
+
+def _polygon_area_m2(geom: BaseGeometry, crs: Optional[pyproj.CRS]) -> float:
+    if crs is not None and crs.is_geographic:
+        return abs(_MARS_GEOD.geometry_area_perimeter(geom)[0])
+    # Projected CRS (or unknown) — assume coords are in meters.
+    return float(geom.area)
 
 
 @dataclass(frozen=True)
@@ -27,6 +40,9 @@ class PolygonItem:
     area_m2: float
     pred_prob: float           # parsed from layer name
     source_gpkg: str           # parent/basename, e.g. "vector_mc13_relabeled/hcp.gpkg"
+    source_crs: Optional[str] = None  # WKT of the gpkg CRS (mc13 vectors are in geographic
+                                       # degrees; mrral tiles are per-tile equirect meters —
+                                       # loader uses this to reproject before rasterizing)
 
 
 _LAYER_RE = re.compile(r'^thresh_(?P<p>\d+(?:\.\d+)?)$')
@@ -75,10 +91,12 @@ class PolygonQueue:
             gdf = gpd.read_file(self.gpkg_path, layer=layer).reset_index(drop=True)
             if gdf.empty:
                 continue
+            layer_crs = gdf.crs
+            layer_crs_wkt = layer_crs.to_wkt() if layer_crs is not None else None
             # Capture the file-order index BEFORE sorting so polygon_uid is
             # stable across runs (fiona/gpd read features in fid order).
             gdf['_original_idx'] = gdf.index
-            gdf = gdf.assign(_area=gdf.geometry.area)
+            gdf['_area'] = [_polygon_area_m2(g, layer_crs) for g in gdf.geometry]
             gdf = gdf.sort_values('_area', ascending=False, kind='mergesort')
             for _, row in gdf.iterrows():
                 tile_id = str(row.get('tile_id', ''))
@@ -94,4 +112,5 @@ class PolygonQueue:
                     area_m2=float(row['_area']),
                     pred_prob=prob,
                     source_gpkg=self._source_gpkg,
+                    source_crs=layer_crs_wkt,
                 )

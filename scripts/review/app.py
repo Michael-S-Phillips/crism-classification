@@ -163,7 +163,7 @@ def main():
             item = st.session_state['current_item']
             st.session_state['current_bundle'] = load_polygon_pixels(
                 geometry=item.geometry, tile_id=item.tile_id,
-                mrral_dir=mrral_dir,
+                mrral_dir=mrral_dir, source_crs=item.source_crs,
             )
         except StopIteration:
             st.session_state['current_item'] = None
