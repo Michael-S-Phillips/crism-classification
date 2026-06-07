@@ -8,13 +8,12 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Optional
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-from scripts.review.queue import PolygonItem, PolygonQueue
+from scripts.review.queue import PolygonQueue
 from scripts.review.loader import load_polygon_pixels
 from scripts.review.persistence import (
     DecisionLog, ConfirmedPixelsWriter, HardNegativesWriter,
@@ -23,6 +22,10 @@ from scripts.review.persistence import (
 DEFAULT_GPKG_DIR = '/mnt/mrdr/crism_classification/data/vector_mc13_relabeled'
 DEFAULT_MRRAL_DIR = '/mnt/mrdr/mc13'
 DEFAULT_OUT_DIR = '/mnt/mrdr/crism_classification/data/mc13_review'
+# Wavelengths are tile-invariant across mc13 — the contrastive run wrote the
+# sidecar, the relabeled run did not. Both gpkg sources point at the same
+# 59-band mrral cubes, so this file is the right reference regardless of which
+# vector dir we're reviewing.
 DEFAULT_WAVELENGTHS = '/mnt/mrdr/crism_classification/data/vector_mc13_contrastive/vector_mc13_contrastive_wavelengths.json'
 TARGET_PIXELS_PER_CLASS = 30000
 
@@ -96,9 +99,10 @@ def _load_wavelengths(path: str) -> np.ndarray:
     with open(path) as fp:
         d = json.load(fp)
     arr = np.asarray(d['wavelengths_nm'], dtype=float)
-    if arr.size != 59:
-        arr = arr[:59]
-    return arr
+    if arr.size < 59:
+        raise ValueError(
+            f'{path} has {arr.size} wavelengths; mrral cubes have 59 bands')
+    return arr[:59]
 
 
 def main():
@@ -214,11 +218,13 @@ def main():
         _advance()
         st.rerun()
 
+    # if/elif so an accidental removal of st.rerun() inside _record can't
+    # double-fire a Confirm + Reject in the same script run.
     if b1.button('Confirm', type='primary', use_container_width=True):
         _record('confirm')
-    if b2.button('Reject', use_container_width=True):
+    elif b2.button('Reject', use_container_width=True):
         _record('reject')
-    if b3.button('Skip', use_container_width=True):
+    elif b3.button('Skip', use_container_width=True):
         _record('skip')
 
 
