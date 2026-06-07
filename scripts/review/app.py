@@ -126,6 +126,10 @@ def make_spectrum_figure(spectra: np.ndarray,
     ))
     fig.update_layout(
         xaxis_title='wavelength (nm)', yaxis_title='reflectance',
+        # Clamp y to physical reflectance range — spurious outlier pixels
+        # (NaN-near-NODATA, gain-stage artifacts) can have huge values that
+        # otherwise auto-scale the real spectrum to a flat line.
+        yaxis=dict(range=[0.0, 1.0]),
         height=400, margin=dict(l=40, r=20, t=20, b=40), showlegend=False,
     )
     return fig
