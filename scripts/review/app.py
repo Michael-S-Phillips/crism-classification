@@ -124,12 +124,22 @@ def make_spectrum_figure(spectra: np.ndarray,
         x=wavelengths_nm, y=mean, mode='lines',
         line=dict(width=2, color='royalblue'), name='mean',
     ))
+    # Fall back to the physical reflectance range only when outlier pixels
+    # would otherwise compress the real signal to a flat line. Robust trigger:
+    # check the 5th/95th percentile across all pixels (a few crazy pixels
+    # won't move it) — if even those are way outside [0, 1], clamp.
+    yaxis_args: dict = {}
+    try:
+        p5 = float(np.nanpercentile(spectra, 5))
+        p95 = float(np.nanpercentile(spectra, 95))
+        if p95 > 1.05 or p5 < -0.05:
+            yaxis_args['range'] = [0.0, 1.0]
+    except ValueError:
+        pass  # all-NaN; let plotly handle it
+
     fig.update_layout(
         xaxis_title='wavelength (nm)', yaxis_title='reflectance',
-        # Clamp y to physical reflectance range — spurious outlier pixels
-        # (NaN-near-NODATA, gain-stage artifacts) can have huge values that
-        # otherwise auto-scale the real spectrum to a flat line.
-        yaxis=dict(range=[0.0, 1.0]),
+        yaxis=yaxis_args,
         height=400, margin=dict(l=40, r=20, t=20, b=40), showlegend=False,
     )
     return fig
