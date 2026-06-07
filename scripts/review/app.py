@@ -145,7 +145,7 @@ def main():
     if prog['target_reached']:
         st.success(f"30k reached for {mineral}. Switch mineral above or keep reviewing for more headroom.")
 
-    # Queue
+    # Queue + per-mineral history (so Previous walks back through visited polys)
     gpkg_path = os.path.join(gpkg_dir, f'{mineral}.gpkg')
     queue_key = f'queue::{gpkg_path}::{mineral}'
     if st.session_state.get('queue_key') != queue_key:
@@ -153,23 +153,47 @@ def main():
         st.session_state['queue_iter'] = iter(PolygonQueue(
             gpkg_path=gpkg_path, mineral=mineral, decisions_csv=decisions_csv,
         ))
-        st.session_state['current_item'] = None
-        st.session_state['current_bundle'] = None
+        # history[i] = polygon_uid in visit order; cache[uid] = (item, bundle)
+        st.session_state['history'] = []
+        st.session_state['cache'] = {}
+        st.session_state['cursor'] = -1  # index into history; -1 = nothing loaded yet
 
-    # Advance to next polygon
+    def _set_current(uid: str):
+        item, bundle = st.session_state['cache'][uid]
+        st.session_state['current_item'] = item
+        st.session_state['current_bundle'] = bundle
+
     def _advance():
+        cur = st.session_state['cursor']
+        hist = st.session_state['history']
+        # If we're sitting in the middle of history (after a Previous), step
+        # forward through it instead of pulling a fresh polygon from the queue.
+        if cur < len(hist) - 1:
+            st.session_state['cursor'] = cur + 1
+            _set_current(hist[st.session_state['cursor']])
+            return
+        # At the live edge — pull next from the queue.
         try:
-            st.session_state['current_item'] = next(st.session_state['queue_iter'])
-            item = st.session_state['current_item']
-            st.session_state['current_bundle'] = load_polygon_pixels(
+            item = next(st.session_state['queue_iter'])
+            bundle = load_polygon_pixels(
                 geometry=item.geometry, tile_id=item.tile_id,
                 mrral_dir=mrral_dir, source_crs=item.source_crs,
             )
+            uid = item.polygon_uid
+            st.session_state['cache'][uid] = (item, bundle)
+            hist.append(uid)
+            st.session_state['cursor'] = len(hist) - 1
+            _set_current(uid)
         except StopIteration:
             st.session_state['current_item'] = None
             st.session_state['current_bundle'] = None
 
-    if st.session_state.get('current_item') is None:
+    def _go_previous():
+        if st.session_state['cursor'] > 0:
+            st.session_state['cursor'] -= 1
+            _set_current(st.session_state['history'][st.session_state['cursor']])
+
+    if st.session_state.get('current_item') is None and st.session_state['cursor'] == -1:
         _advance()
 
     item = st.session_state.get('current_item')
@@ -179,13 +203,31 @@ def main():
         st.info('No more polygons in this queue.')
         return
 
-    # Card
+    # If this polygon already has a recorded decision (re-viewing), surface it.
+    log = DecisionLog(decisions_csv)
+    confirmed_writer = ConfirmedPixelsWriter(confirmed_pq)
+    hardneg_writer = HardNegativesWriter(hardneg_pq)
+    prev_decision = log.most_recent_for(item.polygon_uid)
+    is_reviewing = prev_decision is not None
+
+    # Card header (include navigation position)
     n_px = bundle.spectra.shape[0] if bundle is not None else 0
+    cursor = st.session_state['cursor']
+    hist_len = len(st.session_state['history'])
     st.markdown(
         f"**tile** `{item.tile_id}` · **layer** `{item.layer}` · "
         f"**polygon_uid** `{item.polygon_uid}` · **n_pixels** {n_px} · "
-        f"**pred_prob** {item.pred_prob:.2f}"
+        f"**pred_prob** {item.pred_prob:.2f}  ·  "
+        f"_session position {cursor + 1}/{hist_len}_"
     )
+    if is_reviewing:
+        corr = prev_decision.get('corrected_class') or ''
+        corr_part = f" (corrected: {corr})" if corr else ''
+        st.warning(
+            f"Already decided: **{prev_decision['decision']}**{corr_part} "
+            f"at {prev_decision['ts']}. Clicking a button below will supersede this."
+        )
+
     wavelengths = _load_wavelengths(DEFAULT_WAVELENGTHS)
     st.plotly_chart(make_spectrum_figure(bundle.spectra, wavelengths),
                      use_container_width=True)
@@ -196,12 +238,17 @@ def main():
         options=['', 'olivine', 'lcp', 'hcp', 'other'],
         index=0,
     )
-    b1, b2, b3 = st.columns(3)
-    log = DecisionLog(decisions_csv)
-    confirmed_writer = ConfirmedPixelsWriter(confirmed_pq)
-    hardneg_writer = HardNegativesWriter(hardneg_pq)
+    p1, b1, b2, b3 = st.columns([1, 1, 1, 1])
 
     def _record(decision: str):
+        # Supersede any prior decision for this polygon by removing rows from
+        # whichever derived parquet the old decision wrote to.
+        if prev_decision is not None:
+            prev = prev_decision.get('decision')
+            if prev == 'confirm':
+                confirmed_writer.drop_polygon(item.polygon_uid)
+            elif prev == 'reject':
+                hardneg_writer.drop_polygon(item.polygon_uid)
         log.append(dict(
             source_gpkg=item.source_gpkg, layer=item.layer,
             polygon_uid=item.polygon_uid, tile_id=item.tile_id,
@@ -227,9 +274,12 @@ def main():
         _advance()
         st.rerun()
 
-    # if/elif so an accidental removal of st.rerun() inside _record can't
-    # double-fire a Confirm + Reject in the same script run.
-    if b1.button('Confirm', type='primary', use_container_width=True):
+    # if/elif so an accidental removal of st.rerun() can't double-fire.
+    if p1.button('← Previous', use_container_width=True,
+                  disabled=(st.session_state['cursor'] <= 0)):
+        _go_previous()
+        st.rerun()
+    elif b1.button('Confirm', type='primary', use_container_width=True):
         _record('confirm')
     elif b2.button('Reject', use_container_width=True):
         _record('reject')

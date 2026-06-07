@@ -236,3 +236,77 @@ def test_hard_negatives_with_corrected(tmp_path):
     assert df['hcp'].iloc[0] == 0.0
     # When corrected_class is set, negative_of is left blank/null
     assert pd.isna(df['negative_of'].iloc[0]) or df['negative_of'].iloc[0] == ''
+
+
+# ---- Re-decision support (most_recent_for + drop_polygon) ------------------
+
+def test_most_recent_for_returns_last_match(tmp_path):
+    csv_path = tmp_path / 'decisions.csv'
+    log = DecisionLog(str(csv_path))
+    log.append(_record(uid='t::a::0', decision='confirm'))
+    log.append(_record(uid='t::a::0', decision='reject'))  # supersede
+    log.append(_record(uid='t::b::0', decision='confirm'))
+    most = log.most_recent_for('t::a::0')
+    assert most is not None
+    assert most['decision'] == 'reject'
+    assert log.most_recent_for('does::not::exist') is None
+
+
+def test_most_recent_for_returns_none_when_no_file(tmp_path):
+    log = DecisionLog(str(tmp_path / 'no.csv'))
+    assert log.most_recent_for('x::y::0') is None
+
+
+def test_drop_polygon_removes_rows_keyed_by_uid(tmp_path):
+    pq = tmp_path / 'confirmed.parquet'
+    w = ConfirmedPixelsWriter(str(pq))
+    w.append_polygon(tile_id='t0001', polygon_uid='keep::me::0',
+                     rows=np.array([1], dtype=np.int64),
+                     cols=np.array([1], dtype=np.int64),
+                     spectra=np.zeros((1, 59), dtype=np.float32),
+                     label_class='hcp')
+    w.append_polygon(tile_id='t0001', polygon_uid='drop::me::0',
+                     rows=np.array([2, 3], dtype=np.int64),
+                     cols=np.array([2, 3], dtype=np.int64),
+                     spectra=np.ones((2, 59), dtype=np.float32),
+                     label_class='hcp')
+    w.flush()
+    assert len(pd.read_parquet(pq)) == 3
+
+    w.drop_polygon('drop::me::0')
+    df = pd.read_parquet(pq)
+    assert len(df) == 1
+    assert df['m0'].iloc[0] == 0.0  # the "keep" row survives
+
+
+def test_drop_polygon_idempotent_when_missing(tmp_path):
+    pq = tmp_path / 'confirmed.parquet'
+    w = ConfirmedPixelsWriter(str(pq))
+    # File doesn't exist yet — no-op
+    w.drop_polygon('x::y::0')
+    assert not os.path.exists(pq)
+    # File exists but uid not present — also no-op
+    w.append_polygon(tile_id='t0001', polygon_uid='real::poly::0',
+                     rows=np.zeros(1, dtype=np.int64),
+                     cols=np.zeros(1, dtype=np.int64),
+                     spectra=np.zeros((1, 59), dtype=np.float32),
+                     label_class='hcp')
+    w.flush()
+    before = pd.read_parquet(pq).copy()
+    w.drop_polygon('nonexistent::poly::0')
+    after = pd.read_parquet(pq)
+    pd.testing.assert_frame_equal(before, after)
+
+
+def test_hard_negatives_drop_polygon(tmp_path):
+    pq = tmp_path / 'hardneg.parquet'
+    w = HardNegativesWriter(str(pq))
+    w.append_polygon(tile_id='t0001', polygon_uid='hn::a::0',
+                     rows=np.zeros(1, dtype=np.int64),
+                     cols=np.zeros(1, dtype=np.int64),
+                     spectra=np.zeros((1, 59), dtype=np.float32),
+                     predicted_class='hcp', corrected_class=None)
+    w.flush()
+    assert len(pd.read_parquet(pq)) == 1
+    w.drop_polygon('hn::a::0')
+    assert len(pd.read_parquet(pq)) == 0

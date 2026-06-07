@@ -61,6 +61,18 @@ class DecisionLog:
             return set()
         return set(df['polygon_uid'].astype(str).tolist())
 
+    def most_recent_for(self, polygon_uid: str) -> Optional[dict]:
+        """Return the most recent decision row for ``polygon_uid``, or None."""
+        if not os.path.exists(self.csv_path):
+            return None
+        df = pd.read_csv(self.csv_path)
+        if 'polygon_uid' not in df.columns:
+            return None
+        matches = df[df['polygon_uid'].astype(str) == polygon_uid]
+        if matches.empty:
+            return None
+        return matches.iloc[-1].to_dict()
+
 
 def _polygon_id_int(polygon_uid: str) -> int:
     """Deterministic int64-safe integer from a polygon_uid string.
@@ -138,6 +150,17 @@ class ConfirmedPixelsWriter:
         out.to_parquet(self.parquet_path, index=False)
         self._buf.clear()
 
+    def drop_polygon(self, polygon_uid: str) -> None:
+        """Remove all rows for ``polygon_uid``. No-op if parquet/rows missing."""
+        if not os.path.exists(self.parquet_path):
+            return
+        pid = _polygon_id_int(polygon_uid)
+        existing = pd.read_parquet(self.parquet_path)
+        kept = existing[existing['polygon_id'] != pid]
+        if len(kept) == len(existing):
+            return
+        kept.to_parquet(self.parquet_path, index=False)
+
 
 class HardNegativesWriter:
     def __init__(self, parquet_path: str):
@@ -174,3 +197,14 @@ class HardNegativesWriter:
         out = out[hard_negatives_schema_columns()]
         out.to_parquet(self.parquet_path, index=False)
         self._buf.clear()
+
+    def drop_polygon(self, polygon_uid: str) -> None:
+        """Remove all rows for ``polygon_uid``. No-op if parquet/rows missing."""
+        if not os.path.exists(self.parquet_path):
+            return
+        pid = _polygon_id_int(polygon_uid)
+        existing = pd.read_parquet(self.parquet_path)
+        kept = existing[existing['polygon_id'] != pid]
+        if len(kept) == len(existing):
+            return
+        kept.to_parquet(self.parquet_path, index=False)
