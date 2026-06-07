@@ -344,7 +344,7 @@ def main():
         options=['', 'olivine', 'lcp', 'hcp', 'bland', 'ambiguous'],
         index=0,
     )
-    p1, b1, b2, b3 = st.columns([1, 1, 1, 1])
+    p1, b1, b2, b3, n1 = st.columns([1, 1, 1, 1, 1])
 
     def _record(decision: str):
         # Supersede any prior decision for this polygon by removing rows from
@@ -381,6 +381,9 @@ def main():
         st.rerun()
 
     # if/elif so an accidental removal of st.rerun() can't double-fire.
+    # Next → advances through history (or pulls fresh from queue at the
+    # live edge) WITHOUT recording a new decision — use it to scroll
+    # forward past polygons you've already decided.
     if p1.button('← Previous', use_container_width=True,
                   disabled=(st.session_state['cursor'] <= 0)):
         _go_previous()
@@ -391,6 +394,9 @@ def main():
         _record('reject')
     elif b3.button('Skip', use_container_width=True):
         _record('skip')
+    elif n1.button('Next →', use_container_width=True):
+        _advance()
+        st.rerun()
 
 
 if __name__ == '__main__':
