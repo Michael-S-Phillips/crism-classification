@@ -440,3 +440,24 @@ def test_hard_neg_ambiguous_is_negative_tag_not_positive_class(tmp_path):
     for col in ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']:
         assert df[col].iloc[0] == 0.0, f'{col} should be 0 for ambiguous'
     assert df['negative_of'].iloc[0] == 'ambiguous'
+
+
+def test_hard_neg_alteration_is_negative_tag(tmp_path):
+    """'alteration' (clays / sulfates / opal / etc.) is a non-mineral tag,
+    same pattern as 'ambiguous': all-zero labels, negative_of='alteration'.
+    Lets downstream code single out alteration-confused rejects from the
+    truly-unknown 'ambiguous' bucket."""
+    pq = tmp_path / 'hardneg.parquet'
+    w = HardNegativesWriter(str(pq))
+    w.append_polygon(
+        tile_id='t0001', polygon_uid='alt::a::0',
+        rows=np.zeros(1, dtype=np.int64),
+        cols=np.zeros(1, dtype=np.int64),
+        spectra=np.zeros((1, 59), dtype=np.float32),
+        predicted_class='hcp', corrected_class='alteration',
+    )
+    w.flush()
+    df = pd.read_parquet(pq)
+    for col in ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']:
+        assert df[col].iloc[0] == 0.0, f'{col} should be 0 for alteration'
+    assert df['negative_of'].iloc[0] == 'alteration'

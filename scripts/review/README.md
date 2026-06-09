@@ -32,6 +32,7 @@ column name for downstream compatibility):
 | `olivine` | `hard_negatives.parquet` | `olivine_t1 = 1.0`; `negative_of` = blank. |
 | `lcp` / `hcp` | `hard_negatives.parquet` | That column = 1.0; `negative_of` = blank. |
 | `bland` | `hard_negatives.parquet` | `other = 1.0` (schema alias); `negative_of` = blank. |
+| `alteration` | `hard_negatives.parquet` | All labels 0; `negative_of` = `"alteration"`. Use for clays / sulfates / opal / prehnite / chlorite and other 2.3-2.5 µm features the model commonly misreads as HCP. |
 | `ambiguous` | `hard_negatives.parquet` | All labels 0; `negative_of` = `"ambiguous"`. |
 
 `bland` is the UI name for the dust-dominated / featureless spectra harvested
@@ -59,6 +60,11 @@ the filter rules are:
      → extra-strong negatives applicable to **every** class (we know it's
      not any of our minerals, but we don't know what it is). Useful for
      reducing overconfidence on out-of-distribution pixels.
+   - From `hard_negatives.parquet`, rows where `negative_of == 'alteration'`
+     → same as ambiguous (universal negative) but with a more specific
+     provenance tag. Filter by this tag to extract the spectra that
+     looked like HCP/LCP but were actually alteration minerals; they're
+     a candidate seed pool for a future alteration-mineral classifier.
 
 3. **Bland / dust class**
    - The `other` label column is populated by both confirmed bland pixels

@@ -351,11 +351,15 @@ def main():
     # Decision buttons + corrected-class dropdown.
     # 'bland' is the UI name for the schema's 'other' label column (the
     # featureless / dust-dominated spectra harvested from known dust regions).
-    # 'ambiguous' is a non-mineral tag — recorded as a hard negative with no
-    # positive label (use it for rejections you can't categorize).
+    # 'alteration' and 'ambiguous' are non-mineral tags — recorded as hard
+    # negatives with no positive label. Use 'alteration' for spectra that
+    # are clearly NOT the predicted primary mineral but show alteration-
+    # mineral signatures (clays / sulfates / opal / prehnite / chlorite /
+    # other 2.3-2.5 µm features often mistaken for HCP). Use 'ambiguous'
+    # when the spectrum is rejected but you can't categorize what it is.
     corrected = st.selectbox(
         'if rejected, actually:',
-        options=['', 'olivine', 'lcp', 'hcp', 'plagioclase', 'bland', 'ambiguous'],
+        options=['', 'olivine', 'lcp', 'hcp', 'plagioclase', 'bland', 'alteration', 'ambiguous'],
         index=0,
     )
     p1, b1, b2, b3, n1 = st.columns([1, 1, 1, 1, 1])
