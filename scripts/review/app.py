@@ -36,12 +36,13 @@ DEFAULT_OUT_DIR = '/mnt/mrdr/crism_classification/data/mc13_review'
 # startup. Each rehydrated polygon is metadata-only; its spectrum is
 # loaded on demand when the user actually navigates back to it.
 HISTORY_REHYDRATE_N = 30
-# Maximum number of polygons whose loaded spectra + thumbnails are held in
-# session_state at once. Large LCP polygons can carry tens of MB of pixel
-# data; without an eviction limit the cache will OOM-kill on a long review
-# session. When the cap is exceeded we drop the oldest cached spectra
-# (history UIDs stay; spectra reload on revisit via _set_current).
-MAX_CACHE_ENTRIES = 40
+# Cache eviction budgets. The cache holds loaded spectra + thumbnails for
+# visited polygons. Per-pixel cost: rows/cols (16 B) + spectra (59 × 4 B =
+# 236 B) ≈ 252 B/pixel. A 1M-pixel LCP polygon is ~250 MB; even a small
+# entry-count cap (e.g. 40) can blow past 14 GB on big polygons, which is
+# what was OOM-killing the app. Use a total-pixel budget instead.
+MAX_CACHE_PIXELS = 3_000_000   # ~750 MB at 59 bands × 4 bytes per pixel
+MAX_CACHE_ENTRIES = 20         # belt-and-suspenders backstop for many small polys
 # Wavelengths are tile-invariant across mc13 — the contrastive run wrote the
 # sidecar, the relabeled run did not. Both gpkg sources point at the same
 # 59-band mrral cubes, so this file is the right reference regardless of which
@@ -306,23 +307,36 @@ def main():
             st.session_state['cursor'] = len(st.session_state['history'])
 
     def _evict_old_cache_entries():
-        """Drop cached spectra+thumbnails for the oldest history UIDs once we
-        exceed MAX_CACHE_ENTRIES. The history list is preserved (UIDs still
-        navigable); _set_current will lazily reload spectra when revisited."""
+        """Drop cached spectra+thumbnails for the oldest history UIDs once
+        we exceed EITHER the total-pixel budget OR the entry-count cap.
+        The history list is preserved (UIDs still navigable); _set_current
+        will lazily reload spectra when revisited."""
         cache = st.session_state['cache']
-        if len(cache) <= MAX_CACHE_ENTRIES:
+
+        def _total_pixels() -> int:
+            total = 0
+            for _item, b, _t in cache.values():
+                if b is not None:
+                    total += int(b.spectra.shape[0])
+            return total
+
+        over_pixels = _total_pixels() > MAX_CACHE_PIXELS
+        over_count = len(cache) > MAX_CACHE_ENTRIES
+        if not over_pixels and not over_count:
             return
+
         hist = st.session_state['history']
         cursor = st.session_state['cursor']
-        # Keep the currently-displayed polygon and its immediate neighbors
-        # (one back, one forward) — eviction happens to the rest, oldest first.
+        # Protect only the currently-displayed polygon. ±1 protection turned
+        # out to cost real money on large-LCP reviews — better to reload one
+        # neighbor on demand than carry it in RAM forever.
         protected = set()
-        for d in (-1, 0, 1):
-            i = cursor + d
-            if 0 <= i < len(hist):
-                protected.add(hist[i])
+        if 0 <= cursor < len(hist):
+            protected.add(hist[cursor])
+
         for uid in hist:
-            if len(cache) <= MAX_CACHE_ENTRIES:
+            if (_total_pixels() <= MAX_CACHE_PIXELS and
+                    len(cache) <= MAX_CACHE_ENTRIES):
                 break
             if uid in cache and uid not in protected:
                 del cache[uid]

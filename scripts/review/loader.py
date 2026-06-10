@@ -150,12 +150,16 @@ def load_thumbnail(
     source_crs: Optional[Union[str, pyproj.CRS]] = None,
     pad_factor: float = 4.0,
     min_pad_pixels: int = 30,
+    max_dimension: int = 800,
 ) -> Thumbnail:
     """Cropped false-color RGB of the polygon's neighborhood + outline coords.
 
     Reads only 3 bands within a windowed crop, so this is cheap even on the
     network-mounted tiles. ``pad_factor`` expands the polygon bbox; ``min_pad``
-    ensures small polygons still get geological context.
+    ensures small polygons still get geological context. ``max_dimension``
+    caps either edge of the returned RGB — bigger crops get an integer
+    rasterio decimation factor applied, so a giant polygon's thumbnail
+    stays bounded at ~800×800×3 = 1.9 MB instead of multi-hundred-MB.
     """
     img_path = _find_mrral_img(tile_id, mrral_dir)
     with rasterio.open(img_path) as src:
@@ -189,23 +193,39 @@ def load_thumbnail(
         h = max(r1 - r0, 1)
 
         window = rasterio.windows.Window(c0, r0, w, h)
+        # Decimate large crops at read time so we never materialize a giant
+        # RGB array. rasterio supports `out_shape` which does an internal
+        # nearest-neighbor downsample without allocating the full window.
+        if max(w, h) > max_dimension:
+            scale = max_dimension / max(w, h)
+            out_h = max(1, int(round(h * scale)))
+            out_w = max(1, int(round(w * scale)))
+        else:
+            out_h, out_w = h, w
         chans = []
         for b_idx in _RGB_BAND_INDICES:
-            arr = src.read(b_idx + 1, window=window).astype(np.float32)
+            arr = src.read(b_idx + 1, window=window,
+                           out_shape=(out_h, out_w)).astype(np.float32)
             arr[(arr == NODATA) | ~np.isfinite(arr)] = np.nan
             chans.append(arr)
 
-        # Rasterize the polygon edge onto the crop for overlay
+        # Rasterize the polygon edge onto the (possibly decimated) crop.
+        # Adjust the transform so 1 pixel in the output corresponds to
+        # (w/out_w) × (h/out_h) source-pixels of world extent.
         crop_transform = rasterio.windows.transform(window, src.transform)
+        if (out_h, out_w) != (h, w):
+            from affine import Affine
+            crop_transform = crop_transform * Affine.scale(w / out_w,
+                                                            h / out_h)
         outline_mask = rasterio.features.rasterize(
             [(geometry.boundary, 1)],
-            out_shape=(h, w),
+            out_shape=(out_h, out_w),
             transform=crop_transform,
             fill=0, dtype='uint8',
         ).astype(bool)
 
-    # Stack RGB with per-band percentile stretch
-    rgb = np.zeros((h, w, 3), dtype=np.float32)
+    # Stack RGB with per-band percentile stretch — use decimated dimensions
+    rgb = np.zeros((out_h, out_w, 3), dtype=np.float32)
     for i, c in enumerate(chans):
         rgb[..., i] = _percentile_stretch(c)
     # NaN regions → black
