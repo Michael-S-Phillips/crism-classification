@@ -22,6 +22,10 @@ _LABEL_COLS = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']
 _DECISION_COLS = [
     'ts', 'source_gpkg', 'layer', 'polygon_uid', 'tile_id',
     'predicted_class', 'decision', 'corrected_class', 'n_pixels', 'area_m2',
+    # Semicolon-separated list of co-occurring mineral classes when a polygon
+    # is confirmed as the predicted class but also shows signals from others
+    # (e.g. olivine + hcp). Empty for single-class confirms and all rejects.
+    'co_occurring_classes',
 ]
 
 
@@ -43,7 +47,36 @@ class DecisionLog:
         self.csv_path = csv_path
         os.makedirs(os.path.dirname(csv_path) or '.', exist_ok=True)
 
+    def _migrate_schema_if_needed(self) -> None:
+        """One-time migration: if the existing CSV's header is missing any
+        columns from _DECISION_COLS, rewrite the file with the full schema
+        (existing rows get empty values for the new columns). Safe to call
+        on every append — it's a fast no-op when the schema is already
+        current. Required because csv.DictWriter would otherwise write rows
+        with more fields than the header advertises, corrupting the file."""
+        if not os.path.exists(self.csv_path):
+            return
+        with open(self.csv_path, 'r') as fp:
+            header_line = fp.readline().rstrip('\r\n')
+        if not header_line:
+            return
+        existing_cols = header_line.split(',')
+        missing = [c for c in _DECISION_COLS if c not in existing_cols]
+        if not missing:
+            return
+        # Read with pandas (tolerates trailing-comma ambiguities), add the
+        # missing columns as empty strings, reorder to canonical, write back
+        # via atomic rename so a kill mid-rewrite can't truncate the file.
+        df = pd.read_csv(self.csv_path)
+        for c in missing:
+            df[c] = ''
+        df = df[_DECISION_COLS]
+        tmp = self.csv_path + '.tmp'
+        df.to_csv(tmp, index=False)
+        os.replace(tmp, self.csv_path)
+
     def append(self, record: dict) -> None:
+        self._migrate_schema_if_needed()
         row = {k: record.get(k, '') for k in _DECISION_COLS}
         row['ts'] = dt.datetime.now(dt.timezone.utc).isoformat()
         # Use file POSITION after open instead of pre-open exists() check, so
@@ -93,13 +126,21 @@ _BLAND_ALIASES = ('bland', 'dust', 'dusty', 'other')
 
 
 def _label_dict_for(label_class: str) -> dict[str, float]:
+    return _label_dict_for_many([label_class])
+
+
+def _label_dict_for_many(label_classes) -> dict[str, float]:
+    """Build a multi-label dict: every class in ``label_classes`` is positive,
+    everything else is zero. Used for co-occurring mineral confirmations
+    (e.g. a polygon that is both olivine and hcp)."""
     out = {c: 0.0 for c in _LABEL_COLS}
-    if label_class == 'olivine':
-        out['olivine_t1'] = 1.0  # use the more-confident tier slot for new confirmed olivine
-    elif label_class in _BLAND_ALIASES:
-        out['other'] = 1.0       # 'bland'/'dust'/'other' all share the schema column
-    elif label_class in out:
-        out[label_class] = 1.0
+    for lc in label_classes or ():
+        if lc == 'olivine':
+            out['olivine_t1'] = 1.0
+        elif lc in _BLAND_ALIASES:
+            out['other'] = 1.0
+        elif lc in out:
+            out[lc] = 1.0
     return out
 
 
@@ -154,9 +195,17 @@ class ConfirmedPixelsWriter:
 
     def append_polygon(self, *, tile_id: str, polygon_uid: str,
                         rows: np.ndarray, cols: np.ndarray,
-                        spectra: np.ndarray, label_class: str) -> None:
+                        spectra: np.ndarray, label_class: str,
+                        extra_classes: Optional[list] = None) -> None:
+        """Write rows for ``polygon_uid`` with positive labels for
+        ``label_class`` (the predicted class the user confirmed) plus every
+        class in ``extra_classes`` (co-occurring minerals the user marked).
+        The model uses multi-label loss, so multiple positives per row is the
+        correct way to represent polygons with mixed mineralogy.
+        """
+        all_classes = [label_class] + list(extra_classes or [])
         df = _rows_for_polygon(tile_id, polygon_uid, rows, cols, spectra,
-                                _label_dict_for(label_class))
+                                _label_dict_for_many(all_classes))
         self._buf[polygon_uid] = df
 
     def flush(self) -> None:

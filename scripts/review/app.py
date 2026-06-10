@@ -394,9 +394,12 @@ def main():
     if is_reviewing:
         corr = prev_decision.get('corrected_class') or ''
         corr_part = f" (corrected: {corr})" if corr else ''
+        coocc = str(prev_decision.get('co_occurring_classes') or '').strip()
+        coocc_part = f" + co-occurring: {coocc}" if coocc and coocc != 'nan' else ''
         st.warning(
-            f"Already decided: **{prev_decision['decision']}**{corr_part} "
-            f"at {prev_decision['ts']}. Clicking a button below will supersede this."
+            f"Already decided: **{prev_decision['decision']}**{corr_part}"
+            f"{coocc_part} at {prev_decision['ts']}. Clicking a button below "
+            f"will supersede this."
         )
 
     wavelengths = _load_wavelengths(DEFAULT_WAVELENGTHS)
@@ -416,6 +419,25 @@ def main():
         if st.button('Show context image', key='show_thumb'):
             _load_thumb_for_current()
             st.rerun()
+
+    # Co-occurring classes: for polygons that ARE the predicted class but ALSO
+    # show another primary mineral. Multi-label loss treats each class
+    # independently, so confirming "olivine only" on a polygon that has both
+    # olivine and hcp would push the HCP logit DOWN — actively damaging HCP
+    # training. Selecting hcp here writes hcp=1.0 alongside olivine=1.0,
+    # which is what the loss actually wants for mixed-mineralogy polygons.
+    # Options exclude the current mineral (it's implicitly included) and
+    # exclude bland/tags (those are only meaningful as the sole label).
+    cooccur_options = [c for c in ['olivine', 'lcp', 'hcp', 'plagioclase']
+                        if c != mineral]
+    co_occurring = st.multiselect(
+        'if confirmed, also present (co-occurring minerals):',
+        options=cooccur_options,
+        default=[],
+        help='Use when the polygon shows BOTH the predicted mineral and '
+             'another primary mineral. Confirms write a multi-label row '
+             '(both classes = 1.0) instead of single-class.',
+    )
 
     # Decision buttons + corrected-class dropdown.
     # 'bland' is the UI name for the schema's 'other' label column (the
@@ -448,6 +470,8 @@ def main():
             predicted_class=mineral, decision=decision,
             corrected_class=(corrected if decision == 'reject' else ''),
             n_pixels=n_px, area_m2=item.area_m2,
+            co_occurring_classes=(';'.join(co_occurring)
+                                   if decision == 'confirm' else ''),
         ))
         # Patch the cached polygon-list table so the decision column stays
         # fresh without a full rebuild (which would be ~5 sec for large gpkgs).
@@ -463,6 +487,7 @@ def main():
                 tile_id=item.tile_id, polygon_uid=item.polygon_uid,
                 rows=bundle.rows, cols=bundle.cols, spectra=bundle.spectra,
                 label_class=mineral,
+                extra_classes=co_occurring or None,
             )
             confirmed_writer.flush()
         elif decision == 'reject' and bundle is not None and n_px > 0:

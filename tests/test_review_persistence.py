@@ -36,6 +36,7 @@ def test_decision_log_creates_csv_and_appends_header(tmp_path):
     assert list(df.columns) == [
         'ts', 'source_gpkg', 'layer', 'polygon_uid', 'tile_id',
         'predicted_class', 'decision', 'corrected_class', 'n_pixels', 'area_m2',
+        'co_occurring_classes',
     ]
     assert df.iloc[0]['polygon_uid'] == 't0001::thresh_0.95::0'
     assert df.iloc[0]['ts']  # iso8601 string
@@ -461,3 +462,92 @@ def test_hard_neg_alteration_is_negative_tag(tmp_path):
     for col in ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']:
         assert df[col].iloc[0] == 0.0, f'{col} should be 0 for alteration'
     assert df['negative_of'].iloc[0] == 'alteration'
+
+
+# ---- Multi-label confirms (co-occurring minerals) --------------------------
+
+def test_confirmed_writer_extra_classes_sets_multiple_labels(tmp_path):
+    """When a polygon is confirmed as olivine AND has co-occurring hcp,
+    BOTH columns must be 1.0 in the parquet — that's what multi-label loss
+    consumes. Single-class confirm (today's behavior) still works with no
+    extra_classes."""
+    pq = tmp_path / 'confirmed.parquet'
+    w = ConfirmedPixelsWriter(str(pq))
+    w.append_polygon(
+        tile_id='t0001', polygon_uid='multi::a::0',
+        rows=np.zeros(1, dtype=np.int64),
+        cols=np.zeros(1, dtype=np.int64),
+        spectra=np.zeros((1, 59), dtype=np.float32),
+        label_class='olivine', extra_classes=['hcp'],
+    )
+    w.flush()
+    df = pd.read_parquet(pq)
+    assert df['olivine_t1'].iloc[0] == 1.0
+    assert df['hcp'].iloc[0] == 1.0
+    # Other columns still zero
+    assert df['lcp'].iloc[0] == 0.0
+    assert df['plagioclase'].iloc[0] == 0.0
+    assert df['other'].iloc[0] == 0.0
+
+
+def test_confirmed_writer_extra_classes_none_is_single_class(tmp_path):
+    """Backward compat: extra_classes=None (or omitted) behaves exactly
+    like the original single-class confirm path."""
+    pq = tmp_path / 'confirmed.parquet'
+    w = ConfirmedPixelsWriter(str(pq))
+    w.append_polygon(
+        tile_id='t0001', polygon_uid='single::a::0',
+        rows=np.zeros(1, dtype=np.int64),
+        cols=np.zeros(1, dtype=np.int64),
+        spectra=np.zeros((1, 59), dtype=np.float32),
+        label_class='olivine',
+    )
+    w.flush()
+    df = pd.read_parquet(pq)
+    assert df['olivine_t1'].iloc[0] == 1.0
+    assert df['hcp'].iloc[0] == 0.0
+
+
+def test_decision_log_migrates_legacy_csv_in_place(tmp_path):
+    """A pre-migration decisions.csv (no co_occurring_classes column) should
+    be silently upgraded on first append. Existing rows get an empty value
+    for the new column; new rows write the value as normal. Without this,
+    DictWriter would corrupt the file by writing 11-field rows into a
+    10-field schema."""
+    csv = tmp_path / 'decisions.csv'
+    # Hand-write a legacy CSV (10 columns; no co_occurring_classes)
+    legacy_header = ('ts,source_gpkg,layer,polygon_uid,tile_id,'
+                      'predicted_class,decision,corrected_class,n_pixels,area_m2')
+    legacy_row = ('2026-06-07T19:53:00Z,vector_mc13_relabeled/hcp.gpkg,'
+                   'thresh_0.97,t1030::thresh_0.97::4,t1030,hcp,skip,,228,7557998')
+    csv.write_text(legacy_header + '\n' + legacy_row + '\n')
+
+    log = DecisionLog(str(csv))
+    log.append(_record(uid='multi::a::0', decision='confirm'))
+
+    df = pd.read_csv(csv)
+    assert 'co_occurring_classes' in df.columns
+    assert len(df) == 2
+    # Legacy row preserved
+    assert df.iloc[0]['polygon_uid'] == 't1030::thresh_0.97::4'
+    # New row has the new column (default empty in _record helper)
+    assert df.iloc[1]['polygon_uid'] == 'multi::a::0'
+
+
+def test_confirmed_writer_extra_classes_with_bland(tmp_path):
+    """Edge case: extra_classes can include 'bland' (an alias for the
+    'other' schema column). label_class=hcp + extra_classes=['bland']
+    means hcp=1.0 AND other=1.0 (a hcp-bearing dust patch, rare but valid)."""
+    pq = tmp_path / 'confirmed.parquet'
+    w = ConfirmedPixelsWriter(str(pq))
+    w.append_polygon(
+        tile_id='t0001', polygon_uid='hcp_bland::a::0',
+        rows=np.zeros(1, dtype=np.int64),
+        cols=np.zeros(1, dtype=np.int64),
+        spectra=np.zeros((1, 59), dtype=np.float32),
+        label_class='hcp', extra_classes=['bland'],
+    )
+    w.flush()
+    df = pd.read_parquet(pq)
+    assert df['hcp'].iloc[0] == 1.0
+    assert df['other'].iloc[0] == 1.0
