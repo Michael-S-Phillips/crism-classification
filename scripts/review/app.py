@@ -98,17 +98,83 @@ def compute_progress(decisions_csv: str, mineral: str,
     )
 
 
+def build_queue_dataframe(gpkg_path: str, mineral: str,
+                           decisions_csv: str) -> pd.DataFrame:
+    """Enumerate every polygon for the (gpkg, mineral) pair in queue order,
+    annotating each with its current decision status from decisions.csv.
+
+    Unlike the regular PolygonQueue, this does NOT apply the skip-decided
+    filter — the table needs to surface ALL polygons (including ones already
+    confirmed/rejected/skipped) so the user can jump back to revisit them.
+    """
+    # Build a no-skip queue
+    q_all = PolygonQueue(gpkg_path=gpkg_path, mineral=mineral,
+                          decisions_csv=None)
+    items = list(q_all)
+    if not items:
+        return pd.DataFrame(columns=['polygon_uid', 'tile_id', 'layer',
+                                       'area_m2', 'decision', 'corrected'])
+
+    # Pull current decision status for each uid
+    decided: dict[str, dict] = {}
+    if os.path.exists(decisions_csv):
+        ddf = pd.read_csv(decisions_csv)
+        if 'polygon_uid' in ddf.columns:
+            ddf_last = ddf.drop_duplicates(subset='polygon_uid', keep='last')
+            for _, row in ddf_last.iterrows():
+                decided[str(row['polygon_uid'])] = {
+                    'decision': str(row.get('decision', '') or ''),
+                    'corrected': str(row.get('corrected_class', '') or ''),
+                }
+
+    rows = []
+    for item in items:
+        d = decided.get(item.polygon_uid, {})
+        rows.append({
+            'polygon_uid': item.polygon_uid,
+            'tile_id': item.tile_id,
+            'layer': item.layer,
+            'area_m2': item.area_m2,
+            'decision': d.get('decision', ''),
+            'corrected': d.get('corrected', ''),
+        })
+    return pd.DataFrame(rows)
+
+
 def make_spectrum_figure(spectra: np.ndarray,
                           wavelengths_nm: np.ndarray) -> go.Figure:
-    """Mean + ±1σ envelope. No band markers."""
+    """Mean + ±1σ envelope, with robust handling of out-of-range pixels.
+
+    A single NODATA-sentinel or gain-stage artifact pixel can otherwise drag
+    the mean/std hundreds of units off (-600 to +400 type blowouts). We:
+
+      1. Drop pixels whose ANY band is outside the physical reflectance
+         range [-0.5, 1.5] before computing aggregates — this kills the
+         outlier influence at the source.
+      2. Use the actual trace extremes (the mean and envelope we're about
+         to draw) to decide whether to autoscale or fall back to [0, 1].
+    """
     fig = go.Figure()
     if spectra.shape[0] == 0:
-        fig.update_layout(title='no interior pixels', height=350)
+        fig.update_layout(title='no interior pixels', height=350,
+                          yaxis=dict(range=[0.0, 1.0]))
         return fig
+
+    # Step 1: drop wildly out-of-range pixels (cleans the aggregates).
+    valid_mask = ~((spectra > 1.5) | (spectra < -0.5)).any(axis=1)
+    n_dropped = int((~valid_mask).sum())
+    if not valid_mask.any():
+        fig.update_layout(title='no in-range pixels', height=350,
+                          yaxis=dict(range=[0.0, 1.0]))
+        return fig
+    if n_dropped:
+        spectra = spectra[valid_mask]
+
     mean = spectra.mean(axis=0)
     std = spectra.std(axis=0)
     upper = mean + std
     lower = mean - std
+
     fig.add_trace(go.Scatter(
         x=wavelengths_nm, y=upper, mode='lines',
         line=dict(width=0), name='envelope_upper',
@@ -124,23 +190,26 @@ def make_spectrum_figure(spectra: np.ndarray,
         x=wavelengths_nm, y=mean, mode='lines',
         line=dict(width=2, color='royalblue'), name='mean',
     ))
-    # Fall back to the physical reflectance range only when outlier pixels
-    # would otherwise compress the real signal to a flat line. Robust trigger:
-    # check the 5th/95th percentile across all pixels (a few crazy pixels
-    # won't move it) — if even those are way outside [0, 1], clamp.
+
+    # Step 2: clamp the y-axis only if the to-be-drawn data extends outside
+    # the physical reflectance range. Checks the actual traces, not raw
+    # spectra — catches the case where outliers survived the filter and
+    # still bias the mean+std.
     yaxis_args: dict = {}
-    try:
-        p5 = float(np.nanpercentile(spectra, 5))
-        p95 = float(np.nanpercentile(spectra, 95))
-        if p95 > 1.05 or p5 < -0.05:
-            yaxis_args['range'] = [0.0, 1.0]
-    except ValueError:
-        pass  # all-NaN; let plotly handle it
+    trace_max = float(np.nanmax(upper)) if upper.size else 1.0
+    trace_min = float(np.nanmin(lower)) if lower.size else 0.0
+    if trace_max > 1.05 or trace_min < -0.05:
+        yaxis_args['range'] = [0.0, 1.0]
+
+    title = None
+    if n_dropped:
+        title = f'({n_dropped:,} of {n_dropped + len(spectra):,} pixels dropped: out-of-range values)'
 
     fig.update_layout(
         xaxis_title='wavelength (nm)', yaxis_title='reflectance',
         yaxis=yaxis_args,
-        height=400, margin=dict(l=40, r=20, t=20, b=40), showlegend=False,
+        title=title, title_font_size=10,
+        height=400, margin=dict(l=40, r=20, t=30, b=40), showlegend=False,
     )
     return fig
 
@@ -380,6 +449,15 @@ def main():
             corrected_class=(corrected if decision == 'reject' else ''),
             n_pixels=n_px, area_m2=item.area_m2,
         ))
+        # Patch the cached polygon-list table so the decision column stays
+        # fresh without a full rebuild (which would be ~5 sec for large gpkgs).
+        cached_qdf = st.session_state.get('queue_df')
+        if cached_qdf is not None and not cached_qdf.empty:
+            mask = cached_qdf['polygon_uid'] == item.polygon_uid
+            if mask.any():
+                cached_qdf.loc[mask, 'decision'] = decision
+                cached_qdf.loc[mask, 'corrected'] = (
+                    corrected if decision == 'reject' else '')
         if decision == 'confirm' and bundle is not None and n_px > 0:
             confirmed_writer.append_polygon(
                 tile_id=item.tile_id, polygon_uid=item.polygon_uid,
@@ -415,6 +493,91 @@ def main():
     elif n1.button('Next →', use_container_width=True):
         _advance()
         st.rerun()
+
+    # ── Polygon list table (jump-to navigation) ────────────────────────────
+    # Cached per (gpkg, mineral) — rebuilt only when the queue changes. For
+    # large gpkgs (e.g. MC11 LCP with 80k+ polygons) the build is a few
+    # seconds; the cache makes subsequent navigations within the same
+    # mineral instant.
+    table_key = f'queue_df::{gpkg_path}::{mineral}'
+    if st.session_state.get('queue_df_key') != table_key:
+        with st.spinner(f'building polygon list for {mineral}...'):
+            st.session_state['queue_df_key'] = table_key
+            st.session_state['queue_df'] = build_queue_dataframe(
+                gpkg_path=gpkg_path, mineral=mineral,
+                decisions_csv=decisions_csv,
+            )
+    qdf = st.session_state['queue_df']
+
+    def _jump_to_uid(target_uid: str):
+        # Already in cache → just move the cursor (or append if not in history yet)
+        cache = st.session_state['cache']
+        hist = st.session_state['history']
+        if target_uid in cache:
+            if target_uid in hist:
+                st.session_state['cursor'] = hist.index(target_uid)
+            else:
+                hist.append(target_uid)
+                st.session_state['cursor'] = len(hist) - 1
+            _set_current(target_uid)
+            return
+        # Not in cache → look up via gpkg + load spectra
+        q = PolygonQueue(gpkg_path=gpkg_path, mineral=mineral)
+        found = q.lookup_items([target_uid])
+        new_item = found.get(target_uid)
+        if new_item is None:
+            st.error(f'Polygon {target_uid} not found in gpkg.')
+            return
+        try:
+            new_bundle = load_polygon_pixels(
+                geometry=new_item.geometry, tile_id=new_item.tile_id,
+                mrral_dir=mrral_dir, source_crs=new_item.source_crs,
+            )
+        except Exception as e:
+            st.error(f'Failed to load {target_uid}: {e}')
+            return
+        cache[target_uid] = (new_item, new_bundle, None)
+        hist.append(target_uid)
+        st.session_state['cursor'] = len(hist) - 1
+        _set_current(target_uid)
+
+    with st.expander(
+        f'Polygon list — {len(qdf):,} polygons in {mineral} '
+        f'(click a row to jump)', expanded=False,
+    ):
+        if qdf.empty:
+            st.info('No polygons in this gpkg/mineral combination.')
+        else:
+            sel = st.dataframe(
+                qdf,
+                selection_mode='single-row',
+                on_select='rerun',
+                hide_index=True,
+                use_container_width=True,
+                height=420,
+                column_config={
+                    'polygon_uid': st.column_config.TextColumn(
+                        'polygon_uid', width='medium'),
+                    'tile_id': st.column_config.TextColumn('tile', width='small'),
+                    'layer': st.column_config.TextColumn('layer', width='small'),
+                    'area_m2': st.column_config.NumberColumn(
+                        'area (m²)', format='%.0f', width='small'),
+                    'decision': st.column_config.TextColumn(
+                        'decision', width='small',
+                        help="confirm / reject / skip — blank = not yet decided"),
+                    'corrected': st.column_config.TextColumn(
+                        'corrected', width='small',
+                        help="if rejected, the corrected class or tag"),
+                },
+                key='polygon_list_table',
+            )
+            if sel and sel.selection and sel.selection.rows:
+                row_idx = sel.selection.rows[0]
+                target_uid = qdf.iloc[row_idx]['polygon_uid']
+                current_uid = item.polygon_uid if item else None
+                if target_uid != current_uid:
+                    _jump_to_uid(target_uid)
+                    st.rerun()
 
 
 if __name__ == '__main__':
