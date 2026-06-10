@@ -150,7 +150,7 @@ def load_thumbnail(
     source_crs: Optional[Union[str, pyproj.CRS]] = None,
     pad_factor: float = 4.0,
     min_pad_pixels: int = 30,
-    max_dimension: int = 800,
+    max_dimension: int = 500,
 ) -> Thumbnail:
     """Cropped false-color RGB of the polygon's neighborhood + outline coords.
 
