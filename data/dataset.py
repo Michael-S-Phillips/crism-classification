@@ -11,8 +11,15 @@ import torch
 from torch.utils.data import Dataset
 import rasterio
 
-LABEL_COLS_RAW = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']
+LABEL_COLS_RAW = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase',
+                  'other', 'alteration']
+# Default 5-class label set — preserved for backward compatibility with every
+# pipeline trained before 2026-06-10. Training entrypoints that want the
+# 6-class output replace this at module load time with the 6-class variant
+# (train.py does this when --with_alteration is passed).
 LABEL_COLS = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
+LABEL_COLS_WITH_ALTERATION = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other',
+                               'alteration']
 
 
 _TIER_WEIGHTS = {'high': 1.0, 'moderate': 0.85, 'low': 0.70}
@@ -42,6 +49,12 @@ def _collapse_labels(df: pd.DataFrame) -> pd.DataFrame:
     out['olivine'] = (
         out[['olivine_t1', 'olivine_t2']].max(axis=1) > 0
     ).astype(np.float32)
+    # alteration is a flat column (no t1/t2 split). For backward compat with
+    # parquets predating the 6-class schema, default to 0.0 when missing.
+    if 'alteration' not in out.columns:
+        out['alteration'] = np.float32(0.0)
+    else:
+        out['alteration'] = (out['alteration'] > 0).astype(np.float32)
     if 'confidence_tier' in out.columns:
         out['confidence_weight'] = (
             out['confidence_tier']

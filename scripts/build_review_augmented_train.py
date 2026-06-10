@@ -269,7 +269,21 @@ def main():
     # existing 5-class classifier ignores the column (it's not in LABEL_COLS);
     # the next model reads it as a positive output.
     if args.with_alteration_column:
-        out['alteration'] = 0.0
+        # Only initialize alteration=0 if the column is missing from `out`.
+        # If the existing parquet was patched via
+        # scripts/patch_mrral_pixels_with_alteration.py the column is already
+        # populated with the 111k legacy gpkg alteration positives — do not
+        # clobber them with zero.
+        if 'alteration' not in out.columns:
+            out['alteration'] = 0.0
+            print('alteration column added (initialized to 0; legacy data had no '
+                  'alteration). Consider running '
+                  'scripts/patch_mrral_pixels_with_alteration.py first to '
+                  'recover the ~111k alteration positives from the source gpkgs.')
+        legacy_alt = int((out['alteration'] > 0.5).sum())
+        if legacy_alt:
+            print(f'preserving {legacy_alt:,} legacy alteration positives '
+                  f'from the existing parquet')
         # alt_hn was already loaded once above (no re-read of the 2.6 GB file)
         if len(alt_hn) > 0:
             alt_pos = alt_hn.copy()
@@ -284,7 +298,7 @@ def main():
                         'tile_id', 'confidence_tier', 'split') else ''
             alt_pos = alt_pos[out.columns.tolist()]
             out = pd.concat([out, alt_pos], ignore_index=True)
-            print(f'+ {len(alt_pos):,} alteration-tagged rows '
+            print(f'+ {len(alt_pos):,} alteration-tagged review rows '
                   f'(positive label in `alteration` column)')
 
     print()

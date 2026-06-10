@@ -2,7 +2,8 @@
 import re
 import numpy as np
 
-CLASSES = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']
+CLASSES = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other',
+           'alteration']
 N_CLASSES = len(CLASSES)
 _CLASS_IDX = {c: i for i, c in enumerate(CLASSES)}
 
@@ -21,9 +22,12 @@ _TOKEN_MAP = {
     'hcp':            {'hcp': 1.0},
     'plagioclase':    {'plagioclase': 1.0},
     'other':          {'other': 1.0},
+    # Alteration minerals (clays, sulfates, opal, prehnite, chlorite, etc.).
+    # Was {} (silently ignored) before 2026-06-10; now mapped to its own
+    # column so the 6-class classifier can learn it as a positive output.
+    'alteration':     {'alteration': 1.0},
     # Known non-target tokens — explicitly ignored so they don't fall through
     # as unrecognised. New non-target minerals should be added here.
-    'alteration':     {},
     'red slope':      {},
     'spinel':         {},
     'pyroxene':       {},

@@ -58,6 +58,14 @@ def main():
                         help='Dropout rate for CNN/MLP (default: model default)')
     parser.add_argument('--hidden_dims', type=str, default=None,
                         help='MLP hidden dims as comma-separated ints, e.g. 512,256,128')
+    parser.add_argument(
+        '--with_alteration', action='store_true',
+        help='Use the 6-class label set (olivine, lcp, hcp, plagioclase, '
+             'other, alteration). Swaps data.dataset.LABEL_COLS to the '
+             'WITH_ALTERATION variant and auto-bumps n_classes to 6. The '
+             'parquet must contain an `alteration` column (run '
+             'scripts/patch_mrral_pixels_with_alteration.py first if the '
+             'existing single-file parquet was built before 2026-06-10).')
     parser.add_argument('--use_pos_weight', action='store_true',
                         help='Use pos_weight in loss to upweight rare classes')
     parser.add_argument('--weight_decay', type=float, default=1e-4,
@@ -169,6 +177,20 @@ def main():
         parser.error('--init_ckpt and --pretrain_ckpt are mutually exclusive '
                      '(--init_ckpt loads the full classifier; --pretrain_ckpt '
                      'loads only the encoder).')
+
+    # 6-class mode: swap LABEL_COLS BEFORE any dataset code reads it. The
+    # dataset module's CRISMSpectralPatchDataset binds the label tensor from
+    # LABEL_COLS at __init__ time, so the swap has to happen up-front.
+    if args.with_alteration:
+        import data.dataset
+        data.dataset.LABEL_COLS = list(data.dataset.LABEL_COLS_WITH_ALTERATION)
+        if args.n_classes != 6:
+            if args.n_classes != 5:
+                logging.warning(
+                    f'--with_alteration set but --n_classes={args.n_classes}; '
+                    f'forcing n_classes=6.')
+            args.n_classes = 6
+        logging.info('6-class mode: LABEL_COLS = %s', data.dataset.LABEL_COLS)
 
     # Parse class_weights once for all torch training paths. In binary mode the
     # single value is routed to pos_weight (BCE positive-sample multiplier),
