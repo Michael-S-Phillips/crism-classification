@@ -41,8 +41,11 @@ HISTORY_REHYDRATE_N = 30
 # 236 B) ≈ 252 B/pixel. A 1M-pixel LCP polygon is ~250 MB; even a small
 # entry-count cap (e.g. 40) can blow past 14 GB on big polygons, which is
 # what was OOM-killing the app. Use a total-pixel budget instead.
-MAX_CACHE_PIXELS = 500_000    # ~120 MB at 59 bands × 4 bytes per pixel
-MAX_CACHE_ENTRIES = 5         # tight backstop — the system shares RAM with other agents
+MAX_CACHE_PIXELS = 1_500_000  # ~350 MB — enough for one giant LCP polygon
+# Note: entry COUNT isn't capped anymore; eviction now drops only the bundle's
+# pixel arrays (keeping the small item+thumb tuple), so a 1000-entry history
+# with all-evicted bundles is still only a few MB of metadata.
+MAX_CACHE_ENTRIES = 9999
 # Wavelengths are tile-invariant across mc13 — the contrastive run wrote the
 # sidecar, the relabeled run did not. Both gpkg sources point at the same
 # 59-band mrral cubes, so this file is the right reference regardless of which
@@ -340,7 +343,12 @@ def main():
                     len(cache) <= MAX_CACHE_ENTRIES):
                 break
             if uid in cache and uid not in protected:
-                del cache[uid]
+                # Drop the big spectra/rows/cols arrays but keep the item
+                # metadata so we can reload the polygon on revisit (via
+                # _set_current's bundle-is-None code path). Also drop the
+                # thumbnail — small but adds up.
+                ci, _, _ = cache[uid]
+                cache[uid] = (ci, None, None)
                 evicted += 1
         if evicted:
             # Force a cycle so numpy arrays actually return memory to the
