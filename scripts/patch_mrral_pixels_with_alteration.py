@@ -37,7 +37,13 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-GPKG_DIR_DEFAULT = '/mnt/mrdr/categorized_mineral_units'
+_GPKG_DIR_CANDIDATES = [
+    '/mnt/mrdr/categorized_mineral_units',                   # local workstation
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                 'data', 'categorized_mineral_units'),       # HPC checkout
+]
+GPKG_DIR_DEFAULT = next((d for d in _GPKG_DIR_CANDIDATES if os.path.isdir(d)),
+                       _GPKG_DIR_CANDIDATES[0])
 
 
 _CONF_RE = re.compile(r'\((\w+)\)')
