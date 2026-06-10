@@ -50,7 +50,7 @@ WORKDIR="/groups/sbyrne/${USER}/crism_classification"
 DATA_ROOT="/xdisk/sbyrne/${USER}/CRISM_MRDR"
 CKPT_DIR="${WORKDIR}/checkpoints"
 ENCODER="${CKPT_DIR}/ft_review_mtrdr_best.pt"
-CACHE_DIR="${WORKDIR}/data/patch_cache_with_review"
+CACHE_DIR="${WORKDIR}/data/patch_cache_with_review_v2"
 PARQUET_BASE="${WORKDIR}/data/mrral_pixels.parquet"
 PARQUET_REVIEW="${WORKDIR}/data/mrral_pixels_with_review_v2.parquet"
 MTRDR_PATCHES="${WORKDIR}/data/contrastive/extra_plag_roi/patches.npy"
@@ -79,7 +79,7 @@ for f in "$ENCODER" "$PARQUET_BASE" "$PARQUET_REVIEW" "$MTRDR_PATCHES" "$MTRDR_R
     if [ ! -f "$f" ]; then echo "ERROR: missing $f"; exit 1; fi
 done
 if [ ! -d "$CACHE_DIR" ]; then
-    echo "ERROR: cache dir missing: $CACHE_DIR  (rebuild via hpc_build_cache_with_review.slurm)"
+    echo "ERROR: cache dir missing: $CACHE_DIR  (rebuild via hpc_build_cache_with_review_v2.slurm)"
     exit 1
 fi
 
