@@ -36,6 +36,12 @@ DEFAULT_OUT_DIR = '/mnt/mrdr/crism_classification/data/mc13_review'
 # startup. Each rehydrated polygon is metadata-only; its spectrum is
 # loaded on demand when the user actually navigates back to it.
 HISTORY_REHYDRATE_N = 30
+# Maximum number of polygons whose loaded spectra + thumbnails are held in
+# session_state at once. Large LCP polygons can carry tens of MB of pixel
+# data; without an eviction limit the cache will OOM-kill on a long review
+# session. When the cap is exceeded we drop the oldest cached spectra
+# (history UIDs stay; spectra reload on revisit via _set_current).
+MAX_CACHE_ENTRIES = 40
 # Wavelengths are tile-invariant across mc13 — the contrastive run wrote the
 # sidecar, the relabeled run did not. Both gpkg sources point at the same
 # 59-band mrral cubes, so this file is the right reference regardless of which
@@ -107,15 +113,7 @@ def build_queue_dataframe(gpkg_path: str, mineral: str,
     filter — the table needs to surface ALL polygons (including ones already
     confirmed/rejected/skipped) so the user can jump back to revisit them.
     """
-    # Build a no-skip queue
-    q_all = PolygonQueue(gpkg_path=gpkg_path, mineral=mineral,
-                          decisions_csv=None)
-    items = list(q_all)
-    if not items:
-        return pd.DataFrame(columns=['polygon_uid', 'tile_id', 'layer',
-                                       'area_m2', 'decision', 'corrected'])
-
-    # Pull current decision status for each uid
+    # Pull current decision status for each uid first (cheap)
     decided: dict[str, dict] = {}
     if os.path.exists(decisions_csv):
         ddf = pd.read_csv(decisions_csv)
@@ -127,8 +125,14 @@ def build_queue_dataframe(gpkg_path: str, mineral: str,
                     'corrected': str(row.get('corrected_class', '') or ''),
                 }
 
+    # Stream the queue rather than materializing all PolygonItems at once.
+    # On large gpkgs (e.g. MC11 LCP with ~80k polygons) the full list of
+    # shapely geometries would otherwise blow up to hundreds of MB; we only
+    # need scalar metadata for the table.
+    q_all = PolygonQueue(gpkg_path=gpkg_path, mineral=mineral,
+                          decisions_csv=None)
     rows = []
-    for item in items:
+    for item in q_all:
         d = decided.get(item.polygon_uid, {})
         rows.append({
             'polygon_uid': item.polygon_uid,
@@ -138,6 +142,12 @@ def build_queue_dataframe(gpkg_path: str, mineral: str,
             'decision': d.get('decision', ''),
             'corrected': d.get('corrected', ''),
         })
+        # item (with its shapely geometry) goes out of scope each iteration
+        # so the GC can reclaim it; no persistent reference is held.
+
+    if not rows:
+        return pd.DataFrame(columns=['polygon_uid', 'tile_id', 'layer',
+                                       'area_m2', 'decision', 'corrected'])
     return pd.DataFrame(rows)
 
 
@@ -295,9 +305,31 @@ def main():
             # fresh polygon from the queue (not a rehydrated one).
             st.session_state['cursor'] = len(st.session_state['history'])
 
+    def _evict_old_cache_entries():
+        """Drop cached spectra+thumbnails for the oldest history UIDs once we
+        exceed MAX_CACHE_ENTRIES. The history list is preserved (UIDs still
+        navigable); _set_current will lazily reload spectra when revisited."""
+        cache = st.session_state['cache']
+        if len(cache) <= MAX_CACHE_ENTRIES:
+            return
+        hist = st.session_state['history']
+        cursor = st.session_state['cursor']
+        # Keep the currently-displayed polygon and its immediate neighbors
+        # (one back, one forward) — eviction happens to the rest, oldest first.
+        protected = set()
+        for d in (-1, 0, 1):
+            i = cursor + d
+            if 0 <= i < len(hist):
+                protected.add(hist[i])
+        for uid in hist:
+            if len(cache) <= MAX_CACHE_ENTRIES:
+                break
+            if uid in cache and uid not in protected:
+                del cache[uid]
+
     def _set_current(uid: str):
         item, bundle, thumb = st.session_state['cache'][uid]
-        if bundle is None:  # rehydrated history entry — load spectra now
+        if bundle is None:  # rehydrated or evicted entry — load spectra now
             try:
                 bundle = load_polygon_pixels(
                     geometry=item.geometry, tile_id=item.tile_id,
@@ -309,6 +341,7 @@ def main():
         st.session_state['current_item'] = item
         st.session_state['current_bundle'] = bundle
         st.session_state['current_thumb'] = thumb
+        _evict_old_cache_entries()
 
     def _advance():
         cur = st.session_state['cursor']
