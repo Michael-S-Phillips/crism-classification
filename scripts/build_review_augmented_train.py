@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from typing import Optional
 
 import pandas as pd
 
@@ -35,41 +36,63 @@ REVIEW_WEIGHT = 2.0           # vs 1.0 default for existing labeled pixels
 REVIEW_TIER = 'Reviewed'
 
 
+def _read_parquet_path_or_dir(path: str) -> Optional[pd.DataFrame]:
+    """Read a parquet at ``path`` — handles both single-file (legacy) and
+    directory (per-polygon dataset) layouts. Returns None if the path is
+    missing or the directory is empty."""
+    if not os.path.exists(path):
+        return None
+    if os.path.isdir(path):
+        # Directory dataset — pyarrow reads all .parquet files in the dir as
+        # a unified table. Guard against an empty directory.
+        files = [f for f in os.listdir(path) if f.endswith('.parquet')]
+        if not files:
+            return None
+    return pd.read_parquet(path)
+
+
 def _load_confirmed(path: str) -> pd.DataFrame:
-    df = pd.read_parquet(path)
+    df = _read_parquet_path_or_dir(path)
+    if df is None or df.empty:
+        return pd.DataFrame(columns=confirmed_schema_columns())
     expected = confirmed_schema_columns()
     missing = [c for c in expected if c not in df.columns]
     if missing:
-        raise ValueError(f'confirmed_pixels.parquet missing columns: {missing}')
+        raise ValueError(f'confirmed pixel parquet missing columns: {missing}')
     return df[expected]
 
 
 def _load_corrected_hard_neg(path: str) -> pd.DataFrame:
-    """From hard_negatives.parquet, take only rows where corrected_class
+    """From hard_negatives parquet(s), take only rows where corrected_class
     was set (i.e. negative_of is blank/null) — these are positive examples
     for the corrected class."""
-    df = pd.read_parquet(path)
+    df = _read_parquet_path_or_dir(path)
+    if df is None or df.empty:
+        return pd.DataFrame(columns=confirmed_schema_columns())
     # negative_of '' or NaN → corrected positive row
     is_corrected = df['negative_of'].isna() | (df['negative_of'].astype(str) == '')
     df = df[is_corrected]
-    # Drop negative_of column to match confirmed schema
     return df[confirmed_schema_columns()]
 
 
 def _ambiguous_row_count(path: str) -> int:
-    if not os.path.exists(path):
+    df = _read_parquet_path_or_dir(path)
+    if df is None or df.empty:
         return 0
-    df = pd.read_parquet(path)
     return int((df['negative_of'].astype(str) == 'ambiguous').sum())
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--existing', default='data/mrral_pixels.parquet')
+    # As of 2026-06-10 the review app writes per-polygon parquet files into
+    # a directory; these defaults point at the new directory layout. If the
+    # legacy single-file paths are still around, pd.read_parquet handles
+    # either gracefully (see _read_parquet_path_or_dir below).
     ap.add_argument('--confirmed',
-                    default='data/mc13_review/confirmed_pixels.parquet')
+                    default='data/mc13_review/confirmed_pixels')
     ap.add_argument('--hard_negatives',
-                    default='data/mc13_review/hard_negatives.parquet')
+                    default='data/mc13_review/hard_negatives')
     ap.add_argument('--out', default='data/mrral_pixels_with_review.parquet')
     ap.add_argument('--review_weight', type=float, default=REVIEW_WEIGHT)
     ap.add_argument('--dry_run', action='store_true',

@@ -185,62 +185,95 @@ def _rows_for_polygon(
     return pd.DataFrame(data, columns=confirmed_schema_columns())
 
 
-class ConfirmedPixelsWriter:
-    """Buffered parquet writer keyed by polygon_uid (reappend = replace)."""
+def _polygon_filename(polygon_uid: str) -> str:
+    """Stable filesystem-safe filename derived from polygon_uid.
 
-    def __init__(self, parquet_path: str):
-        self.parquet_path = parquet_path
-        os.makedirs(os.path.dirname(parquet_path) or '.', exist_ok=True)
-        self._buf: dict[str, pd.DataFrame] = {}   # polygon_uid -> rows
+    Uses the same deterministic md5-based int as polygon_id in the row data,
+    so the same uid always maps to the same file. 8-char hex is filesystem-
+    safe and short."""
+    return f'p_{_polygon_id_int(polygon_uid):08x}.parquet'
+
+
+def _maybe_migrate_legacy_single_file(directory_path: str) -> None:
+    """If a legacy single-file parquet exists at ``<directory_path>.parquet``,
+    move it INTO the directory as ``legacy.parquet`` so the dataset-style
+    reads still see its rows. Idempotent: no-op once migrated.
+
+    The legacy file was created by the prior read-modify-write flush
+    pattern and could be multi-GB (2.43 GB observed in one MC11 review
+    session); the read-side wedge for parquet-into-pandas was the OOM
+    source. The new per-polygon-file pattern fixes that by never reading
+    the accumulated history during a write."""
+    legacy_single = directory_path + '.parquet'
+    legacy_target = os.path.join(directory_path, 'legacy.parquet')
+    if not os.path.exists(legacy_single):
+        return
+    if os.path.exists(legacy_target):
+        return
+    os.makedirs(directory_path, exist_ok=True)
+    # Plain rename — no data copy, instant even for 2+ GB files.
+    os.rename(legacy_single, legacy_target)
+
+
+class ConfirmedPixelsWriter:
+    """Append-only parquet dataset keyed by polygon_uid.
+
+    Each ``append_polygon`` call writes ONE small parquet file under
+    ``<output_dir>/p_<hash>.parquet`` via atomic rename. There is no
+    read-modify-write — flush() is a no-op preserved for API compatibility.
+    Re-appending the same polygon_uid overwrites its file. Drop is
+    ``os.remove(...)``. Downstream readers consume the dataset via
+    ``pd.read_parquet('<output_dir>/')`` (pyarrow union of all files).
+
+    The legacy single-file path (``<output_dir>.parquet``) is auto-migrated
+    into the directory as ``legacy.parquet`` on first instantiation so
+    historical data is preserved.
+    """
+
+    def __init__(self, output_dir: str):
+        self.output_dir = output_dir
+        _maybe_migrate_legacy_single_file(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+        # parquet_path retained as an alias so any external code reading
+        # this attribute still works; points at the directory now.
+        self.parquet_path = output_dir
 
     def append_polygon(self, *, tile_id: str, polygon_uid: str,
                         rows: np.ndarray, cols: np.ndarray,
                         spectra: np.ndarray, label_class: str,
                         extra_classes: Optional[list] = None) -> None:
         """Write rows for ``polygon_uid`` with positive labels for
-        ``label_class`` (the predicted class the user confirmed) plus every
-        class in ``extra_classes`` (co-occurring minerals the user marked).
-        The model uses multi-label loss, so multiple positives per row is the
-        correct way to represent polygons with mixed mineralogy.
-        """
+        ``label_class`` and every class in ``extra_classes`` (co-occurring
+        minerals). Writes one small file; never reads the accumulated
+        history."""
         all_classes = [label_class] + list(extra_classes or [])
         df = _rows_for_polygon(tile_id, polygon_uid, rows, cols, spectra,
                                 _label_dict_for_many(all_classes))
-        self._buf[polygon_uid] = df
+        path = os.path.join(self.output_dir, _polygon_filename(polygon_uid))
+        _atomic_write_parquet(df, path)
 
     def flush(self) -> None:
-        # Load existing parquet (if any), drop rows for any uids in buffer
-        if os.path.exists(self.parquet_path):
-            existing = pd.read_parquet(self.parquet_path)
-            # Rows in existing whose polygon_id maps to a uid we're rewriting
-            buf_polygon_ids = {_polygon_id_int(uid) for uid in self._buf}
-            existing = existing[~existing['polygon_id'].isin(buf_polygon_ids)]
-        else:
-            existing = pd.DataFrame(columns=confirmed_schema_columns())
-        all_new = pd.concat(list(self._buf.values()), ignore_index=True) \
-                  if self._buf else pd.DataFrame(columns=confirmed_schema_columns())
-        out = pd.concat([existing, all_new], ignore_index=True)
-        out = out[confirmed_schema_columns()]  # enforce column order
-        _atomic_write_parquet(out, self.parquet_path)
-        self._buf.clear()
+        # No-op: append_polygon writes atomically per call. Kept for API
+        # compatibility with the prior buffered-flush interface.
+        return
 
     def drop_polygon(self, polygon_uid: str) -> None:
-        """Remove all rows for ``polygon_uid``. No-op if parquet/rows missing."""
-        if not os.path.exists(self.parquet_path):
-            return
-        pid = _polygon_id_int(polygon_uid)
-        existing = pd.read_parquet(self.parquet_path)
-        kept = existing[existing['polygon_id'] != pid]
-        if len(kept) == len(existing):
-            return
-        _atomic_write_parquet(kept, self.parquet_path)
+        """Remove the per-polygon file for ``polygon_uid`` if present."""
+        path = os.path.join(self.output_dir, _polygon_filename(polygon_uid))
+        if os.path.exists(path):
+            os.remove(path)
 
 
 class HardNegativesWriter:
-    def __init__(self, parquet_path: str):
-        self.parquet_path = parquet_path
-        os.makedirs(os.path.dirname(parquet_path) or '.', exist_ok=True)
-        self._buf: dict[str, pd.DataFrame] = {}
+    """Same per-polygon-file pattern as ConfirmedPixelsWriter, plus the
+    ``negative_of`` column that distinguishes ¬predicted-class rejections
+    from explicit corrected-class rejections."""
+
+    def __init__(self, output_dir: str):
+        self.output_dir = output_dir
+        _maybe_migrate_legacy_single_file(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+        self.parquet_path = output_dir
 
     def append_polygon(self, *, tile_id: str, polygon_uid: str,
                         rows: np.ndarray, cols: np.ndarray,
@@ -263,29 +296,13 @@ class HardNegativesWriter:
         df = _rows_for_polygon(tile_id, polygon_uid, rows, cols, spectra, label)
         df['negative_of'] = negative_of
         df = df[hard_negatives_schema_columns()]
-        self._buf[polygon_uid] = df
+        path = os.path.join(self.output_dir, _polygon_filename(polygon_uid))
+        _atomic_write_parquet(df, path)
 
     def flush(self) -> None:
-        if os.path.exists(self.parquet_path):
-            existing = pd.read_parquet(self.parquet_path)
-            buf_polygon_ids = {_polygon_id_int(uid) for uid in self._buf}
-            existing = existing[~existing['polygon_id'].isin(buf_polygon_ids)]
-        else:
-            existing = pd.DataFrame(columns=hard_negatives_schema_columns())
-        all_new = pd.concat(list(self._buf.values()), ignore_index=True) \
-                  if self._buf else pd.DataFrame(columns=hard_negatives_schema_columns())
-        out = pd.concat([existing, all_new], ignore_index=True)
-        out = out[hard_negatives_schema_columns()]
-        _atomic_write_parquet(out, self.parquet_path)
-        self._buf.clear()
+        return
 
     def drop_polygon(self, polygon_uid: str) -> None:
-        """Remove all rows for ``polygon_uid``. No-op if parquet/rows missing."""
-        if not os.path.exists(self.parquet_path):
-            return
-        pid = _polygon_id_int(polygon_uid)
-        existing = pd.read_parquet(self.parquet_path)
-        kept = existing[existing['polygon_id'] != pid]
-        if len(kept) == len(existing):
-            return
-        _atomic_write_parquet(kept, self.parquet_path)
+        path = os.path.join(self.output_dir, _polygon_filename(polygon_uid))
+        if os.path.exists(path):
+            os.remove(path)

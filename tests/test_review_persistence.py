@@ -281,22 +281,25 @@ def test_drop_polygon_removes_rows_keyed_by_uid(tmp_path):
 
 
 def test_drop_polygon_idempotent_when_missing(tmp_path):
-    pq = tmp_path / 'confirmed.parquet'
+    """In the per-polygon-file dataset layout, dropping a uid that was never
+    written is a clean no-op (just an os.path.exists check that fails)."""
+    pq = tmp_path / 'confirmed'  # directory now, not single file
     w = ConfirmedPixelsWriter(str(pq))
-    # File doesn't exist yet — no-op
+    # The directory exists after init, but no per-polygon files in it.
+    assert os.path.isdir(pq)
+    assert len(os.listdir(pq)) == 0
+    # Drop a uid that was never written → no-op
     w.drop_polygon('x::y::0')
-    assert not os.path.exists(pq)
-    # File exists but uid not present — also no-op
+    assert len(os.listdir(pq)) == 0
+    # Write one polygon, then drop a different uid → original file survives
     w.append_polygon(tile_id='t0001', polygon_uid='real::poly::0',
                      rows=np.zeros(1, dtype=np.int64),
                      cols=np.zeros(1, dtype=np.int64),
                      spectra=np.zeros((1, 59), dtype=np.float32),
                      label_class='hcp')
-    w.flush()
-    before = pd.read_parquet(pq).copy()
+    before_count = len(os.listdir(pq))
     w.drop_polygon('nonexistent::poly::0')
-    after = pd.read_parquet(pq)
-    pd.testing.assert_frame_equal(before, after)
+    assert len(os.listdir(pq)) == before_count
 
 
 def test_hard_negatives_drop_polygon(tmp_path):
@@ -551,3 +554,75 @@ def test_confirmed_writer_extra_classes_with_bland(tmp_path):
     df = pd.read_parquet(pq)
     assert df['hcp'].iloc[0] == 1.0
     assert df['other'].iloc[0] == 1.0
+
+
+# ---- per-polygon dataset layout (OOM fix from 2026-06-10) -----------------
+
+def test_append_polygon_writes_one_file_per_polygon(tmp_path):
+    """Each append creates its own parquet file in the output directory.
+    There is NO read-modify-write of accumulated history — this is the
+    fix for the 13-14 GB OOM that the prior single-file flush caused."""
+    pq_dir = tmp_path / 'confirmed'
+    w = ConfirmedPixelsWriter(str(pq_dir))
+    for i in range(5):
+        w.append_polygon(
+            tile_id=f't{i:04d}', polygon_uid=f'multi::a::{i}',
+            rows=np.zeros(3, dtype=np.int64),
+            cols=np.zeros(3, dtype=np.int64),
+            spectra=np.zeros((3, 59), dtype=np.float32),
+            label_class='olivine',
+        )
+    files = sorted(f for f in os.listdir(pq_dir) if f.endswith('.parquet'))
+    assert len(files) == 5
+    # Read the directory as a unified dataset
+    df = pd.read_parquet(str(pq_dir))
+    assert len(df) == 15  # 5 polygons × 3 rows each
+
+
+def test_append_polygon_uid_re_append_overwrites_file(tmp_path):
+    """Re-appending the same polygon_uid replaces its file (same hash →
+    same filename → atomic-rename overwrite)."""
+    pq_dir = tmp_path / 'confirmed'
+    w = ConfirmedPixelsWriter(str(pq_dir))
+    w.append_polygon(tile_id='t0001', polygon_uid='dup::a::0',
+                     rows=np.array([0], dtype=np.int64),
+                     cols=np.array([0], dtype=np.int64),
+                     spectra=np.zeros((1, 59), dtype=np.float32),
+                     label_class='olivine')
+    w.append_polygon(tile_id='t0001', polygon_uid='dup::a::0',  # same uid
+                     rows=np.array([10, 11], dtype=np.int64),
+                     cols=np.array([20, 21], dtype=np.int64),
+                     spectra=np.ones((2, 59), dtype=np.float32),
+                     label_class='olivine')
+    df = pd.read_parquet(str(pq_dir))
+    # Only the LATEST write survives (2 rows, not 3)
+    assert len(df) == 2
+    assert df['pixel_row'].tolist() == [10, 11]
+
+
+def test_legacy_single_file_migration(tmp_path):
+    """If a pre-2026-06-10 single-file parquet exists at <dir>.parquet,
+    instantiating the writer moves it into the directory as legacy.parquet
+    so the historical data is still readable via the new dataset path."""
+    pq_dir = tmp_path / 'confirmed'
+    legacy_path = str(pq_dir) + '.parquet'
+
+    # Hand-write a legacy single-file parquet with one row
+    legacy_df = pd.DataFrame({c: [''] if c in ('tile_id', 'confidence_tier', 'split')
+                                       else [0.0] if c.startswith('m') or c in [
+                                           'olivine_t1', 'olivine_t2', 'lcp', 'hcp',
+                                           'plagioclase', 'other', 'confidence_weight',
+                                       ] else [0]
+                                       for c in confirmed_schema_columns()})
+    legacy_df.to_parquet(legacy_path)
+    assert os.path.isfile(legacy_path)
+    assert not os.path.exists(pq_dir)
+
+    w = ConfirmedPixelsWriter(str(pq_dir))
+    # After init: directory exists, legacy file moved inside
+    assert os.path.isdir(pq_dir)
+    assert not os.path.exists(legacy_path)
+    assert os.path.exists(pq_dir / 'legacy.parquet')
+    # The legacy data is still reachable via the dataset read
+    df = pd.read_parquet(str(pq_dir))
+    assert len(df) == 1

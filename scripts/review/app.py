@@ -252,8 +252,13 @@ def main():
     mrral_dir = st.sidebar.text_input('mrral tile dir', DEFAULT_MRRAL_DIR)
     out_dir = st.sidebar.text_input('output dir', DEFAULT_OUT_DIR)
     decisions_csv = os.path.join(out_dir, 'decisions.csv')
-    confirmed_pq = os.path.join(out_dir, 'confirmed_pixels.parquet')
-    hardneg_pq = os.path.join(out_dir, 'hard_negatives.parquet')
+    # Per-polygon parquet datasets (one file per decided polygon under each
+    # directory). The previous single-file design did a multi-GB
+    # read-modify-write on every decision, OOM-killing the app. If a legacy
+    # single-file parquet exists, the writers migrate it into the directory
+    # as legacy.parquet on first init.
+    confirmed_pq = os.path.join(out_dir, 'confirmed_pixels')
+    hardneg_pq = os.path.join(out_dir, 'hard_negatives')
 
     # Mineral selector
     mineral = st.radio('mineral', MINERALS, horizontal=True,
