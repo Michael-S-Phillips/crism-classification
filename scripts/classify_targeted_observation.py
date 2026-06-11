@@ -225,6 +225,7 @@ def run_inference(tile, model, device, batch_size=4096):
             total=n_batches, desc='Classifying',
         ):
             patches = normalize_patches(patches)
+            patches = np.float32(patches)
             x = torch.from_numpy(patches).to(device)
             logits = model(x)
             p = torch.sigmoid(logits).cpu().numpy()
@@ -252,9 +253,9 @@ def render_panel(probs, valid_mask, cube, out_path, run_label, band_residuals):
     rgb = np.clip(rgb, 0, 1)
     rgb[~valid_mask] = 0
 
-    # Dominant class (argmax above 0.5; else "other")
+    # Dominant class (argmax above 0.9; else "other")
     dom = np.argmax(probs, axis=-1)
-    dom[probs.max(axis=-1) < 0.5] = N_CLASSES - 1   # 'other'
+    dom[probs.max(axis=-1) < 0.9] = N_CLASSES - 1   # 'other'
     dom_rgb = np.zeros((H, W, 3), dtype=np.float32)
     for ci, hex_c in enumerate(CLASS_COLORS):
         rgb_c = np.array([int(hex_c[i:i + 2], 16) / 255 for i in (1, 3, 5)])
@@ -263,7 +264,7 @@ def render_panel(probs, valid_mask, cube, out_path, run_label, band_residuals):
 
     fig, axes = plt.subplots(2, 4, figsize=(15, 6), constrained_layout=True)
     axes[0, 0].imshow(rgb); axes[0, 0].set_title('false color')
-    axes[0, 1].imshow(dom_rgb); axes[0, 1].set_title('dominant class (>0.5)')
+    axes[0, 1].imshow(dom_rgb); axes[0, 1].set_title('dominant class (>0.9)')
 
     for ci, cname in enumerate(CLASS_NAMES):
         ax = axes[0 + ci // 4, 2 + (ci % 4) if ci < 2 else (ci - 2) % 4]
@@ -373,9 +374,9 @@ def main():
         print(f'Wrote {args.out}')
 
     # 7. Class summary
-    print('\nPer-class fraction of valid pixels with p > 0.5:')
+    print('\nPer-class fraction of valid pixels with p > 0.9:')
     for ci, cname in enumerate(CLASS_NAMES):
-        frac = float(((probs[:, :, ci] > 0.5) & valid_mask).sum() / max(1, valid_mask.sum()))
+        frac = float(((probs[:, :, ci] > 0.9) & valid_mask).sum() / max(1, valid_mask.sum()))
         print(f'  {cname:<12}  {frac * 100:>6.2f}%')
 
 
