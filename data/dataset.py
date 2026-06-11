@@ -43,7 +43,12 @@ def _collapse_labels(df: pd.DataFrame) -> pd.DataFrame:
         High:     1.0
         Moderate: 0.85
         Low:      0.70
-      Pixels with missing/unrecognised tier default to Moderate.
+      Tiers outside this map (e.g. 'Reviewed', 'Ambiguous' from the MC13
+      review pipeline) keep the confidence_weight already stamped in the
+      parquet — build_review_augmented_train.py sets those deliberately
+      (2.0 / 3.0) and they must not be clobbered. Rows with an unknown tier
+      AND no stamped weight default to Moderate. (Before 2026-06-11 this
+      function silently overwrote review weights to 0.85 — audit bug #1.)
     """
     out = df.copy()
     out['olivine'] = (
@@ -56,14 +61,20 @@ def _collapse_labels(df: pd.DataFrame) -> pd.DataFrame:
     else:
         out['alteration'] = (out['alteration'] > 0).astype(np.float32)
     if 'confidence_tier' in out.columns:
-        out['confidence_weight'] = (
+        mapped = (
             out['confidence_tier']
             .astype(str).str.lower()
             .map(_TIER_WEIGHTS)
-            .fillna(_TIER_WEIGHTS['moderate'])
-            .astype(np.float32)
         )
-    else:
+        if 'confidence_weight' in out.columns:
+            # Unknown tiers (Reviewed/Ambiguous) fall back to the stamped
+            # weight; only rows lacking both get the Moderate default.
+            mapped = mapped.fillna(
+                pd.to_numeric(out['confidence_weight'], errors='coerce'))
+        out['confidence_weight'] = (
+            mapped.fillna(_TIER_WEIGHTS['moderate']).astype(np.float32)
+        )
+    elif 'confidence_weight' not in out.columns:
         out['confidence_weight'] = np.float32(_TIER_WEIGHTS['moderate'])
     return out
 BAND_COLS = [f'b{i}' for i in range(60)]
@@ -344,6 +355,20 @@ class CRISMSpectralPatchDataset(Dataset):
         if cache_dir and split:
             cache_file = os.path.join(cache_dir, f'mrral_{split}_patches_p{patch_size}.npy')
             if os.path.exists(cache_file):
+                # The cache is a raw memmap (no npy header), so np.memmap
+                # would silently read a prefix of a stale/oversized file —
+                # exactly the failure mode when the parquet is rebuilt but
+                # the cache isn't. Require an exact byte-size match.
+                expected_bytes = self._n * patch_size * patch_size * 59 * 4
+                actual_bytes = os.path.getsize(cache_file)
+                if actual_bytes != expected_bytes:
+                    raise ValueError(
+                        f'patch cache {cache_file} is {actual_bytes:,} bytes '
+                        f'but the {split} dataframe ({self._n:,} rows) needs '
+                        f'exactly {expected_bytes:,}. The cache was built '
+                        f'from different parquet rows — rebuild it '
+                        f'(scripts/cache_mrral_patches.py) or fix '
+                        f'--patch_cache_dir.')
                 self._cache = np.memmap(
                     cache_file, dtype='float32', mode='r',
                     shape=(self._n, patch_size, patch_size, 59)

@@ -24,12 +24,20 @@ from data.dataset import CRISMSpectralPatchDataset
 
 def cache_split(split, df, mrral_map, patch_size, cache_dir):
     out_path = os.path.join(cache_dir, f'mrral_{split}_patches_p{patch_size}.npy')
-    if os.path.exists(out_path):
-        print(f'[cache] {split}: already exists at {out_path}, skipping.')
-        return
-
     sub = df[df['split'] == split].reset_index(drop=True)
     n = len(sub)
+    if os.path.exists(out_path):
+        expected_bytes = n * patch_size * patch_size * 59 * 4
+        actual_bytes = os.path.getsize(out_path)
+        if actual_bytes == expected_bytes:
+            print(f'[cache] {split}: already exists at {out_path} '
+                  f'(size matches {n:,} rows), skipping.')
+            return
+        raise SystemExit(
+            f'[cache] {split}: {out_path} exists but is {actual_bytes:,} '
+            f'bytes; current parquet rows need {expected_bytes:,}. The '
+            f'cache is stale — delete it (or use a fresh --cache_dir) and '
+            f'rerun.')
     print(f'[cache] {split}: {n:,} samples → {out_path}')
 
     fp = np.memmap(out_path, dtype='float32', mode='w+',

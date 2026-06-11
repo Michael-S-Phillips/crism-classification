@@ -264,6 +264,12 @@ def main():
     out = pd.concat(parts, ignore_index=True)
     out = out[existing.columns.tolist()]  # enforce existing column order
     del parts, existing_kept, review, ambig_df
+    # Review/ambiguous frames lack the alteration column, so the concat
+    # leaves NaN there for every review row. _collapse_labels happens to
+    # coerce NaN→0 at load time, but the raw parquet must not carry NaNs
+    # (audit 2026-06-11 found 1,005,085 of them in v2).
+    if 'alteration' in out.columns:
+        out['alteration'] = out['alteration'].fillna(0.0)
 
     # Optional: add an alteration column for the future 6-class model. The
     # existing 5-class classifier ignores the column (it's not in LABEL_COLS);

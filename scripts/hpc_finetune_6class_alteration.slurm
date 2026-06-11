@@ -10,51 +10,40 @@
 #SBATCH --output=logs/ft_6cls_alt_%j.log
 #SBATCH --error=logs/ft_6cls_alt_%j.log
 
-# Six-class fine-tune: the existing five primary mineral classes PLUS
+# Six-class fine-tune (v2, corrected): the five primary mineral classes PLUS
 # alteration as a new positive output. Goal: a classifier we can scale up
 # for global Mars-wide deployment that explicitly distinguishes alteration
 # spectra (clays, sulfates, opal, prehnite, chlorite, etc.) from primary
 # mafic minerals it currently confuses them with — especially HCP.
 #
-# Data sources folded in (all carry an `alteration` column post-build):
+# CORRECTED per the 2026-06-11 audit (wiki: Project Audit 2026-06-11):
+#   - Trains on the v2 parquet ALONE. v2 is a self-contained replacement
+#     (capped base + review rows); the earlier base+v2 concat double-counted
+#     every base row and defeated the per-polygon cap (bug #2).
+#   - data/dataset.py now preserves the stamped confidence weights for
+#     Reviewed (2.0) and Ambiguous (3.0) tiers instead of clobbering them
+#     to 0.85 (bug #1). This is the first run where the review weighting
+#     actually takes effect.
 #
-#   1. Patched mrral_pixels.parquet — 111,825 alteration-positive pixels
-#      across 157 Argyre / Hellas / Nili gpkg polygons (90k train / 12k val
-#      / 9k test). These are mineral+alteration multi-label rows (e.g.
-#      "alteration + olivine" ⇒ both olivine and alteration positive in the
-#      same row).
-#      Run BEFORE this slurm:
-#          conda run -n crism python scripts/patch_mrral_pixels_with_alteration.py
+# Prerequisites (in order):
+#   1. data/mrral_pixels.parquet patched with the alteration column:
+#          python scripts/patch_mrral_pixels_with_alteration.py
+#   2. v2 parquet built (rebuild after pulling the NaN-alteration fix):
+#          sbatch scripts/hpc_build_review_v2.slurm
+#   3. v2-only patch cache:
+#          sbatch scripts/hpc_build_cache_v2_only.slurm
 #
-#   2. data/mrral_pixels_with_review.parquet — confirmed + corrected-mineral
-#      review pixels. Built BEFORE this slurm via:
-#          conda run -n crism python scripts/build_review_augmented_train.py \
-#              --max_pixels_per_polygon 20000 \
-#              --include_ambiguous \
-#              --with_alteration_column \
-#              --out data/mrral_pixels_with_review_v2.parquet
-#      The build also folds in the 103,895 review-tagged "alteration"
-#      rejects (negative_of='alteration' in hard_negatives) as positive
-#      alteration examples, and the 34k ambiguous rejects as universal
-#      hard negatives.
-#
-#   3. data/mtrdr_plag_rows.parquet — 1,817 collaborator-contributed
-#      plagioclase ROI patches, fed via SyntheticPatchDataset.
-#
-# Encoder warm-start: ft_review_mtrdr_best.pt (yesterday's 5-class
-# champion). We pass it via --init_ckpt (not --pretrain_ckpt) because
-# the file is a fine-tune checkpoint with `model_state`, not an MAE
-# pretrain with `encoder_state`. The shape-mismatch path in train.py
-# automatically drops the 5-class head weights and reuses only the
-# encoder, leaving Linear(128, 6) freshly initialized.
-# lr_scale=0.001 preserves the encoder representation.
+# Encoder warm-start: ft_review_mtrdr_best.pt (the verified 0.7644 5-class
+# champion). Passed via --init_ckpt (it's a fine-tune checkpoint with
+# `model_state`, not an MAE ckpt with `encoder_state`); train.py drops the
+# 5-class head on shape mismatch and reuses only the encoder, leaving
+# Linear(128, 6) freshly initialized. lr_scale=0.001 preserves the encoder.
 
 WORKDIR="/groups/sbyrne/${USER}/crism_classification"
 DATA_ROOT="/xdisk/sbyrne/${USER}/CRISM_MRDR"
 CKPT_DIR="${WORKDIR}/checkpoints"
 ENCODER="${CKPT_DIR}/ft_review_mtrdr_best.pt"
-CACHE_DIR="${WORKDIR}/data/patch_cache_with_review_v2"
-PARQUET_BASE="${WORKDIR}/data/mrral_pixels.parquet"
+CACHE_DIR="${WORKDIR}/data/patch_cache_v2_only"
 PARQUET_REVIEW="${WORKDIR}/data/mrral_pixels_with_review_v2.parquet"
 MTRDR_PATCHES="${WORKDIR}/data/contrastive/extra_plag_roi/patches.npy"
 MTRDR_ROWS="${WORKDIR}/data/mtrdr_plag_rows.parquet"
@@ -78,34 +67,43 @@ EOF
 fi
 
 # Sanity checks
-for f in "$ENCODER" "$PARQUET_BASE" "$PARQUET_REVIEW" "$MTRDR_PATCHES" "$MTRDR_ROWS"; do
+for f in "$ENCODER" "$PARQUET_REVIEW" "$MTRDR_PATCHES" "$MTRDR_ROWS"; do
     if [ ! -f "$f" ]; then echo "ERROR: missing $f"; exit 1; fi
 done
 if [ ! -d "$CACHE_DIR" ]; then
-    echo "ERROR: cache dir missing: $CACHE_DIR  (rebuild via hpc_build_cache_with_review_v2.slurm)"
+    echo "ERROR: cache dir missing: $CACHE_DIR  (build via hpc_build_cache_v2_only.slurm)"
     exit 1
 fi
 
-# Verify the patched + augmented parquets actually have the alteration column
+# Verify the v2 parquet has the alteration column populated, no NaNs, and
+# that the review confidence weights survived the build.
 python -c "
 import pandas as pd
-for p in ['${PARQUET_BASE}', '${PARQUET_REVIEW}']:
-    df = pd.read_parquet(p)
-    if 'alteration' not in df.columns:
-        print(f'ERROR: {p} is missing the alteration column. '
-              'Run scripts/patch_mrral_pixels_with_alteration.py and '
-              'rebuild --with_alteration_column.')
-        raise SystemExit(1)
-    n = int((df.alteration > 0.5).sum())
-    print(f'  {p}: {n:,} alteration-positive rows')
+df = pd.read_parquet('${PARQUET_REVIEW}',
+                     columns=['alteration', 'confidence_tier',
+                              'confidence_weight'])
+n_alt = int((df.alteration > 0.5).sum())
+n_nan = int(df.alteration.isna().sum())
+print(f'  alteration positives: {n_alt:,}   NaNs: {n_nan:,}')
+if n_alt == 0:
+    print('ERROR: no alteration positives — run the patch script + rebuild v2.')
+    raise SystemExit(1)
+if n_nan:
+    print('ERROR: NaNs in alteration column — rebuild v2 with the fixed build script.')
+    raise SystemExit(1)
+rev = df[df.confidence_tier == 'Reviewed']
+if len(rev) and abs(float(rev.confidence_weight.iloc[0]) - 2.0) > 1e-6:
+    print('ERROR: Reviewed rows do not carry weight 2.0 — stale v2 parquet?')
+    raise SystemExit(1)
+print(f'  Reviewed rows: {len(rev):,} at weight 2.0 — OK')
 " || exit 1
 
 python -u scripts/train.py \
     --model spatial_vit \
-    --run_name ft_6cls_alteration \
+    --run_name ft_6cls_alteration_v2 \
     --init_ckpt "${ENCODER}" \
     --with_alteration \
-    --mrral_parquets "${PARQUET_BASE}" "${PARQUET_REVIEW}" \
+    --mrral_parquets "${PARQUET_REVIEW}" \
     --patch_cache_dir "${CACHE_DIR}" \
     --synth_train_cache "${MTRDR_PATCHES}" \
     --synth_train_parquet "${MTRDR_ROWS}" \
@@ -116,4 +114,4 @@ python -u scripts/train.py \
     --patch_size 7 \
     --asl_loss
 
-echo "=== ft_6cls_alteration done ==="
+echo "=== ft_6cls_alteration_v2 done ==="

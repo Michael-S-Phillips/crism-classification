@@ -204,10 +204,11 @@ def main():
             vals = [float(v) for v in args.class_weights.split(',')]
         except ValueError as e:
             parser.error(f'--class_weights values must be floats: {e}')
-        expected = 1 if args.binary_target_class else 5
+        expected = 1 if args.binary_target_class else args.n_classes
         if len(vals) != expected:
+            import data.dataset
             label = ('pos_weight' if args.binary_target_class
-                     else 'olivine,lcp,hcp,plagioclase,other')
+                     else ','.join(data.dataset.LABEL_COLS[:expected]))
             parser.error(f'--class_weights must have {expected} value(s) '
                          f'({label}); got {len(vals)}')
         if args.binary_target_class:
