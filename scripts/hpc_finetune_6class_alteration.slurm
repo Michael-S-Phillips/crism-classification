@@ -42,9 +42,12 @@
 #      plagioclase ROI patches, fed via SyntheticPatchDataset.
 #
 # Encoder warm-start: ft_review_mtrdr_best.pt (yesterday's 5-class
-# champion). Only the encoder weights transfer; the head is freshly
-# initialized at 6 outputs (Linear(128, 6)). lr_scale=0.001 preserves the
-# encoder representation.
+# champion). We pass it via --init_ckpt (not --pretrain_ckpt) because
+# the file is a fine-tune checkpoint with `model_state`, not an MAE
+# pretrain with `encoder_state`. The shape-mismatch path in train.py
+# automatically drops the 5-class head weights and reuses only the
+# encoder, leaving Linear(128, 6) freshly initialized.
+# lr_scale=0.001 preserves the encoder representation.
 
 WORKDIR="/groups/sbyrne/${USER}/crism_classification"
 DATA_ROOT="/xdisk/sbyrne/${USER}/CRISM_MRDR"
@@ -100,7 +103,7 @@ for p in ['${PARQUET_BASE}', '${PARQUET_REVIEW}']:
 python -u scripts/train.py \
     --model spatial_vit \
     --run_name ft_6cls_alteration \
-    --pretrain_ckpt "${ENCODER}" \
+    --init_ckpt "${ENCODER}" \
     --with_alteration \
     --mrral_parquets "${PARQUET_BASE}" "${PARQUET_REVIEW}" \
     --patch_cache_dir "${CACHE_DIR}" \
