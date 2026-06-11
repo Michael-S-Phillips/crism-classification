@@ -22,6 +22,7 @@ from torch.utils.data import DataLoader
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config_loader import load_config
 from data.dataset import (CRISMSpectralPatchDataset, LABEL_COLS, _collapse_labels,
+                          label_cols_for_ckpt,
                           apply_olivine_relabels)
 from models.spatial_spectral_transformer import SpatialSpectralClassifier
 
@@ -50,6 +51,17 @@ def main():
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), args.config))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # Load the checkpoint FIRST and size the label vocabulary from its head.
+    # data.dataset.LABEL_COLS must be rebound before the dataset is built so
+    # a 6-class ckpt gets 6-column label tensors (incl. alteration).
+    ck = torch.load(args.ckpt, map_location=device, weights_only=False)
+    state = ck["model_state"] if "model_state" in ck else ck
+    global LABEL_COLS
+    LABEL_COLS = label_cols_for_ckpt(state)
+    import data.dataset
+    data.dataset.LABEL_COLS = list(LABEL_COLS)
+    print(f"checkpoint head: {len(LABEL_COLS)}-class {LABEL_COLS}")
+
     df = pd.read_parquet(os.path.join(cfg["output_dir"], "mrral_pixels.parquet"))
     val_kind = "original"
     if args.apply_relabels:
@@ -67,10 +79,10 @@ def main():
                                    cache_dir=cfg.get("patch_cache_dir"), split="val")
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
-    model = SpatialSpectralClassifier(n_bands=59, patch_size=7, n_classes=5,
+    model = SpatialSpectralClassifier(n_bands=59, patch_size=7,
+                                      n_classes=len(LABEL_COLS),
                                       embed_dim=128, n_heads=4, n_layers=6).to(device)
-    ck = torch.load(args.ckpt, map_location=device, weights_only=False)
-    model.load_state_dict(ck["model_state"] if "model_state" in ck else ck)
+    model.load_state_dict(state)
     model.eval()
 
     ys, ts = [], []

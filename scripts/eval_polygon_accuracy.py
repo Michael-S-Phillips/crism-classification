@@ -73,7 +73,8 @@ from torch.utils.data import DataLoader
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config_loader import load_config
 from data.dataset import (CRISMSpectralPatchDataset, LABEL_COLS,
-                          _collapse_labels, apply_olivine_relabels)
+                          _collapse_labels, apply_olivine_relabels,
+                          label_cols_for_ckpt)
 from models.contrastive_encoder import ContrastiveEncoder
 from models.spatial_spectral_transformer import SpatialSpectralClassifier
 from training.losses import AsymmetricLoss
@@ -84,7 +85,10 @@ PATCH_SIZE = 7
 HALF = PATCH_SIZE // 2
 NODATA = 65535.0
 CLIP_MAX = 0.5  # must match data.dataset.CRISMSpectralPatchDataset
-N_CLASSES = 5   # LABEL_COLS == ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
+# Default 5-class; load_classifier() rebinds N_CLASSES and LABEL_COLS from
+# the checkpoint's head shape, so 6-class (--with_alteration) checkpoints
+# evaluate with alteration as a real in-vocab class.
+N_CLASSES = 5
 
 # Region heuristic. Tiles fall into one of:
 #   - argyre: T0431..T0437, T0505..T0507, T0540..T0542 (canonical argyre set)
@@ -134,8 +138,10 @@ def parse_category(cat: str) -> tuple[list[str], str]:
 
 
 def minerals_to_label_indices(mins: list[str]) -> set[int]:
-    """Map a parsed mineral list onto a set of 5-class label indices.
-    ``alteration`` and ``spinel`` are out-of-vocab and contribute nothing."""
+    """Map a parsed mineral list onto label indices for the active LABEL_COLS.
+    Out-of-vocab minerals contribute nothing — for 5-class checkpoints that
+    includes ``alteration``; for 6-class checkpoints alteration is in-vocab
+    and only ``spinel`` etc. drop out."""
     idx = set()
     for m in mins:
         if m in LABEL_COLS:
@@ -144,9 +150,10 @@ def minerals_to_label_indices(mins: list[str]) -> set[int]:
 
 
 def is_pure_in_label_space(mins: list[str]) -> bool:
-    """Pure = exactly one in-vocabulary mineral. ``alteration``/``spinel`` are
-    OOV, so a category like 'alteration + olivine' is treated as pure-olivine
-    when scoring (only one in-vocab mineral)."""
+    """Pure = exactly one in-vocabulary mineral relative to the active
+    LABEL_COLS. Under a 5-class checkpoint 'alteration + olivine' is
+    pure-olivine (alteration is OOV); under a 6-class checkpoint the same
+    polygon is multi-label and excluded from the pure-polygon metrics."""
     in_vocab = [m for m in mins if m in LABEL_COLS]
     return len(in_vocab) == 1
 
@@ -199,12 +206,20 @@ def detect_ckpt_kind(ckpt_path: str) -> str:
 
 
 def load_classifier(ckpt_path: str, device) -> SpatialSpectralClassifier:
+    global N_CLASSES, LABEL_COLS
+    ck = torch.load(ckpt_path, map_location=device, weights_only=False)
+    state = ck['model_state'] if isinstance(ck, dict) and 'model_state' in ck else ck
+    # Size the head (and the whole eval vocabulary) from the checkpoint —
+    # 5-class legacy ckpts and 6-class --with_alteration ckpts both work.
+    LABEL_COLS = label_cols_for_ckpt(state)
+    N_CLASSES = len(LABEL_COLS)
+    import data.dataset
+    data.dataset.LABEL_COLS = list(LABEL_COLS)
+    print(f'    checkpoint head: {N_CLASSES}-class {LABEL_COLS}')
     model = SpatialSpectralClassifier(
         n_bands=N_BANDS, patch_size=PATCH_SIZE, n_classes=N_CLASSES,
         embed_dim=128, n_heads=4, n_layers=6,
     ).to(device)
-    ck = torch.load(ckpt_path, map_location=device, weights_only=False)
-    state = ck['model_state'] if isinstance(ck, dict) and 'model_state' in ck else ck
     model.load_state_dict(state)
     model.eval()
     return model

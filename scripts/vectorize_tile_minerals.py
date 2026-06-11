@@ -49,6 +49,20 @@ except ImportError as e:
 
 CLASS_NAMES = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
 
+def _check_npz_channels(data, expected_channels):
+    """Fail loudly if the npz was produced by a checkpoint whose class list
+    doesn't match this script's channel constants (e.g. a 6-class alteration
+    model feeding a 5-class vectorizer would silently drop/mislabel layers)."""
+    if 'class_names' not in getattr(data, 'files', []):
+        return  # legacy 5-class npz, no metadata — assume constants are right
+    names = [str(x) for x in data['class_names']]
+    if names != list(expected_channels):
+        raise SystemExit(
+            f'npz class_names {names} != this script\'s channel order '
+            f'{list(expected_channels)}. This script needs updating for that '
+            f'checkpoint\'s class list (6-class alteration support pending).')
+
+
 
 # ---------------------------------------------------------------------------
 # Helpers (importable for testing)
@@ -211,6 +225,7 @@ def load_probs_npz(path: str) -> Tuple[np.ndarray, np.ndarray, object, object]:
     from rasterio.crs import CRS
     from rasterio.transform import Affine
     data = np.load(path, allow_pickle=True)
+    _check_npz_channels(data, CLASS_NAMES)
     probs = data['probs']
     valid_mask = data['valid_mask']
     crs = CRS.from_wkt(str(data['crs_wkt']))

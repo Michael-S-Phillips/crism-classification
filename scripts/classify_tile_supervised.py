@@ -38,9 +38,33 @@ CLIP_MAX = 0.5
 N_BANDS = 59
 PATCH_SIZE = 7
 PAD = PATCH_SIZE // 2  # 3
+# Defaults for 5-class checkpoints; _set_n_classes() rebinds all three from
+# the checkpoint's head shape so 6-class (--with_alteration) ckpts work.
 N_CLASSES = 5
 CLASS_NAMES = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
 CLASS_COLORS = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#aaaaaa']
+_CLASS_NAMES_6 = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other', 'alteration']
+_CLASS_COLORS_6 = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#aaaaaa',
+                   '#ffe119']  # alteration yellow, matches GPKG_CATEGORY_COLORS
+
+
+def _set_n_classes(state):
+    """Rebind N_CLASSES / CLASS_NAMES / CLASS_COLORS from a checkpoint
+    state_dict's head.weight shape (5- and 6-class supported)."""
+    global N_CLASSES, CLASS_NAMES, CLASS_COLORS
+    head_w = state.get('head.weight')
+    if head_w is None:
+        raise KeyError(f'no head.weight in checkpoint — not a classifier')
+    n = int(head_w.shape[0])
+    if n == N_CLASSES:
+        return
+    if n == 6:
+        N_CLASSES, CLASS_NAMES, CLASS_COLORS = 6, _CLASS_NAMES_6, _CLASS_COLORS_6
+    elif n == 5:
+        pass
+    else:
+        raise ValueError(f'unsupported head size {n} (expected 5 or 6)')
+    print(f'  checkpoint head: {N_CLASSES}-class {CLASS_NAMES}')
 
 # GeoPackage category → display color mapping
 GPKG_CATEGORY_COLORS = {
@@ -195,15 +219,16 @@ def normalize_patches(patches):
 
 
 def load_classifier(ckpt_path, device):
-    model = SpatialSpectralClassifier(
-        n_bands=N_BANDS, patch_size=PATCH_SIZE, n_classes=N_CLASSES,
-        embed_dim=128, n_heads=4, n_layers=6,
-    ).to(device)
     state = torch.load(ckpt_path, map_location=device, weights_only=False)
     if isinstance(state, dict) and 'model_state' in state:
         val_map = state.get('val_mAP', None)
         state = state['model_state']
         print(f'  val_mAP from checkpoint: {val_map:.4f}' if val_map else '')
+    _set_n_classes(state)
+    model = SpatialSpectralClassifier(
+        n_bands=N_BANDS, patch_size=PATCH_SIZE, n_classes=N_CLASSES,
+        embed_dim=128, n_heads=4, n_layers=6,
+    ).to(device)
     model.load_state_dict(state)
     model.eval()
     return model
@@ -247,7 +272,8 @@ def save_probs(path: str, probs_hw: np.ndarray, valid_mask: np.ndarray,
 
     Args:
         path: output .npz path
-        probs_hw: (H, W, N) float32 probabilities (N=5: olivine/lcp/hcp/plagioclase/other)
+        probs_hw: (H, W, N) float32 probabilities, N = len(CLASS_NAMES)
+            (5-class legacy, or 6 with alteration)
         valid_mask: (H, W) bool, True = valid pixel
         transform_arr: (6,) float64 rasterio Affine coefficients (a,b,c,d,e,f)
         crs_wkt: CRS as WKT string
@@ -258,6 +284,9 @@ def save_probs(path: str, probs_hw: np.ndarray, valid_mask: np.ndarray,
         valid_mask=valid_mask,
         transform=transform_arr,
         crs_wkt=crs_wkt,
+        # channel names — lets downstream vectorize scripts detect 5- vs
+        # 6-class (alteration) outputs instead of assuming 5
+        class_names=np.array(CLASS_NAMES),
     )
 
 
@@ -399,15 +428,16 @@ def main():
     print(f'Loading classifier: {args.ckpt}')
     if args.mrrsu_aux:
         from models.spatial_spectral_classifier_aux import SpatialSpectralClassifierAux
-        model = SpatialSpectralClassifierAux(
-            n_bands=N_BANDS, patch_size=PATCH_SIZE, n_classes=N_CLASSES,
-            embed_dim=128, n_heads=4, n_layers=6,
-        ).to(device)
         state = torch.load(args.ckpt, map_location=device, weights_only=False)
         if isinstance(state, dict) and 'model_state' in state:
             val_map = state.get('val_mAP', None)
             state = state['model_state']
             print(f'  val_mAP from checkpoint: {val_map:.4f}' if val_map else '')
+        _set_n_classes(state)
+        model = SpatialSpectralClassifierAux(
+            n_bands=N_BANDS, patch_size=PATCH_SIZE, n_classes=N_CLASSES,
+            embed_dim=128, n_heads=4, n_layers=6,
+        ).to(device)
         model.load_state_dict(state)
         model.eval()
         mrrsu_path = args.mrrsu_tile or derive_mrrsu_path(args.tile)

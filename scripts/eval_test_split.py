@@ -20,7 +20,8 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config_loader import load_config
-from data.dataset import CRISMSpectralPatchDataset, LABEL_COLS
+from data.dataset import (CRISMSpectralPatchDataset, LABEL_COLS,
+                          label_cols_for_ckpt)
 from evaluation.metrics import compute_per_class_ap, compute_map
 from models.spatial_spectral_transformer import SpatialSpectralClassifier
 
@@ -33,6 +34,18 @@ def main():
     args = parser.parse_args()
 
     cfg = load_config()
+
+    # Load the checkpoint FIRST and size the label vocabulary from its head.
+    # data.dataset.LABEL_COLS must be rebound before the dataset is built so
+    # a 6-class ckpt gets 6-column label tensors (incl. alteration).
+    ckpt = torch.load(args.ckpt, map_location="cpu", weights_only=False)
+    state = ckpt.get("model_state", ckpt.get("state_dict", ckpt))
+    global LABEL_COLS
+    LABEL_COLS = label_cols_for_ckpt(state)
+    import data.dataset
+    data.dataset.LABEL_COLS = list(LABEL_COLS)
+    print(f"checkpoint head: {len(LABEL_COLS)}-class {LABEL_COLS}")
+
     df = pd.read_parquet(os.path.join(cfg["output_dir"], "mrral_pixels.parquet"))
     df_test = df[df["split"] == "test"].reset_index(drop=True)
     print(f"test rows: {len(df_test):,}")
@@ -56,11 +69,9 @@ def main():
     print(f"dataset len: {len(ds)} (cache hit: {ds._cache is not None})")
 
     model = SpatialSpectralClassifier(
-        n_bands=59, patch_size=7, n_classes=5,
+        n_bands=59, patch_size=7, n_classes=len(LABEL_COLS),
         embed_dim=128, n_heads=4, n_layers=6, dropout=0.1,
     )
-    ckpt = torch.load(args.ckpt, map_location="cpu", weights_only=False)
-    state = ckpt.get("model_state", ckpt.get("state_dict", ckpt))
     model.load_state_dict(state)
     model.eval()
     device = "cuda" if torch.cuda.is_available() else "cpu"

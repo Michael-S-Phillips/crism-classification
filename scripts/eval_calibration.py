@@ -221,6 +221,17 @@ def main():
     model, kind = load_model_auto(args, cfg, device)
     print(f'  detected kind: {kind}')
 
+    # load_model_auto sized eval_polygon_accuracy's globals from the
+    # checkpoint head (5- or 6-class). Sync our snapshot and the dataset
+    # module BEFORE building the loader so label tensors match the head.
+    global LABEL_COLS, N_CLASSES
+    import eval_polygon_accuracy as _epa
+    import data.dataset
+    LABEL_COLS = list(_epa.LABEL_COLS)
+    N_CLASSES = len(LABEL_COLS)
+    data.dataset.LABEL_COLS = list(LABEL_COLS)
+    print(f'  label space: {N_CLASSES}-class {LABEL_COLS}')
+
     print('building val loader…')
     loader, val_df = _make_val_loader(cfg, args.batch_size, args.apply_relabels,
                                        debug_rows=args.debug_rows)

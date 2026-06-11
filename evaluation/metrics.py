@@ -6,7 +6,19 @@ from typing import Dict, List
 import numpy as np
 from sklearn.metrics import average_precision_score
 
-from data.dataset import LABEL_COLS
+import data.dataset
+
+
+def _class_names(n_classes: int) -> List[str]:
+    """Class names for an n-class score matrix, read at CALL time so the
+    train.py / eval-script LABEL_COLS rebind (6-class --with_alteration mode)
+    is honored even when this module was imported before the rebind. Falls
+    back to the canonical 6-class list when the active LABEL_COLS is shorter
+    than the score matrix (e.g. a 6-class ckpt with no rebind)."""
+    cols = data.dataset.LABEL_COLS
+    if n_classes > len(cols):
+        cols = data.dataset.LABEL_COLS_WITH_ALTERATION
+    return list(cols[:n_classes])
 
 
 def compute_map(y_true: np.ndarray, y_score: np.ndarray) -> float:
@@ -26,7 +38,7 @@ def compute_per_class_ap(
 ) -> Dict[str, float]:
     """Per-class Average Precision. Returns dict keyed by class name."""
     n_classes = y_score.shape[1]
-    class_names = LABEL_COLS[:n_classes]
+    class_names = _class_names(n_classes)
     result = {}
     for i, cls in enumerate(class_names):
         if y_true[:, i].sum() > 0:

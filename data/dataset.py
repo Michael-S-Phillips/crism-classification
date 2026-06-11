@@ -22,6 +22,30 @@ LABEL_COLS_WITH_ALTERATION = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other',
                                'alteration']
 
 
+def label_cols_for_ckpt(state_dict) -> list:
+    """Return the class-name list matching a classifier checkpoint's head.
+
+    Eval/inference scripts should call this instead of importing LABEL_COLS
+    at module level — a 6-class checkpoint (``--with_alteration``) has
+    head.weight of shape (6, 128) and needs LABEL_COLS_WITH_ALTERATION,
+    while every pre-2026-06-10 checkpoint is (5, 128). Accepts either a
+    raw state_dict or a checkpoint dict with a 'model_state' key.
+    """
+    if 'model_state' in state_dict and 'head.weight' not in state_dict:
+        state_dict = state_dict['model_state']
+    head_w = state_dict.get('head.weight')
+    if head_w is None:
+        raise KeyError("checkpoint has no 'head.weight' — not a classifier "
+                       "checkpoint (MAE/encoder-only ckpts have no head)")
+    n = int(head_w.shape[0])
+    if n == 1:
+        return ['target']  # binary mode; caller knows the target class
+    if n > len(LABEL_COLS_WITH_ALTERATION):
+        raise ValueError(f'checkpoint head has {n} outputs; no known label '
+                         f'set that large')
+    return list(LABEL_COLS_WITH_ALTERATION[:n])
+
+
 _TIER_WEIGHTS = {'high': 1.0, 'moderate': 0.85, 'low': 0.70}
 
 
