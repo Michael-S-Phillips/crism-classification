@@ -4,8 +4,8 @@
 #SBATCH --account=sbyrne
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=16gb
-#SBATCH --time=2:00:00
+#SBATCH --mem=32gb
+#SBATCH --time=10:00:00
 #SBATCH --output=logs/cache_v2_only_%j.log
 #SBATCH --error=logs/cache_v2_only_%j.log
 
@@ -39,3 +39,22 @@ python -u scripts/cache_mrral_patches.py \
 
 echo "=== v2-only cache build done ==="
 ls -la data/patch_cache_v2_only/
+
+# Verify every split cache matches its parquet row count exactly — a
+# walltime kill mid-build leaves a full-size, mostly-zero memmap that the
+# old code silently trained on (the ft_6cls_alteration failure mode).
+python -c "
+import os
+import pandas as pd
+df = pd.read_parquet('data/mrral_pixels_with_review_v2.parquet', columns=['split'])
+ok = True
+for split in ('train', 'val', 'test'):
+    n = int((df['split'] == split).sum())
+    f = f'data/patch_cache_v2_only/mrral_{split}_patches_p7.npy'
+    expected = n * 7 * 7 * 59 * 4
+    actual = os.path.getsize(f) if os.path.exists(f) else -1
+    status = 'OK' if actual == expected else 'MISMATCH'
+    if actual != expected: ok = False
+    print(f'  {split}: {actual:,} bytes (expected {expected:,}) {status}')
+raise SystemExit(0 if ok else 1)
+" || { echo 'ERROR: cache verification failed'; exit 1; }
