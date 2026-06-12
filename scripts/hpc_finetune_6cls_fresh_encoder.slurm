@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=64gb
 #SBATCH --time=5-00:00:00
-#SBATCH --array=0-2
+#SBATCH --array=0-3
 #SBATCH --output=logs/6cls_fresh_%a_%j.log
 #SBATCH --error=logs/6cls_fresh_%a_%j.log
 
@@ -29,6 +29,10 @@
 #      outperform the denoising MAE on alteration pixels; its smoothing
 #      bias hurts sharp mafic absorptions but favors the broad
 #      hydration features that define alteration)
+#   3: denoising_mae  @ lr_scale 0.01   (v3 denoising — the cont1
+#      lineage's pretrain root, here without any supervised history;
+#      completes the pretrain-objective comparison: multi-task
+#      plag-aware vs SPEND vs denoising)
 #
 # These use --pretrain_ckpt (MAE ckpts carry encoder_state), unlike the
 # warm-start sweeps which use --init_ckpt. Heads are fresh Linear(128,6).
@@ -43,11 +47,13 @@ MTRDR_ROWS=${WORK_DIR}/data/mtrdr_plag_rows.parquet
 
 RUN_NAMES=("ft_6cls_fresh_plagmae_ls0001"
            "ft_6cls_fresh_plagmae_ls001"
-           "ft_6cls_fresh_spend_ls001")
+           "ft_6cls_fresh_spend_ls001"
+           "ft_6cls_fresh_denoise_ls001")
 ENCODERS=("${CKPT_DIR}/plag_aware_mae_128d_6l_best.pt"
           "${CKPT_DIR}/plag_aware_mae_128d_6l_best.pt"
-          "${CKPT_DIR}/spatial_mae_spend_128d_6l_best.pt")
-LR_SCALES=("0.001" "0.01" "0.01")
+          "${CKPT_DIR}/spatial_mae_spend_128d_6l_best.pt"
+          "${CKPT_DIR}/spatial_mae_denoising_128d_6l_best.pt")
+LR_SCALES=("0.001" "0.01" "0.01" "0.01")
 
 RUN_NAME=${RUN_NAMES[$SLURM_ARRAY_TASK_ID]}
 ENCODER=${ENCODERS[$SLURM_ARRAY_TASK_ID]}
