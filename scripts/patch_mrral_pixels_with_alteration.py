@@ -63,6 +63,21 @@ def main():
                     default='data/mrral_pixels.parquet',
                     help='Parquet to patch in place (atomic rename).')
     ap.add_argument('--gpkg_dir', default=GPKG_DIR_DEFAULT)
+    ap.add_argument('--out', default=None,
+                    help='Write the patched parquet here instead of '
+                         'replacing --parquet in place. Use this for the '
+                         'pure-alteration lineage so the standard '
+                         'mixed-stamped parquet is left untouched.')
+    ap.add_argument('--pure_train_only', action='store_true',
+                    help='Pure-alteration training mode: polygons whose '
+                         'Category is alteration-ONLY (no mafic token) are '
+                         'stamped on all splits, but mixed "mafic + '
+                         'alteration" polygons are stamped only on val/test '
+                         'rows. Train rows from mixed polygons keep their '
+                         'mafic labels with alteration=0, so the model '
+                         'learns alteration exclusively from pure examples '
+                         'while val/test ground truth stays identical to '
+                         'the standard build (comparable AP across runs).')
     ap.add_argument('--dry_run', action='store_true',
                     help='Print stats but do not write the parquet.')
     args = ap.parse_args()
@@ -72,8 +87,11 @@ def main():
     print(f'  {len(df):,} rows  ·  {df["tile_id"].nunique()} tiles  ·  '
           f'columns include alteration: {"alteration" in df.columns}')
 
-    # Build (tile_id, polygon_id) → 1 lookup for every alteration polygon
-    alt_keys: set[tuple[str, int]] = set()
+    # Build (tile_id, polygon_id) lookups. ``pure`` = Category parses to
+    # alteration with NO other in-vocab mineral; ``mixed`` = mafic + alteration.
+    from data.label_parser import parse_category
+    pure_keys: set[tuple[str, int]] = set()
+    mixed_keys: set[tuple[str, int]] = set()
     gpkgs = sorted(glob.glob(os.path.join(args.gpkg_dir, '*.gpkg')))
     print(f'\nscanning {len(gpkgs)} gpkgs for alteration polygons:')
     n_alt_polys = 0
@@ -88,17 +106,25 @@ def main():
             continue
         if 'Category' not in gdf.columns:
             continue
-        cats = gdf['Category'].astype(str).str.lower()
-        alt_mask = cats.str.contains('alteration')
-        if not alt_mask.any():
-            continue
-        n_in_tile = int(alt_mask.sum())
-        n_alt_polys += n_in_tile
+        n_in_tile = 0
         # polygon_id == row position in the gdf (matches extract_pixels.py)
-        for idx in gdf.index[alt_mask]:
-            alt_keys.add((tid, int(idx)))
-        print(f'  {os.path.basename(path):28s} → {n_in_tile} alteration polygon(s)')
-    print(f'\ntotal alteration polygons: {n_alt_polys}')
+        for idx, cat in gdf['Category'].astype(str).items():
+            if 'alteration' not in cat.lower():
+                continue
+            n_in_tile += 1
+            lab, _w = parse_category(cat)
+            # CLASSES order: [..., 'other', 'alteration']; pure = alteration
+            # positive with no other class signal.
+            if lab[-1] > 0 and lab[:-1].sum() == 0:
+                pure_keys.add((tid, int(idx)))
+            else:
+                mixed_keys.add((tid, int(idx)))
+        if n_in_tile:
+            n_alt_polys += n_in_tile
+            print(f'  {os.path.basename(path):28s} → {n_in_tile} alteration polygon(s)')
+    alt_keys = pure_keys | mixed_keys
+    print(f'\ntotal alteration polygons: {n_alt_polys} '
+          f'({len(pure_keys)} pure, {len(mixed_keys)} mixed mafic+alt)')
     print(f'unique (tile, polygon) keys: {len(alt_keys)}')
 
     if 'alteration' in df.columns:
@@ -109,12 +135,24 @@ def main():
 
     # Vectorize: build the lookup as a multi-index, then locate matching rows
     if alt_keys:
-        key_series = pd.MultiIndex.from_tuples(list(alt_keys),
-                                                 names=['tile_id', 'polygon_id'])
         df_idx = pd.MultiIndex.from_arrays(
             [df['tile_id'].astype(str), df['polygon_id'].astype('int64')],
             names=['tile_id', 'polygon_id'])
-        mask = df_idx.isin(key_series)
+        if args.pure_train_only:
+            pure_mask = df_idx.isin(pd.MultiIndex.from_tuples(
+                list(pure_keys), names=['tile_id', 'polygon_id'])) \
+                if pure_keys else np.zeros(len(df), dtype=bool)
+            mixed_mask = df_idx.isin(pd.MultiIndex.from_tuples(
+                list(mixed_keys), names=['tile_id', 'polygon_id'])) \
+                if mixed_keys else np.zeros(len(df), dtype=bool)
+            nontrain = (df['split'] != 'train').values
+            mask = pure_mask | (mixed_mask & nontrain)
+            n_dropped = int((mixed_mask & ~nontrain).sum())
+            print(f'\npure_train_only: {n_dropped:,} train pixels from mixed '
+                  f'polygons keep mafic labels but get alteration=0')
+        else:
+            mask = df_idx.isin(pd.MultiIndex.from_tuples(
+                list(alt_keys), names=['tile_id', 'polygon_id']))
         n_pixels = int(mask.sum())
         df.loc[mask, 'alteration'] = np.float32(1.0)
         print(f'\nstamped alteration = 1.0 on {n_pixels:,} pixels '
@@ -135,10 +173,11 @@ def main():
         print('\n--dry_run set; not writing.')
         return
 
-    tmp = args.parquet + '.tmp'
+    out_path = args.out or args.parquet
+    tmp = out_path + '.tmp'
     df.to_parquet(tmp, index=False)
-    os.replace(tmp, args.parquet)
-    print(f'\nwrote {args.parquet}')
+    os.replace(tmp, out_path)
+    print(f'\nwrote {out_path}')
 
 
 if __name__ == '__main__':
