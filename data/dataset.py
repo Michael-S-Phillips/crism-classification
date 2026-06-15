@@ -352,6 +352,7 @@ class CRISMSpectralPatchDataset(Dataset):
 
     CLIP_MAX = 0.5
     NODATA = 65535.0
+    PHYS_MAX = 1.0   # reflectance (I/F) above this is corrupt → treat as nodata
 
     def __init__(
         self,
@@ -439,8 +440,13 @@ class CRISMSpectralPatchDataset(Dataset):
         ph, pw = chunk.shape[1], chunk.shape[2]
         patch[:, dr0:dr0 + ph, dc0:dc0 + pw] = chunk
 
-        # Handle nodata
-        patch[(patch == self.NODATA) | ~np.isfinite(patch)] = 0.0
+        # Handle nodata. Besides the 65535 sentinel and non-finite values,
+        # treat physically-impossible reflectance (I/F > 1.0) as nodata: the
+        # MRRAL blue edge (band 0, 410 nm) carries rare corrupt spikes up to
+        # ~860 I/F that the [0, CLIP_MAX] clip below would otherwise cap to a
+        # plausible-looking 0.5 rather than masking. Audit 2026-06-15.
+        patch[(patch == self.NODATA) | ~np.isfinite(patch)
+              | (patch > self.PHYS_MAX)] = 0.0
 
         # Normalize: clip to [0, CLIP_MAX]
         patch = np.clip(patch, 0.0, self.CLIP_MAX)

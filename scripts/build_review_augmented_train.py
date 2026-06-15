@@ -163,6 +163,17 @@ def main():
              'ignores the extra column; the next 6-class classifier uses it.')
     ap.add_argument('--seed', type=int, default=0,
                     help='Random seed for per-polygon sub-sampling.')
+    ap.add_argument(
+        '--alt_holdout_frac', type=float, default=0.0,
+        help='If >0, hold out whole alteration review polygons (negative_of='
+             'alteration) into val and test instead of putting them all in '
+             'train. A polygon-level split (by polygon_id) routes this '
+             'fraction to val and the same fraction to test, the rest to '
+             'train — giving a clean, same-distribution alteration validation '
+             'set (the MC11 review pixels) so val_AP_alteration measures real '
+             'alteration learning rather than the mafic-contaminated gpkg '
+             'polygons. Use with patch_mrral_pixels_with_alteration '
+             '--pure_only so the gpkg alteration is not also a val positive.')
     ap.add_argument('--dry_run', action='store_true',
                     help='Print stats but don\'t write the parquet.')
     args = ap.parse_args()
@@ -296,7 +307,30 @@ def main():
             alt_pos['alteration'] = 1.0
             alt_pos['confidence_weight'] = args.review_weight
             alt_pos['confidence_tier'] = REVIEW_TIER
-            alt_pos['split'] = 'train'
+            if args.alt_holdout_frac and args.alt_holdout_frac > 0:
+                # Polygon-level split: hold out whole alteration polygons into
+                # val/test so val_AP_alteration is measured on clean held-out
+                # review pixels, not the mafic-contaminated gpkg polygons.
+                f = args.alt_holdout_frac
+                polys = np.sort(alt_pos['polygon_id'].astype('int64').unique())
+                rng = np.random.default_rng(args.seed)
+                perm = rng.permutation(len(polys))
+                n_hold = max(1, int(round(len(polys) * f)))
+                test_polys = set(polys[perm[:n_hold]])
+                val_polys = set(polys[perm[n_hold:2 * n_hold]])
+                pid = alt_pos['polygon_id'].astype('int64')
+                alt_pos['split'] = np.where(
+                    pid.isin(test_polys), 'test',
+                    np.where(pid.isin(val_polys), 'val', 'train'))
+                n_tr = int((alt_pos['split'] == 'train').sum())
+                n_v = int((alt_pos['split'] == 'val').sum())
+                n_te = int((alt_pos['split'] == 'test').sum())
+                print(f'alt polygon holdout (frac={f}): {len(polys)} polygons '
+                      f'-> train {len(polys) - 2 * n_hold} / val {n_hold} / '
+                      f'test {n_hold}; pixels train {n_tr:,} / val {n_v:,} / '
+                      f'test {n_te:,}')
+            else:
+                alt_pos['split'] = 'train'
             # Ensure alt_pos has same column set as out
             for c in out.columns:
                 if c not in alt_pos.columns:

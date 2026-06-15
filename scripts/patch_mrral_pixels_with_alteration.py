@@ -68,6 +68,15 @@ def main():
                          'replacing --parquet in place. Use this for the '
                          'pure-alteration lineage so the standard '
                          'mixed-stamped parquet is left untouched.')
+    ap.add_argument('--pure_only', action='store_true',
+                    help='Stamp alteration=1 ONLY on pure-alteration gpkg '
+                         'polygons (no mafic token), on all splits. Mixed '
+                         '"mafic + alteration" polygons are never stamped — '
+                         'alteration stays 0, mafic labels intact. Use with '
+                         'build_review_augmented_train --alt_holdout_frac so '
+                         'the only alteration positives are the clean pure '
+                         'gpkg polygons + held-out MC11 review pixels, with no '
+                         'mafic-contaminated gpkg alteration anywhere.')
     ap.add_argument('--pure_train_only', action='store_true',
                     help='Pure-alteration training mode: polygons whose '
                          'Category is alteration-ONLY (no mafic token) are '
@@ -138,13 +147,18 @@ def main():
         df_idx = pd.MultiIndex.from_arrays(
             [df['tile_id'].astype(str), df['polygon_id'].astype('int64')],
             names=['tile_id', 'polygon_id'])
-        if args.pure_train_only:
-            pure_mask = df_idx.isin(pd.MultiIndex.from_tuples(
-                list(pure_keys), names=['tile_id', 'polygon_id'])) \
-                if pure_keys else np.zeros(len(df), dtype=bool)
-            mixed_mask = df_idx.isin(pd.MultiIndex.from_tuples(
-                list(mixed_keys), names=['tile_id', 'polygon_id'])) \
-                if mixed_keys else np.zeros(len(df), dtype=bool)
+        pure_mask = df_idx.isin(pd.MultiIndex.from_tuples(
+            list(pure_keys), names=['tile_id', 'polygon_id'])) \
+            if pure_keys else np.zeros(len(df), dtype=bool)
+        mixed_mask = df_idx.isin(pd.MultiIndex.from_tuples(
+            list(mixed_keys), names=['tile_id', 'polygon_id'])) \
+            if mixed_keys else np.zeros(len(df), dtype=bool)
+        if args.pure_only:
+            mask = pure_mask
+            print(f'\npure_only: stamping {int(pure_mask.sum()):,} pure-gpkg '
+                  f'pixels; {int(mixed_mask.sum()):,} mixed-gpkg pixels left '
+                  f'at alteration=0 (mafic labels intact)')
+        elif args.pure_train_only:
             nontrain = (df['split'] != 'train').values
             mask = pure_mask | (mixed_mask & nontrain)
             n_dropped = int((mixed_mask & ~nontrain).sum())
