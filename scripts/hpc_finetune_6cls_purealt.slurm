@@ -70,7 +70,7 @@ fi
 
 # Verify the pure lineage: train alteration positives should be ~104k
 # (review-tagged) — far below the ~140k of the mixed build.
-python -c "
+$PYTHON -c "
 import pandas as pd
 df = pd.read_parquet('${PARQUET}', columns=['split', 'alteration'])
 tr = df[df.split == 'train']
