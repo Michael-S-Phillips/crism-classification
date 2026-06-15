@@ -56,6 +56,9 @@ def train_torch_model(
     weight_decay: float = 1e-4,
     warmup_epochs: int = 0,
     lr_t_max: int = 50,
+    lr_schedule: str = 'cosine',
+    lr_step_size: int = 10,
+    lr_gamma: float = 0.1,
     high_conf_only: bool = False,
     use_focal_loss: bool = False,
     focal_gamma: float = 2.0,
@@ -203,16 +206,26 @@ def train_torch_model(
         trainable = [p for p in model.parameters() if p.requires_grad]
         optimizer = torch.optim.AdamW(trainable, lr=lr, weight_decay=weight_decay)
 
-    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=lr_t_max)
-    if warmup_epochs > 0:
-        warmup = torch.optim.lr_scheduler.LinearLR(
-            optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_epochs
-        )
-        scheduler = torch.optim.lr_scheduler.SequentialLR(
-            optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs]
-        )
+    if lr_schedule == 'step':
+        # Step decay: hold lr for lr_step_size epochs, then ×lr_gamma. Applied
+        # to every param group, so the encoder/head differential (encoder_lr_
+        # scale) is preserved across the decay. E.g. lr=0.01, step=10, gamma=0.1
+        # → 0.01 (ep 0-9) → 0.001 (10-19) → 1e-4 (20-29) → 1e-5 (30-39)...
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer, step_size=lr_step_size, gamma=lr_gamma)
+        logger.info(f"LR schedule: step (size={lr_step_size}, gamma={lr_gamma}, "
+                    f"base_lr={lr})")
     else:
-        scheduler = cosine
+        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=lr_t_max)
+        if warmup_epochs > 0:
+            warmup = torch.optim.lr_scheduler.LinearLR(
+                optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_epochs
+            )
+            scheduler = torch.optim.lr_scheduler.SequentialLR(
+                optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs]
+            )
+        else:
+            scheduler = cosine
 
     is_decomp = type(model).__name__ == 'DecompSpVit'
     is_decomp_adv = type(model).__name__ == 'DecompSpVitAdv'

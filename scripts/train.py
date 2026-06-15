@@ -76,6 +76,16 @@ def main():
                         help='Linear LR warmup epochs before cosine annealing (default: 0)')
     parser.add_argument('--lr_t_max', type=int, default=50,
                         help='CosineAnnealingLR T_max (default: 50)')
+    parser.add_argument('--lr_schedule', type=str, default='cosine',
+                        choices=['cosine', 'step'],
+                        help="LR schedule. 'cosine' (default) = warmup+cosine "
+                             "anneal. 'step' = hold lr for --lr_step_size "
+                             "epochs then multiply by --lr_gamma; applied to "
+                             "all param groups so encoder_lr_scale is preserved.")
+    parser.add_argument('--lr_step_size', type=int, default=10,
+                        help='StepLR: epochs between LR drops (default 10).')
+    parser.add_argument('--lr_gamma', type=float, default=0.1,
+                        help='StepLR: LR multiplier at each drop (default 0.1).')
     parser.add_argument('--high_conf_only', action='store_true',
                         help='Train on High-confidence pixels only')
     parser.add_argument('--focal_loss', action='store_true',
@@ -563,6 +573,9 @@ def main():
                 weight_decay=args.weight_decay,
                 warmup_epochs=args.warmup_epochs,
                 lr_t_max=args.lr_t_max,
+                lr_schedule=args.lr_schedule,
+                lr_step_size=args.lr_step_size,
+                lr_gamma=args.lr_gamma,
                 high_conf_only=args.high_conf_only,
                 use_focal_loss=args.focal_loss,
                 focal_gamma=args.focal_gamma,
