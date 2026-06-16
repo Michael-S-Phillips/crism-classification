@@ -589,6 +589,7 @@ def main():
                 pos_weight=binary_pos_weight_tensor,
                 synth_train_cache=args.synth_train_cache,
                 synth_train_parquet=args.synth_train_parquet,
+                stop_metric=args.stop_metric,
                 min_delta=args.min_delta,
                 freeze_encoder=args.freeze_encoder,
             )
@@ -699,6 +700,7 @@ def main():
                 use_balanced_sampling=args.balanced_sampling,
                 encoder_lr_scale=args.encoder_lr_scale,
                 class_weights=class_weights_tensor,
+                stop_metric=args.stop_metric,
                 min_delta=args.min_delta,
                 decomp_lambda_recon=args.decomp_lambda_recon,
                 decomp_lambda_eps=args.decomp_lambda_eps,
@@ -770,6 +772,7 @@ def main():
                 use_balanced_sampling=args.balanced_sampling,
                 encoder_lr_scale=args.encoder_lr_scale,
                 class_weights=class_weights_tensor,
+                stop_metric=args.stop_metric,
                 min_delta=args.min_delta,
                 decomp_lambda_recon=args.decomp_lambda_recon,
                 decomp_lambda_smooth=args.decomp_lambda_smooth,

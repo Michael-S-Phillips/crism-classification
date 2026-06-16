@@ -287,6 +287,8 @@ def train_torch_model(
     val_sub = df[df['split'] == 'val']
     best_monitored = -1.0
     best_state = None
+    best_map = -1.0       # secondary: always tracks val_mAP regardless of stop_metric
+    best_map_state = None
     patience_counter = 0
     stopped_epoch = max_epochs
     metrics = {}
@@ -398,6 +400,9 @@ def train_torch_model(
 
         metrics = compute_full_metrics(y_true, y_score, conf_tiers)
         val_map = metrics['mAP']
+        if val_map > best_map:
+            best_map = val_map
+            best_map_state = copy.deepcopy(model.state_dict())
         flat = _flatten_metrics(metrics)
         # Pick the scalar we early-stop on. Default 'val_mAP'. Any flat key works.
         if stop_metric == 'val_mAP':
@@ -458,20 +463,45 @@ def train_torch_model(
                 stopped_epoch = epoch
                 break
 
+    # Capture last-epoch weights before restoring best
+    last_state = copy.deepcopy(model.state_dict())
+
     # Restore best weights
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    # Save checkpoint
+    # Save checkpoints
     if checkpoint_dir:
         os.makedirs(checkpoint_dir, exist_ok=True)
+
+        # Primary: best on stop_metric
         ckpt_path = os.path.join(checkpoint_dir, f'{model_name}_best.pt')
         torch.save(
             {'model_state': best_state, 'stop_metric': stop_metric,
              'best_monitored': best_monitored},
             ckpt_path,
         )
-        logger.info(f"Saved checkpoint to {ckpt_path}")
+        logger.info(f"Saved checkpoint: {ckpt_path} ({stop_metric}={best_monitored:.4f})")
+
+        # Secondary: best val_mAP — only written when stop_metric differs, so the
+        # two files are never identical copies.
+        if stop_metric != 'val_mAP' and best_map_state is not None:
+            map_ckpt = os.path.join(checkpoint_dir, f'{model_name}_best_map.pt')
+            torch.save(
+                {'model_state': best_map_state, 'stop_metric': 'val_mAP',
+                 'best_monitored': best_map},
+                map_ckpt,
+            )
+            logger.info(f"Saved checkpoint: {map_ckpt} (val_mAP={best_map:.4f})")
+
+        # Last epoch (raw final-epoch weights, before best-restore above)
+        last_ckpt = os.path.join(checkpoint_dir, f'{model_name}_last.pt')
+        torch.save(
+            {'model_state': last_state, 'stop_metric': 'last', 'best_monitored': None},
+            last_ckpt,
+        )
+        logger.info(f"Saved checkpoint: {last_ckpt} (last epoch, stopped_epoch={stopped_epoch})")
+
         if use_wandb:
             import wandb as wb
             artifact = wb.Artifact(f'{model_name}-model', type='model')
