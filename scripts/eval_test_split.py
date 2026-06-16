@@ -93,9 +93,8 @@ def main():
     with torch.no_grad():
         for i, (x, y, w) in enumerate(loader):
             x = x.to(device)
-            # CRISMSpectralPatchDataset returns (B, 7, 7, 59); model wants (B, 59, 7, 7)
-            if x.shape[-1] == 59:
-                x = x.permute(0, 3, 1, 2).contiguous()
+            # CRISMSpectralPatchDataset returns (B, 7, 7, 59); SpatialSpectralClassifier
+            # expects exactly that format — no permute needed.
             logits = model(x)
             probs = torch.sigmoid(logits).cpu().numpy()
             y_true_l.append(y.numpy())
