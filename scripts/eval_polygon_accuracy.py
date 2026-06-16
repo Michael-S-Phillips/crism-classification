@@ -652,11 +652,8 @@ def aggregate_results(polygons: list[dict], inference: dict,
             'region': tile_region(p['tile_id'], regions),
             'n_pixels': int(n_pix[i]),
             'predicted_class': LABEL_COLS[pred[i]] if pred[i] >= 0 else 'NONE',
-            'prob_olivine':     float(probs[i, 0]) if not np.isnan(probs[i, 0]) else float('nan'),
-            'prob_lcp':         float(probs[i, 1]) if not np.isnan(probs[i, 1]) else float('nan'),
-            'prob_hcp':         float(probs[i, 2]) if not np.isnan(probs[i, 2]) else float('nan'),
-            'prob_plagioclase': float(probs[i, 3]) if not np.isnan(probs[i, 3]) else float('nan'),
-            'prob_other':       float(probs[i, 4]) if not np.isnan(probs[i, 4]) else float('nan'),
+            **{f'prob_{cls}': (float(probs[i, j]) if not np.isnan(probs[i, j]) else float('nan'))
+               for j, cls in enumerate(LABEL_COLS)},
             'correct': correct,
         })
     df = pd.DataFrame(rows)

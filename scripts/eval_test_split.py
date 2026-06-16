@@ -31,6 +31,12 @@ def main():
     parser.add_argument("--ckpt", required=True, help="Path to *_best.pt checkpoint")
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--parquet", default=None,
+                        help="Override default mrral_pixels.parquet path. Use to "
+                             "evaluate on a different data lineage (e.g. mc11val).")
+    parser.add_argument("--patch_cache_dir", default=None,
+                        help="Override cfg.patch_cache_dir. Must match --parquet "
+                             "if a non-default parquet is given.")
     args = parser.parse_args()
 
     cfg = load_config()
@@ -46,7 +52,9 @@ def main():
     data.dataset.LABEL_COLS = list(LABEL_COLS)
     print(f"checkpoint head: {len(LABEL_COLS)}-class {LABEL_COLS}")
 
-    df = pd.read_parquet(os.path.join(cfg["output_dir"], "mrral_pixels.parquet"))
+    parquet_path = args.parquet or os.path.join(cfg["output_dir"], "mrral_pixels.parquet")
+    print(f"parquet: {parquet_path}")
+    df = pd.read_parquet(parquet_path)
     df_test = df[df["split"] == "test"].reset_index(drop=True)
     print(f"test rows: {len(df_test):,}")
 
@@ -62,9 +70,10 @@ def main():
         mrral_map[tid] = hdr.replace(".hdr", ".img")
     print(f"mrral_map: {len(mrral_map)} tiles")
 
+    cache_dir = args.patch_cache_dir or cfg.get("patch_cache_dir")
     ds = CRISMSpectralPatchDataset(
         df_test, mrral_map, patch_size=7,
-        cache_dir=cfg["patch_cache_dir"], split="test",
+        cache_dir=cache_dir, split="test",
     )
     print(f"dataset len: {len(ds)} (cache hit: {ds._cache is not None})")
 
