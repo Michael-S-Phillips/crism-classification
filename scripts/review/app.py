@@ -29,9 +29,9 @@ from scripts.review.persistence import (
     DecisionLog, ConfirmedPixelsWriter, HardNegativesWriter,
 )
 
-DEFAULT_GPKG_DIR = '/mnt/mrdr/crism_classification/data/vector_mc13_relabeled'
+DEFAULT_GPKG_DIR = '/mnt/mrdr/crism_classification/data/vector_mc13_6cls'
 DEFAULT_MRRAL_DIR = '/mnt/mrdr/mc13'
-DEFAULT_OUT_DIR = '/mnt/mrdr/crism_classification/data/mc13_review'
+DEFAULT_OUT_DIR = '/mnt/mrdr/crism_classification/data/mc13_review_6cls'
 # How many recent decisions to pull into the Previous-button history on
 # startup. Each rehydrated polygon is metadata-only; its spectrum is
 # loaded on demand when the user actually navigates back to it.
@@ -50,10 +50,10 @@ MAX_CACHE_ENTRIES = 9999
 # sidecar, the relabeled run did not. Both gpkg sources point at the same
 # 59-band mrral cubes, so this file is the right reference regardless of which
 # vector dir we're reviewing.
-DEFAULT_WAVELENGTHS = '/mnt/mrdr/crism_classification/data/vector_mc13_contrastive/vector_mc13_contrastive_wavelengths.json'
+DEFAULT_WAVELENGTHS = '/mnt/mrdr/crism_classification/data/vector_mc13_6cls/vector_mc13_6cls_wavelengths.json'
 TARGET_PIXELS_PER_CLASS = 30000
 
-MINERALS = ['olivine', 'lcp', 'hcp', 'plagioclase']
+MINERALS = ['olivine', 'lcp', 'hcp', 'plagioclase', 'alteration']
 
 
 # ---- pure helpers (covered by tests) ---------------------------------------

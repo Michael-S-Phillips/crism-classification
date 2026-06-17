@@ -66,6 +66,12 @@ def main():
              'parquet must contain an `alteration` column (run '
              'scripts/patch_mrral_pixels_with_alteration.py first if the '
              'existing single-file parquet was built before 2026-06-10).')
+    parser.add_argument(
+        '--seven_class', action='store_true',
+        help='Use the 7-class label set (olivine, lcp, hcp, plagioclase, '
+             'bland, alteration, junk). Requires a parquet built by '
+             'scripts/build_7cls_dataset.py containing bland and junk columns. '
+             'Mutually exclusive with --with_alteration.')
     parser.add_argument('--use_pos_weight', action='store_true',
                         help='Use pos_weight in loss to upweight rare classes')
     parser.add_argument('--weight_decay', type=float, default=1e-4,
@@ -187,11 +193,19 @@ def main():
         parser.error('--init_ckpt and --pretrain_ckpt are mutually exclusive '
                      '(--init_ckpt loads the full classifier; --pretrain_ckpt '
                      'loads only the encoder).')
+    if args.seven_class and args.with_alteration:
+        parser.error('--seven_class and --with_alteration are mutually exclusive.')
 
-    # 6-class mode: swap LABEL_COLS BEFORE any dataset code reads it. The
-    # dataset module's CRISMSpectralPatchDataset binds the label tensor from
-    # LABEL_COLS at __init__ time, so the swap has to happen up-front.
-    if args.with_alteration:
+    # Class-count / LABEL_COLS swap — must happen BEFORE any dataset code reads it.
+    if args.seven_class:
+        import data.dataset
+        data.dataset.LABEL_COLS = list(data.dataset.LABEL_COLS_7CLASS)
+        if args.n_classes not in (5, 6, 7):
+            logging.warning('--seven_class set but --n_classes=%d; forcing 7.',
+                            args.n_classes)
+        args.n_classes = 7
+        logging.info('7-class mode: LABEL_COLS = %s', data.dataset.LABEL_COLS)
+    elif args.with_alteration:
         import data.dataset
         data.dataset.LABEL_COLS = list(data.dataset.LABEL_COLS_WITH_ALTERATION)
         if args.n_classes != 6:

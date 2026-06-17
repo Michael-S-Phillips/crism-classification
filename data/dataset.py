@@ -20,6 +20,17 @@ LABEL_COLS_RAW = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase',
 LABEL_COLS = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
 LABEL_COLS_WITH_ALTERATION = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other',
                                'alteration']
+# 7-class label set: bland replaces other; junk is the new spectrally-ambiguous
+# catch-all. Train with --seven_class in train.py.
+LABEL_COLS_7CLASS = ['olivine', 'lcp', 'hcp', 'plagioclase', 'bland',
+                     'alteration', 'junk']
+
+# Ordered list of all known label sets, indexed by head width.
+_LABEL_COLS_BY_N = {
+    5: LABEL_COLS,
+    6: LABEL_COLS_WITH_ALTERATION,
+    7: LABEL_COLS_7CLASS,
+}
 
 
 def label_cols_for_ckpt(state_dict) -> list:
@@ -40,10 +51,10 @@ def label_cols_for_ckpt(state_dict) -> list:
     n = int(head_w.shape[0])
     if n == 1:
         return ['target']  # binary mode; caller knows the target class
-    if n > len(LABEL_COLS_WITH_ALTERATION):
+    if n not in _LABEL_COLS_BY_N:
         raise ValueError(f'checkpoint head has {n} outputs; no known label '
-                         f'set that large')
-    return list(LABEL_COLS_WITH_ALTERATION[:n])
+                         f'set for that width (known: {sorted(_LABEL_COLS_BY_N)})')
+    return list(_LABEL_COLS_BY_N[n])
 
 
 _TIER_WEIGHTS = {'high': 1.0, 'moderate': 0.85, 'low': 0.70}
@@ -78,12 +89,22 @@ def _collapse_labels(df: pd.DataFrame) -> pd.DataFrame:
     out['olivine'] = (
         out[['olivine_t1', 'olivine_t2']].max(axis=1) > 0
     ).astype(np.float32)
-    # alteration is a flat column (no t1/t2 split). For backward compat with
-    # parquets predating the 6-class schema, default to 0.0 when missing.
+    # Flat columns added by the 6-class and 7-class pipelines. Default to 0
+    # when missing so pre-7cls parquets load without schema changes.
     if 'alteration' not in out.columns:
         out['alteration'] = np.float32(0.0)
     else:
         out['alteration'] = (out['alteration'] > 0).astype(np.float32)
+    if 'bland' not in out.columns:
+        # 5/6-class parquets use 'other' for bland tiles; mirror it here so
+        # LABEL_COLS_7CLASS['bland'] still resolves correctly.
+        out['bland'] = (out['other'] > 0).astype(np.float32) if 'other' in out.columns else np.float32(0.0)
+    else:
+        out['bland'] = (out['bland'] > 0).astype(np.float32)
+    if 'junk' not in out.columns:
+        out['junk'] = np.float32(0.0)
+    else:
+        out['junk'] = (out['junk'] > 0).astype(np.float32)
     if 'confidence_tier' in out.columns:
         mapped = (
             out['confidence_tier']

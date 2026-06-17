@@ -18,7 +18,7 @@ import pandas as pd
 
 # Order MUST match data/mrral_pixels.parquet exactly so downstream pipelines
 # (patch-cache builder, train.py) can consume the new parquet unchanged.
-_LABEL_COLS = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']
+_LABEL_COLS = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other', 'alteration']
 _DECISION_COLS = [
     'ts', 'source_gpkg', 'layer', 'polygon_uid', 'tile_id',
     'predicted_class', 'decision', 'corrected_class', 'n_pixels', 'area_m2',
@@ -147,7 +147,7 @@ def _label_dict_for_many(label_classes) -> dict[str, float]:
 def _is_mineral_class(label_class: str) -> bool:
     """True if ``label_class`` denotes a positive mineral assignment (vs. a
     non-mineral tag like 'ambiguous' that should be recorded as a negative)."""
-    return label_class in ('olivine', 'lcp', 'hcp', 'plagioclase') \
+    return label_class in ('olivine', 'lcp', 'hcp', 'plagioclase', 'alteration') \
            or label_class in _BLAND_ALIASES
 
 

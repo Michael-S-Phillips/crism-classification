@@ -406,6 +406,8 @@ def main():
                         help='Save (H,W,5) mineral prob raster to .npz for vectorization')
     parser.add_argument('--out', default=None, metavar='PATH',
                         help='Output figure path (overrides --out_dir naming)')
+    parser.add_argument('--no_plot', action='store_true',
+                        help='Skip figure generation (implied when --save_probs is set without --out)')
     parser.add_argument('--mrrsu_aux', action='store_true',
                         help='Use SpatialSpectralClassifierAux with smoothed mrrsu '
                              'RPEAK1/BD1300 features.')
@@ -499,6 +501,9 @@ def main():
     # Row 0: false color | dominant class map | (unsupervised if available)
     # Row 1: per-class probability maps (5 panels)
     # -----------------------------------------------------------------------
+    skip_plot = args.no_plot or (args.save_probs and not args.out)
+    if skip_plot:
+        return
     has_unsup = labels_clean is not None
     ncols_top = 3 if has_unsup else 2
     nrows = 2

@@ -446,11 +446,10 @@ def test_hard_neg_ambiguous_is_negative_tag_not_positive_class(tmp_path):
     assert df['negative_of'].iloc[0] == 'ambiguous'
 
 
-def test_hard_neg_alteration_is_negative_tag(tmp_path):
-    """'alteration' (clays / sulfates / opal / etc.) is a non-mineral tag,
-    same pattern as 'ambiguous': all-zero labels, negative_of='alteration'.
-    Lets downstream code single out alteration-confused rejects from the
-    truly-unknown 'ambiguous' bucket."""
+def test_hard_neg_alteration_is_positive_label(tmp_path):
+    """'alteration' is now a real 6-class output, so corrected_class='alteration'
+    produces a positive alteration label (like correcting to 'olivine' would),
+    NOT a non-mineral tag.  negative_of is left blank."""
     pq = tmp_path / 'hardneg.parquet'
     w = HardNegativesWriter(str(pq))
     w.append_polygon(
@@ -462,9 +461,10 @@ def test_hard_neg_alteration_is_negative_tag(tmp_path):
     )
     w.flush()
     df = pd.read_parquet(pq)
+    assert df['alteration'].iloc[0] == 1.0, 'alteration should be 1.0 when corrected to alteration'
     for col in ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']:
-        assert df[col].iloc[0] == 0.0, f'{col} should be 0 for alteration'
-    assert df['negative_of'].iloc[0] == 'alteration'
+        assert df[col].iloc[0] == 0.0, f'{col} should be 0 when corrected to alteration'
+    assert df['negative_of'].iloc[0] == '', 'negative_of should be blank for a mineral correction'
 
 
 # ---- Multi-label confirms (co-occurring minerals) --------------------------
