@@ -487,26 +487,41 @@ class SyntheticPatchDataset(Dataset):
     """Serves pre-synthesized plagioclase patches from a .npy + parquet fragment.
 
     Mirrors CRISMSpectralPatchDataset's __getitem__ contract:
-    returns (patch (7,7,59) float32 tensor, label (5,) tensor in LABEL_COLS order,
+    returns (patch (7,7,59) float32 tensor, label (n_cls,) tensor in LABEL_COLS order,
     weight scalar tensor). Patches are read from a memmap'd .npy aligned row-for-row
-    with the parquet fragment.
+    with the full parquet.
+
+    If `split` is given (e.g. 'train', 'val', 'test'), only rows matching that split
+    column are served; the original row indices into the npy are preserved so the
+    alignment holds even after filtering.
     """
 
-    def __init__(self, npy_path: str, parquet_path: str, patch_size: int = 7):
-        df = _collapse_labels(pd.read_parquet(parquet_path)).reset_index(drop=True)
+    def __init__(self, npy_path: str, parquet_path: str, patch_size: int = 7,
+                 split: Optional[str] = None):
+        full_df = pd.read_parquet(parquet_path)
+        full_n = len(full_df)
+        if split is not None and 'split' in full_df.columns:
+            mask = (full_df['split'] == split).values
+            df = _collapse_labels(full_df[mask].reset_index(drop=True))
+            self._indices = np.where(mask)[0]
+        else:
+            df = _collapse_labels(full_df.reset_index(drop=True))
+            self._indices = np.arange(full_n)
         self._n = len(df)
         self.labels = torch.tensor(df[LABEL_COLS].values, dtype=torch.float32)
         self.weights = torch.tensor(df['confidence_weight'].values, dtype=torch.float32)
         self._cache = np.load(npy_path, mmap_mode='r')
-        assert self._cache.shape[0] == self._n, (
-            f"patch count {self._cache.shape[0]} != parquet rows {self._n}")
+        assert self._cache.shape[0] == full_n, (
+            f"patch count {self._cache.shape[0]} != parquet rows {full_n}")
         assert self._cache.shape[1:] == (patch_size, patch_size, 59)
 
     def __len__(self):
         return self._n
 
     def __getitem__(self, idx):
-        patch = torch.from_numpy(np.asarray(self._cache[idx], dtype=np.float32).copy())
+        patch = torch.from_numpy(
+            np.asarray(self._cache[self._indices[idx]], dtype=np.float32).copy()
+        )
         return patch, self.labels[idx], self.weights[idx]
 
 

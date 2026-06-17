@@ -143,6 +143,11 @@ def main():
                         help='Path to synth_plag_patches_p7.npy to add to the train split.')
     parser.add_argument('--synth_train_parquet', type=str, default=None,
                         help='Path to synth_plag_rows.parquet (row-aligned with the cache).')
+    parser.add_argument('--synth_val_cache', type=str, default=None,
+                        help='Path to patches.npy used as synth plag val source '
+                             '(same file as synth_train_cache; val rows selected by split column).')
+    parser.add_argument('--synth_val_parquet', type=str, default=None,
+                        help='Path to parquet with split column for filtering val plag rows.')
     parser.add_argument('--mrral_parquets', nargs='+', type=str, default=None,
                         help='One or more mrral pixels parquets to use as the '
                              'training table (e.g. data/mrral_pixels.parquet '
@@ -603,6 +608,8 @@ def main():
                 pos_weight=binary_pos_weight_tensor,
                 synth_train_cache=args.synth_train_cache,
                 synth_train_parquet=args.synth_train_parquet,
+                synth_val_cache=args.synth_val_cache,
+                synth_val_parquet=args.synth_val_parquet,
                 stop_metric=args.stop_metric,
                 min_delta=args.min_delta,
                 freeze_encoder=args.freeze_encoder,

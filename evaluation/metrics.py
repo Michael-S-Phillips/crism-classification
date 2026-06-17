@@ -2,22 +2,26 @@
 Evaluation metrics for multi-label mineral classification.
 All functions accept numpy arrays.
 """
+import logging
 from typing import Dict, List
 import numpy as np
 from sklearn.metrics import average_precision_score
 
 import data.dataset
 
+logger = logging.getLogger(__name__)
+
 
 def _class_names(n_classes: int) -> List[str]:
     """Class names for an n-class score matrix, read at CALL time so the
-    train.py / eval-script LABEL_COLS rebind (6-class --with_alteration mode)
-    is honored even when this module was imported before the rebind. Falls
-    back to the canonical 6-class list when the active LABEL_COLS is shorter
-    than the score matrix (e.g. a 6-class ckpt with no rebind)."""
+    train.py / eval-script LABEL_COLS rebind (6-class / 7-class mode) is
+    honored even when this module was imported before the rebind."""
     cols = data.dataset.LABEL_COLS
     if n_classes > len(cols):
+        # Fallback ladder: try 6-class list, then 7-class list
         cols = data.dataset.LABEL_COLS_WITH_ALTERATION
+    if n_classes > len(cols):
+        cols = data.dataset.LABEL_COLS_7CLASS
     return list(cols[:n_classes])
 
 
@@ -46,7 +50,8 @@ def compute_per_class_ap(
                 (y_true[:, i] > 0.4).astype(int), y_score[:, i]
             ))
         else:
-            result[cls] = float('nan')
+            logger.warning("AP[%s]: no positive val examples — reporting 0.0", cls)
+            result[cls] = 0.0
     return result
 
 

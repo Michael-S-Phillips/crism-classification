@@ -77,6 +77,8 @@ def train_torch_model(
     pos_weight: Optional[torch.Tensor] = None,
     synth_train_cache: Optional[str] = None,
     synth_train_parquet: Optional[str] = None,
+    synth_val_cache: Optional[str] = None,
+    synth_val_parquet: Optional[str] = None,
     mrrsu_aux_dir: Optional[str] = None,
     is_aux_model: bool = False,
     min_delta: float = 0.0,
@@ -179,6 +181,13 @@ def train_torch_model(
             logger.info(f"Concatenating {len(synth_ds)} synthetic plag patches into train set")
             train_ds = ConcatDataset([train_ds, synth_ds])
         val_ds = make_dataset(val_df, 'val')
+        if synth_val_cache and synth_val_parquet:
+            from data.dataset import SyntheticPatchDataset
+            from torch.utils.data import ConcatDataset
+            synth_val_ds = SyntheticPatchDataset(
+                synth_val_cache, synth_val_parquet, split='val')
+            logger.info(f"Concatenating {len(synth_val_ds)} synthetic plag val patches")
+            val_ds = ConcatDataset([val_ds, synth_val_ds])
 
     if use_balanced_sampling:
         if synth_train_cache and synth_train_parquet:
@@ -285,6 +294,11 @@ def train_torch_model(
         ).to(device)
 
     val_sub = df[df['split'] == 'val']
+    # Extra confidence-tier entries for synth val plag (appended in loader order)
+    _synth_val_n = 0
+    if synth_val_cache and synth_val_parquet:
+        from data.dataset import SyntheticPatchDataset as _SVD
+        _synth_val_n = len(_SVD(synth_val_cache, synth_val_parquet, split='val'))
     best_monitored = -1.0
     best_state = None
     best_map = -1.0       # secondary: always tracks val_mAP regardless of stop_metric
@@ -396,7 +410,7 @@ def train_torch_model(
 
         y_score = np.concatenate(all_logits)
         y_true = np.concatenate(all_labels)
-        conf_tiers = val_sub['confidence_tier'].tolist()
+        conf_tiers = val_sub['confidence_tier'].tolist() + ['High'] * _synth_val_n
 
         metrics = compute_full_metrics(y_true, y_score, conf_tiers)
         val_map = metrics['mAP']

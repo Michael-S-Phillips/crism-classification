@@ -82,6 +82,8 @@ $PYTHON -u scripts/train.py \
     --patch_cache_dir "$CACHE_DIR" \
     --synth_train_cache "$MTRDR_PATCHES" \
     --synth_train_parquet "$MTRDR_ROWS" \
+    --synth_val_cache "$MTRDR_PATCHES" \
+    --synth_val_parquet "$MTRDR_ROWS" \
     --lr 5e-4 --encoder_lr_scale "$LR_SCALE" \
     --epochs 150 --patience 40 --min_delta 0.0005 \
     --batch_size 256 \
