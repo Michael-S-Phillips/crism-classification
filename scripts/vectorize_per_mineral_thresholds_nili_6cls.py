@@ -65,6 +65,7 @@ MARS_GEO_WKT = (
 COMMON_CRS = CRS.from_wkt(MARS_GEO_WKT)
 
 PROB_CHANNELS = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other', 'alteration']
+_PROB_CHANNELS_7 = ['olivine', 'lcp', 'hcp', 'plagioclase', 'bland', 'alteration', 'junk']
 MINERAL_NAMES = ['olivine', 'lcp', 'hcp', 'plagioclase', 'alteration']
 
 UNIFORM_THRESHOLDS = [0.50, 0.60, 0.75, 0.85, 0.90, 0.95, 0.97, 0.99]
@@ -88,13 +89,19 @@ MAX_SAT = 1.00
 
 
 def _check_npz_channels(data, expected_channels):
+    """Accept 6-class (other) or 7-class (bland+junk) npz; update PROB_CHANNELS."""
+    global PROB_CHANNELS
     if 'class_names' not in getattr(data, 'files', []):
         return
     names = [str(x) for x in data['class_names']]
-    if names != list(expected_channels):
-        raise SystemExit(
-            f'npz class_names {names} != this script\'s channel order '
-            f'{list(expected_channels)}.')
+    if names == list(expected_channels):
+        return
+    if names == _PROB_CHANNELS_7:
+        PROB_CHANNELS = _PROB_CHANNELS_7
+        return
+    raise SystemExit(
+        f'npz class_names {names} != expected channel orders '
+        f'{list(expected_channels)} or {_PROB_CHANNELS_7}.')
 
 
 def discover_tiles() -> list[dict]:
@@ -318,7 +325,7 @@ def read_wavelengths_nm(mrral_path: str) -> list:
 
 
 def main():
-    global PROBS_DIR, TILE_DIR, OUT_DIR
+    global PROBS_DIR, TILE_DIR, OUT_DIR, NILI_TILES
 
     parser = argparse.ArgumentParser(
         description='Per-mineral, per-threshold vectorization for the 4 Nili '
@@ -333,11 +340,16 @@ def main():
     parser.add_argument('--out_dir', default=DEFAULT_OUT_DIR,
                         help=f'Output directory for per-mineral GPKGs '
                              f'(default: {DEFAULT_OUT_DIR})')
+    parser.add_argument('--tiles', nargs='+', default=None,
+                        help='Override tile list (e.g. t0434 t0435). '
+                             'Default: the 4 Nili tiles.')
     args = parser.parse_args()
 
     PROBS_DIR = args.probs_dir
     TILE_DIR  = args.tile_dir
     OUT_DIR   = args.out_dir
+    if args.tiles:
+        NILI_TILES = args.tiles
     wavelengths_sidecar = os.path.join(OUT_DIR, 'vector_nili_6cls_wavelengths.json')
 
     print(f'probs_dir: {PROBS_DIR}')

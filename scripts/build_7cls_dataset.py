@@ -1,10 +1,10 @@
 """
-Build the 7-class training parquet for the v3-bland 7-class ablation.
+Build the 7-class training parquet for the v3-bland 7-class run.
 
 Design decisions:
-  - Plagioclase: zero out ALL gpkg-derived plag (Argyre/Hellas). MTRDR synth
-    rows (injected at train time via --synth_train_cache/parquet) remain the
-    sole plag source.
+  - Plagioclase: restored from Argyre/Hellas gpkg (splits from base parquet).
+    MTRDR synth rows injected additionally at train/val time via
+    --synth_train_cache/parquet and --synth_val_cache/parquet.
   - Alteration: MC11 review only (65 polygons, 103.9k pixels). No Argyre/
     Hellas/Nili gpkg alteration. Polygon-level 70/15/15 holdout so
     val_AP_alteration is measured on clean, same-distribution held-out pixels.
@@ -15,6 +15,7 @@ Design decisions:
       3. MC11 review blands (rejected polygons from MC11 review session)
   - Junk (new class): ambiguous hard_negatives (negative_of='ambiguous', 34k).
     confidence_weight=2.0, 70/15/15 tile-level split.
+  - MC13 confirmed mineral positives: tile-level 70/15/15 splits (20 tiles).
 
 Classes (7):  olivine | lcp | hcp | plagioclase | bland | alteration | junk
 
@@ -143,13 +144,20 @@ def _assign_polygon_splits(df: pd.DataFrame, seed: int) -> pd.DataFrame:
 def _stamp_7cls_cols(df: pd.DataFrame,
                      bland: float = 0.0,
                      junk: float = 0.0,
-                     alteration: float | None = None) -> pd.DataFrame:
-    """Add / reset the 7-class-specific columns on df in-place copy."""
+                     alteration: float | None = None,
+                     zero_plag: bool = True) -> pd.DataFrame:
+    """Add / reset the 7-class-specific columns on df in-place copy.
+
+    zero_plag=False preserves existing plagioclase values (for gpkg mineral rows
+    where Argyre/Hellas plag should be kept).
+    """
     out = df.copy()
     out['bland'] = np.float32(bland)
     out['junk']  = np.float32(junk)
-    # always zero out plagioclase so MTRDR synth rows are the sole source
-    out['plagioclase'] = np.float32(0.0)
+    if zero_plag:
+        out['plagioclase'] = np.float32(0.0)
+    elif 'plagioclase' not in out.columns:
+        out['plagioclase'] = np.float32(0.0)
     if alteration is not None:
         out['alteration'] = np.float32(alteration)
     elif 'alteration' not in out.columns:
@@ -169,9 +177,10 @@ def _build_base(path: str, n_bland_target: int) -> pd.DataFrame:
     bland_mask = df.get('other', pd.Series(0.0, index=df.index)) > 0
     print(f'  bland tile rows (other=1): {int(bland_mask.sum()):,}')
 
-    # ── non-bland rows: just zero plag and stamp 7cls cols ──
+    # ── non-bland rows: preserve gpkg plag (Argyre/Hellas); keep existing splits ──
     non_bland = df[~bland_mask].copy()
-    non_bland = _stamp_7cls_cols(non_bland, bland=0.0, junk=0.0, alteration=None)
+    non_bland = _stamp_7cls_cols(non_bland, bland=0.0, junk=0.0, alteration=None,
+                                  zero_plag=False)
 
     # ── bland tile rows: subsample to n_bland_target ──
     bland_df = df[bland_mask].copy()
@@ -199,11 +208,13 @@ def load_confirmed_mineral_positives(confirmed_dir: str,
     df = pd.concat(parts, ignore_index=True)
     print(f'  {len(df):,} confirmed rows')
 
-    # stamp 7cls cols
+    # stamp 7cls cols (plag in confirmed pixels is always 0 — no real plag in MC13)
     df = _stamp_7cls_cols(df, bland=0.0, junk=0.0, alteration=0.0)
     df['confidence_weight'] = np.float32(REVIEW_WEIGHT)
     df['confidence_tier']   = 'Reviewed'
-    df['split']             = 'train'  # consistent with v1/v2 behaviour
+    df = _assign_tile_splits(df, SEED + 300)
+    splits = df['split'].value_counts().to_dict()
+    print(f'  confirmed minerals: tile-level splits {splits}')
 
     # align columns to template
     for c in template.columns:
@@ -302,7 +313,7 @@ def main():
 
     n_bland = args.n_bland
 
-    # ── 1. Base parquet (gpkgs + bland tiles, plag zeroed) ───────────────────
+    # ── 1. Base parquet (gpkgs + bland tiles, gpkg plag restored) ────────────
     base = _build_base(args.base_parquet, n_bland)
 
     # ── 2. MC13 confirmed mineral positives ───────────────────────────────────

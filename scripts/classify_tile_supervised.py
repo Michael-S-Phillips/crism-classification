@@ -46,11 +46,14 @@ CLASS_COLORS = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#aaaaaa']
 _CLASS_NAMES_6 = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other', 'alteration']
 _CLASS_COLORS_6 = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#aaaaaa',
                    '#ffe119']  # alteration yellow, matches GPKG_CATEGORY_COLORS
+_CLASS_NAMES_7 = ['olivine', 'lcp', 'hcp', 'plagioclase', 'bland', 'alteration', 'junk']
+_CLASS_COLORS_7 = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#aaaaaa',
+                   '#ffe119', '#808080']
 
 
 def _set_n_classes(state):
     """Rebind N_CLASSES / CLASS_NAMES / CLASS_COLORS from a checkpoint
-    state_dict's head.weight shape (5- and 6-class supported)."""
+    state_dict's head.weight shape (5-, 6-, and 7-class supported)."""
     global N_CLASSES, CLASS_NAMES, CLASS_COLORS
     head_w = state.get('head.weight')
     if head_w is None:
@@ -60,10 +63,12 @@ def _set_n_classes(state):
         return
     if n == 6:
         N_CLASSES, CLASS_NAMES, CLASS_COLORS = 6, _CLASS_NAMES_6, _CLASS_COLORS_6
+    elif n == 7:
+        N_CLASSES, CLASS_NAMES, CLASS_COLORS = 7, _CLASS_NAMES_7, _CLASS_COLORS_7
     elif n == 5:
         pass
     else:
-        raise ValueError(f'unsupported head size {n} (expected 5 or 6)')
+        raise ValueError(f'unsupported head size {n} (expected 5, 6, or 7)')
     print(f'  checkpoint head: {N_CLASSES}-class {CLASS_NAMES}')
 
 # GeoPackage category → display color mapping

@@ -23,10 +23,11 @@
 #
 # Data: mrral_pixels_7cls.parquet + patch_cache_7cls
 #   7 classes: olivine | lcp | hcp | plagioclase | bland | alteration | junk
-#   Plag: MTRDR synth rows only (gpkg plag zeroed)
+#   Plag: Argyre/Hellas gpkg (existing splits) + MTRDR synth injected at train/val
 #   Bland: 3 balanced sources × 300k rows with 70/15/15 splits
 #   Alteration: MC11 review only, polygon-level holdout
 #   Junk: ambiguous hard_neg (34k), tile-level holdout
+#   MC13 confirmed minerals: tile-level 70/15/15 splits (20 tiles)
 #
 # Arms (standard 3-arm sweep, no frozen-encoder per convention):
 #   0: encoder_lr_scale 0.001
