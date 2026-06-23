@@ -208,6 +208,15 @@ def load_confirmed_mineral_positives(confirmed_dir: str,
     df = pd.concat(parts, ignore_index=True)
     print(f'  {len(df):,} confirmed rows')
 
+    # Per-polygon cap: confirmed positives are hyper-concentrated (olivine 73%
+    # in top-5 polygons, largest single polygon 127.8k px) and would otherwise
+    # teach the model a few memorized tiles. Cap each polygon like the bland
+    # review sources do — same remediation that fixed the ft_with_review
+    # regression. Applied before split assignment so per-class balance reflects
+    # the capped data.
+    df = _per_polygon_cap(df, MAX_PX_PER_POLYGON, SEED + 300)
+    print(f'  {len(df):,} after {MAX_PX_PER_POLYGON:,}/polygon cap')
+
     # stamp 7cls cols (plag in confirmed pixels is always 0 — no real plag in MC13)
     df = _stamp_7cls_cols(df, bland=0.0, junk=0.0, alteration=0.0)
     df['confidence_weight'] = np.float32(REVIEW_WEIGHT)
