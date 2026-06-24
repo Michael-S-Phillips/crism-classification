@@ -45,10 +45,10 @@ CLASS_NAMES = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other']
 CLASS_COLORS = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#aaaaaa']
 _CLASS_NAMES_6 = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other', 'alteration']
 _CLASS_COLORS_6 = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#aaaaaa',
-                   '#ffe119']  # alteration yellow, matches GPKG_CATEGORY_COLORS
+                   '#cc8899']  # alteration puce, matches GPKG_CATEGORY_COLORS
 _CLASS_NAMES_7 = ['olivine', 'lcp', 'hcp', 'plagioclase', 'bland', 'alteration', 'junk']
 _CLASS_COLORS_7 = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#aaaaaa',
-                   '#ffe119', '#808080']
+                   '#cc8899', '#808080']  # alteration puce
 
 
 def _set_n_classes(state):
@@ -79,7 +79,7 @@ GPKG_CATEGORY_COLORS = {
     'plagioclase':   '#f58231',
     'hcp+olivine':   '#911eb4',
     'olivine+plagio':'#42d4f4',
-    'alteration':    '#ffe119',
+    'alteration':    '#cc8899',
     'other':         '#aaaaaa',
 }
 

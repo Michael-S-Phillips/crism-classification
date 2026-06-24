@@ -81,7 +81,7 @@ MINERAL_BASE_RGB = {
     'hcp':         (1.00, 0.00, 1.00),
     'lcp':         (0.00, 1.00, 1.00),
     'plagioclase': (1.00, 0.84, 0.00),
-    'alteration':  (1.00, 0.89, 0.10),
+    'alteration':  (0.80, 0.53, 0.60),  # puce — scaled across thresholds for shades
 }
 N_LAYERS_PER_MINERAL = len(UNIFORM_THRESHOLDS)  # 8
 MIN_SAT = 0.30
