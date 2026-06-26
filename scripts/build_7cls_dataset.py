@@ -14,7 +14,7 @@ Design decisions:
       2. MC13 review blands (rejected polygons from MC13 review session)
       3. MC11 review blands (rejected polygons from MC11 review session)
   - Junk (new class): ambiguous hard_negatives (negative_of='ambiguous', 34k).
-    confidence_weight=2.0, 70/15/15 tile-level split.
+    Per-polygon reviewer confidence weight preserved, 70/15/15 tile-level split.
   - MC13 confirmed mineral positives: tile-level 70/15/15 splits (20 tiles).
 
 Classes (7):  olivine | lcp | hcp | plagioclase | bland | alteration | junk
