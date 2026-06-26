@@ -520,6 +520,11 @@ def main():
         options=['', 'olivine', 'lcp', 'hcp', 'plagioclase', 'bland', 'alteration', 'ambiguous'],
         index=0,
     )
+    confidence = st.radio(
+        'confidence', ['High', 'Moderate', 'Low'], horizontal=True, index=0,
+        help='Per-polygon training weight: High=1.0, Moderate=0.75, Low=0.5. '
+             'Applied to confirms and reject→mineral reassignments.',
+    )
     p1, b1, b2, b3, n1 = st.columns([1, 1, 1, 1, 1])
 
     def _record(decision: str):
@@ -539,6 +544,7 @@ def main():
             n_pixels=n_px, area_m2=item.area_m2,
             co_occurring_classes=(';'.join(co_occurring)
                                    if decision == 'confirm' else ''),
+            confidence=confidence,
         ))
         # Patch the cached polygon-list table so the decision column stays
         # fresh without a full rebuild (which would be ~5 sec for large gpkgs).
@@ -555,6 +561,7 @@ def main():
                 rows=bundle.rows, cols=bundle.cols, spectra=bundle.spectra,
                 label_class=mineral,
                 extra_classes=co_occurring or None,
+                confidence=confidence,
             )
             confirmed_writer.flush()
         elif decision == 'reject' and bundle is not None and n_px > 0:
@@ -563,6 +570,7 @@ def main():
                 rows=bundle.rows, cols=bundle.cols, spectra=bundle.spectra,
                 predicted_class=mineral,
                 corrected_class=(corrected or None),
+                confidence=confidence,
             )
             hardneg_writer.flush()
         _advance()
