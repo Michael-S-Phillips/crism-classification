@@ -96,6 +96,16 @@ def test_reassigned_minerals_routed_to_positives(tmp_path):
     assert set(out['confidence_weight'].unique()) == {0.5}
 
 
+def test_reassigned_minerals_routes_olivine_t2_only(tmp_path):
+    hdir = tmp_path / 'hardneg'
+    hdir.mkdir()
+    _hardneg_row(3, 'olivine_t2').to_parquet(hdir / 'p_03.parquet', index=False)
+    out = load_reassigned_minerals(str(hdir))
+    assert len(out) > 0
+    assert (out['olivine_t2'] > 0).all()
+    assert (out['bland'] == 0).all()
+
+
 def test_bland_review_excludes_mineral_reassignments(tmp_path):
     hdir = _write_hardneg_dir(tmp_path)
     out = load_bland_review(hdir, 'mc13_blands', mc13=True, seed_offset=10,

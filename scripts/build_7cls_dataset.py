@@ -113,6 +113,24 @@ def _subsample(df: pd.DataFrame, n: int, seed: int) -> pd.DataFrame:
     return df.iloc[idx].reset_index(drop=True)
 
 
+def _fill_confidence_defaults(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure confidence_weight/confidence_tier are present and NaN-free.
+
+    Files written before confidence support lack these columns; in a mixed
+    directory pd.concat leaves NaN in the rows from those files. Both cases
+    default to weight=1.0 / tier='High' (which collapse to weight 1.0
+    downstream)."""
+    if 'confidence_weight' not in df.columns:
+        df['confidence_weight'] = np.float32(1.0)
+    else:
+        df['confidence_weight'] = df['confidence_weight'].fillna(np.float32(1.0))
+    if 'confidence_tier' not in df.columns:
+        df['confidence_tier'] = 'High'
+    else:
+        df['confidence_tier'] = df['confidence_tier'].fillna('High')
+    return df
+
+
 def _assign_tile_splits(df: pd.DataFrame, seed: int) -> pd.DataFrame:
     """70/15/15 split by tile_id so val/test have distinct spatial footprints."""
     tids = np.sort(df['tile_id'].unique())
@@ -224,18 +242,8 @@ def load_confirmed_mineral_positives(confirmed_dir: str,
     # stamp 7cls cols (plag in confirmed pixels is always 0 — no real plag in MC13)
     df = _stamp_7cls_cols(df, bland=0.0, junk=0.0, alteration=0.0)
     # Preserve the per-polygon reviewer confidence weight/tier instead of the
-    # old flat REVIEW_WEIGHT override. Files written before confidence support
-    # lack these columns (or, in a mixed directory, leave NaN after concat);
-    # fill those with weight=1.0 / tier='High', which collapse to weight 1.0
-    # downstream.
-    if 'confidence_weight' not in df.columns:
-        df['confidence_weight'] = np.float32(1.0)
-    else:
-        df['confidence_weight'] = df['confidence_weight'].fillna(np.float32(1.0))
-    if 'confidence_tier' not in df.columns:
-        df['confidence_tier'] = 'High'
-    else:
-        df['confidence_tier'] = df['confidence_tier'].fillna('High')
+    # old flat REVIEW_WEIGHT override (defaults fill legacy/mixed-schema rows).
+    df = _fill_confidence_defaults(df)
     df = _assign_tile_splits(df, SEED + 300)
     splits = df['split'].value_counts().to_dict()
     print(f'  confirmed minerals: tile-level splits {splits}')
@@ -265,6 +273,7 @@ def load_bland_review(hn_dir: str, source_label: str,
     # Mineral reassignments (negative_of='' with a mineral label=1.0) share this
     # pool; they belong in load_reassigned_minerals, not the bland pool.
     df = df[~(df[_REASSIGN_MINERAL_COLS] > 0).any(axis=1)].copy()
+    print(f'  {source_label}: {len(df):,} rows after stripping mineral reassignments')
 
     df = _per_polygon_cap(df, MAX_PX_PER_POLYGON, SEED + seed_offset)
     print(f'  {source_label}: {len(df):,} after {MAX_PX_PER_POLYGON:,}/polygon cap')
@@ -308,10 +317,7 @@ def load_reassigned_minerals(hn_dir: str) -> pd.DataFrame:
     # a reject→plagioclase reassignment is a real plag positive).
     df = _stamp_7cls_cols(df, bland=0.0, junk=0.0, alteration=0.0,
                           zero_plag=False)
-    if 'confidence_weight' not in df.columns:
-        df['confidence_weight'] = np.float32(1.0)
-    if 'confidence_tier' not in df.columns:
-        df['confidence_tier'] = 'High'
+    df = _fill_confidence_defaults(df)
     return df
 
 
