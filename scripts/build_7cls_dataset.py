@@ -220,12 +220,18 @@ def load_confirmed_mineral_positives(confirmed_dir: str,
     # stamp 7cls cols (plag in confirmed pixels is always 0 — no real plag in MC13)
     df = _stamp_7cls_cols(df, bland=0.0, junk=0.0, alteration=0.0)
     # Preserve the per-polygon reviewer confidence weight/tier instead of the
-    # old flat REVIEW_WEIGHT override. Legacy confirmed files (pre-confidence)
-    # carry weight=1.0 / tier='High', which collapse to weight 1.0 downstream.
+    # old flat REVIEW_WEIGHT override. Files written before confidence support
+    # lack these columns (or, in a mixed directory, leave NaN after concat);
+    # fill those with weight=1.0 / tier='High', which collapse to weight 1.0
+    # downstream.
     if 'confidence_weight' not in df.columns:
         df['confidence_weight'] = np.float32(1.0)
+    else:
+        df['confidence_weight'] = df['confidence_weight'].fillna(np.float32(1.0))
     if 'confidence_tier' not in df.columns:
         df['confidence_tier'] = 'High'
+    else:
+        df['confidence_tier'] = df['confidence_tier'].fillna('High')
     df = _assign_tile_splits(df, SEED + 300)
     splits = df['split'].value_counts().to_dict()
     print(f'  confirmed minerals: tile-level splits {splits}')
