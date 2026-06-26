@@ -154,9 +154,11 @@ def _label_dict_for_many(label_classes) -> dict[str, float]:
 
 
 def _is_mineral_class(label_class: str) -> bool:
-    """True if ``label_class`` denotes a positive mineral assignment (vs. a
-    non-mineral tag like 'ambiguous' that should be recorded as a negative)."""
-    return label_class in ('olivine', 'lcp', 'hcp', 'plagioclase', 'alteration') \
+    """True if ``label_class`` denotes a positive label assignment (vs. a
+    tag like 'alteration'/'ambiguous' recorded via negative_of with no positive
+    label). Alteration is a tag: the 7-class build ingests it from
+    negative_of='alteration' (load_alteration_mc11), matching existing data."""
+    return label_class in ('olivine', 'lcp', 'hcp', 'plagioclase') \
            or label_class in _BLAND_ALIASES
 
 
@@ -297,15 +299,18 @@ class HardNegativesWriter:
                         corrected_class: Optional[str],
                         confidence: str = 'High') -> None:
         """Write reject rows for ``polygon_uid``. ``confidence`` is applied
-        (weight + 'Reviewed-<tier>') ONLY to mineral reassignments; pure-negative
-        and non-mineral-tag rejects keep fixed weight=1.0 / tier='High'.
+        (weight + 'Reviewed-<tier>') to ALL active assignments — both mineral
+        reassignments AND non-mineral tags (alteration, ambiguous). Only pure
+        rejects (no corrected_class) keep fixed weight=1.0 / tier='High'.
         ``confidence`` must be a key in ``REVIEW_CONFIDENCE_WEIGHTS``; an unknown
         value raises KeyError."""
         # Three cases for the reject:
-        #  - no corrected_class:    "not {predicted_class}" with no positive label
+        #  - no corrected_class:    "not {predicted_class}" with no positive label;
+        #                           fixed weight (pure discard, no reviewer opinion)
         #  - mineral corrected:     positive label for the corrected class,
         #                           stamped with the reviewer confidence weight
-        #  - non-mineral tag (e.g. 'ambiguous'): all-zero labels, negative_of=tag
+        #  - tag (e.g. 'alteration', 'ambiguous'): all-zero labels, negative_of=tag,
+        #                           stamped with the reviewer confidence weight
         weight, tier = 1.0, 'High'
         if not corrected_class:
             label = {c: 0.0 for c in _LABEL_COLS}
@@ -318,6 +323,8 @@ class HardNegativesWriter:
         else:
             label = {c: 0.0 for c in _LABEL_COLS}
             negative_of = corrected_class
+            weight = REVIEW_CONFIDENCE_WEIGHTS[confidence]
+            tier = f'Reviewed-{confidence}'
         df = _rows_for_polygon(tile_id, polygon_uid, rows, cols, spectra, label,
                                 weight=weight, tier=tier)
         df['negative_of'] = negative_of

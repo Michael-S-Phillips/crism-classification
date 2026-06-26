@@ -457,10 +457,11 @@ def test_hard_neg_ambiguous_is_negative_tag_not_positive_class(tmp_path):
     assert df['negative_of'].iloc[0] == 'ambiguous'
 
 
-def test_hard_neg_alteration_is_positive_label(tmp_path):
-    """'alteration' is now a real 6-class output, so corrected_class='alteration'
-    produces a positive alteration label (like correcting to 'olivine' would),
-    NOT a non-mineral tag.  negative_of is left blank."""
+def test_hard_neg_alteration_is_tag_not_positive_label(tmp_path):
+    """'alteration' is a tag (not a positive mineral class). corrected_class='alteration'
+    produces all-zero labels with negative_of='alteration', matching existing
+    103.9k rows produced by load_alteration_mc11. The 7-class build ingests
+    alteration exclusively from negative_of='alteration', not from label columns."""
     pq = tmp_path / 'hardneg.parquet'
     w = HardNegativesWriter(str(pq))
     w.append_polygon(
@@ -472,10 +473,10 @@ def test_hard_neg_alteration_is_positive_label(tmp_path):
     )
     w.flush()
     df = pd.read_parquet(pq)
-    assert df['alteration'].iloc[0] == 1.0, 'alteration should be 1.0 when corrected to alteration'
+    assert df['negative_of'].iloc[0] == 'alteration', 'alteration is a tag: negative_of should be alteration'
+    assert df['alteration'].iloc[0] == 0.0, 'alteration label column must be 0 (tag, not positive)'
     for col in ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']:
-        assert df[col].iloc[0] == 0.0, f'{col} should be 0 when corrected to alteration'
-    assert df['negative_of'].iloc[0] == '', 'negative_of should be blank for a mineral correction'
+        assert df[col].iloc[0] == 0.0, f'{col} should be 0 when tagged alteration'
 
 
 # ---- Multi-label confirms (co-occurring minerals) --------------------------
@@ -679,7 +680,7 @@ def test_hard_negatives_mineral_reassignment_weighted(tmp_path):
     assert df['negative_of'].iloc[0] == ''
 
 
-def test_hard_negatives_tag_reject_keeps_fixed_weight(tmp_path):
+def test_hard_negatives_tag_reject_now_weighted(tmp_path):
     pq = tmp_path / 'hardneg'
     w = HardNegativesWriter(str(pq))
     w.append_polygon(
@@ -690,8 +691,8 @@ def test_hard_negatives_tag_reject_keeps_fixed_weight(tmp_path):
         confidence='Low',
     )
     df = pd.read_parquet(str(pq))
-    assert df['confidence_weight'].iloc[0] == 1.0
-    assert df['confidence_tier'].iloc[0] == 'High'
+    assert df['confidence_weight'].iloc[0] == 0.5
+    assert df['confidence_tier'].iloc[0] == 'Reviewed-Low'
     assert df['negative_of'].iloc[0] == 'ambiguous'
 
 
@@ -709,3 +710,44 @@ def test_hard_negatives_blank_corrected_keeps_fixed_weight(tmp_path):
     assert df['confidence_weight'].iloc[0] == 1.0
     assert df['confidence_tier'].iloc[0] == 'High'
     assert df['negative_of'].iloc[0] == 'hcp'
+
+
+# ---- Task A: alteration as tag; confidence on all active-assignment branches --
+
+def test_alteration_is_not_a_mineral_class():
+    from scripts.review.persistence import _is_mineral_class
+    assert _is_mineral_class('alteration') is False
+    assert _is_mineral_class('olivine') is True
+
+
+def test_hard_negatives_alteration_tag_weighted(tmp_path):
+    pq = tmp_path / 'hardneg'
+    w = HardNegativesWriter(str(pq))
+    w.append_polygon(
+        tile_id='t0001', polygon_uid='t0001::alt::0',
+        rows=np.array([0]), cols=np.array([0]),
+        spectra=np.zeros((1, 59), dtype=np.float32),
+        predicted_class='hcp', corrected_class='alteration',
+        confidence='Moderate',
+    )
+    df = pd.read_parquet(str(pq))
+    assert df['negative_of'].iloc[0] == 'alteration'
+    assert df['alteration'].iloc[0] == 0.0          # tag, not a positive label
+    assert df['confidence_weight'].iloc[0] == 0.75
+    assert df['confidence_tier'].iloc[0] == 'Reviewed-Moderate'
+
+
+def test_hard_negatives_ambiguous_tag_weighted(tmp_path):
+    pq = tmp_path / 'hardneg'
+    w = HardNegativesWriter(str(pq))
+    w.append_polygon(
+        tile_id='t0001', polygon_uid='t0001::amb::0',
+        rows=np.array([0]), cols=np.array([0]),
+        spectra=np.zeros((1, 59), dtype=np.float32),
+        predicted_class='hcp', corrected_class='ambiguous',
+        confidence='Low',
+    )
+    df = pd.read_parquet(str(pq))
+    assert df['negative_of'].iloc[0] == 'ambiguous'
+    assert df['confidence_weight'].iloc[0] == 0.5
+    assert df['confidence_tier'].iloc[0] == 'Reviewed-Low'
