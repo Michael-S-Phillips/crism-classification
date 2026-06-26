@@ -291,21 +291,27 @@ class HardNegativesWriter:
                         rows: np.ndarray, cols: np.ndarray,
                         spectra: np.ndarray,
                         predicted_class: str,
-                        corrected_class: Optional[str]) -> None:
+                        corrected_class: Optional[str],
+                        confidence: str = 'High') -> None:
         # Three cases for the reject:
         #  - no corrected_class:    "not {predicted_class}" with no positive label
-        #  - mineral corrected:     positive label for the corrected class
+        #  - mineral corrected:     positive label for the corrected class,
+        #                           stamped with the reviewer confidence weight
         #  - non-mineral tag (e.g. 'ambiguous'): all-zero labels, negative_of=tag
+        weight, tier = 1.0, 'High'
         if not corrected_class:
             label = {c: 0.0 for c in _LABEL_COLS}
             negative_of = predicted_class
         elif _is_mineral_class(corrected_class):
             label = _label_dict_for(corrected_class)
             negative_of = ''
+            weight = REVIEW_CONFIDENCE_WEIGHTS[confidence]
+            tier = f'Reviewed-{confidence}'
         else:
             label = {c: 0.0 for c in _LABEL_COLS}
             negative_of = corrected_class
-        df = _rows_for_polygon(tile_id, polygon_uid, rows, cols, spectra, label)
+        df = _rows_for_polygon(tile_id, polygon_uid, rows, cols, spectra, label,
+                                weight=weight, tier=tier)
         df['negative_of'] = negative_of
         df = df[hard_negatives_schema_columns()]
         path = os.path.join(self.output_dir, _polygon_filename(polygon_uid))
