@@ -631,10 +631,7 @@ def test_legacy_single_file_migration(tmp_path):
 
 # ---- Confidence weight stamping (Task 1) -----------------------------------
 
-import pytest as _pytest
-
-
-@_pytest.mark.parametrize('confidence,weight', [
+@pytest.mark.parametrize('confidence,weight', [
     ('High', 1.0), ('Moderate', 0.75), ('Low', 0.5),
 ])
 def test_confirmed_writer_stamps_confidence(tmp_path, confidence, weight):

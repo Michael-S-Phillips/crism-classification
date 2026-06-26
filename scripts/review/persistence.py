@@ -253,7 +253,9 @@ class ConfirmedPixelsWriter:
                         confidence: str = 'High') -> None:
         """Write rows for ``polygon_uid`` with positive labels for
         ``label_class`` and every class in ``extra_classes`` (co-occurring
-        minerals), stamped with the reviewer ``confidence`` weight/tier."""
+        minerals), stamped with the reviewer ``confidence`` weight/tier.
+        ``confidence`` must be a key in ``REVIEW_CONFIDENCE_WEIGHTS``
+        (High/Moderate/Low); an unknown value raises KeyError."""
         all_classes = [label_class] + list(extra_classes or [])
         weight = REVIEW_CONFIDENCE_WEIGHTS[confidence]
         df = _rows_for_polygon(tile_id, polygon_uid, rows, cols, spectra,
