@@ -176,4 +176,59 @@ training loss: per-pixel sample weight = stamped weight
 
 - Re-grading already-collected MC13/MC11 decisions (they default to High/1.0).
 - Any change to the global `_TIER_WEIGHTS` or base-parquet weighting.
-- Confidence on non-mineral tag rejects.
+
+---
+
+# Addendum (2026-06-26): uniform confidence on ALL active assignments
+
+The original scope graded only confirms + mineral reassignments, leaving
+bland/alteration/ambiguous at a fixed weight. User clarified the governing
+principle: **a plain reject (no class assigned) is discarded; any actively
+assigned class — confirm OR any reassignment — is used as that class with the
+reviewer's confidence weight.** This supersedes the "non-mineral tag rejects
+stay fixed" line above.
+
+### Data convention (verified against 8.2M existing hard_negative rows)
+- `negative_of=''`  → reassign→mineral (positive mineral label, 10.5k rows) or
+  reassign→bland (`other=1`, 8.11M rows).
+- `negative_of='alteration'` (103.9k) → alteration, stored as a TAG (no positive
+  label; `load_alteration_mc11` stamps `alteration=1.0`).
+- `negative_of='ambiguous'` (34.2k) → junk.
+- `negative_of=<predicted_class>` → pure reject, **not read by any build loader →
+  discarded**. This already matches the principle.
+
+### Changes
+**Persistence (`scripts/review/persistence.py`):**
+1. Remove `'alteration'` from `_is_mineral_class`. (The current code added it,
+   which would write future alteration as `negative_of=''`+`alteration=1.0`,
+   splitting it from the 103.9k existing `negative_of='alteration'` rows and
+   mis-routing it into the bland pool.) Reverting keeps alteration a tag, on the
+   existing `load_alteration_mc11` path.
+2. In `HardNegativesWriter.append_polygon`, apply the confidence weight/tier
+   (`REVIEW_CONFIDENCE_WEIGHTS[confidence]`, `Reviewed-<confidence>`) to BOTH the
+   mineral-assignment branch (already done) AND the tag branch (alteration /
+   ambiguous). Only the pure-reject branch (`not corrected_class`) keeps fixed
+   `weight=1.0, tier='High'` (it is discarded downstream anyway).
+
+**Build (`scripts/build_7cls_dataset.py`):**
+3. `load_bland_review`, `load_junk_ambiguous`, `load_alteration_mc11`: replace the
+   `confidence_weight = REVIEW_WEIGHT (2.0)` / `confidence_tier = 'Reviewed'`
+   override with `_fill_confidence_defaults(df)` so each review source preserves
+   the per-polygon stamped weight (legacy rows → 1.0).
+4. Remove the now-unused `REVIEW_WEIGHT` constant.
+   (`load_reassigned_minerals` and `load_confirmed_mineral_positives` already
+   preserve weights; the reject→alteration routing gap disappears because
+   alteration is no longer in the `negative_of=''` pool.)
+
+### Trade-off
+Legacy review-bland/alteration/junk rows (tier `'High'`, weight 1.0) will train at
+1.0 instead of the old flat 2.0 — the same change already accepted for confirmed
+positives, and consistent with "High = 1.0". New rows carry 0.5/0.75/1.0.
+
+### Tests
+- Persistence: reject→alteration → `negative_of='alteration'` + confidence-weighted;
+  reject→ambiguous → `negative_of='ambiguous'` + confidence-weighted; reject→bland →
+  `negative_of=''`,`other=1` + confidence-weighted; pure reject → `negative_of=predicted`,
+  fixed 1.0/High; assert `'alteration'` is no longer in `_is_mineral_class`.
+- Build: `load_bland_review` / `load_junk_ambiguous` / `load_alteration_mc11` preserve
+  per-polygon weights; legacy/mixed rows default to 1.0.
