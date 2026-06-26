@@ -9,6 +9,7 @@ from scripts.review.persistence import (
     ConfirmedPixelsWriter,
     HardNegativesWriter,
     confirmed_schema_columns,
+    REVIEW_CONFIDENCE_WEIGHTS,
 )
 
 
@@ -90,7 +91,7 @@ def test_confirmed_writer_schema_matches_mrral_pixels(tmp_path):
     assert df['hcp'].iloc[0] == 1.0
     assert df['olivine_t1'].iloc[0] == 0.0
     assert df['confidence_weight'].iloc[0] == 1.0
-    assert df['confidence_tier'].iloc[0] == 'High'
+    assert df['confidence_tier'].iloc[0] == 'Reviewed-High'
     assert df['split'].iloc[0] == 'train'
     assert df['tile_id'].iloc[0] == 't0001'
     assert df['m0'].iloc[0] == pytest.approx(0.0)
@@ -626,3 +627,29 @@ def test_legacy_single_file_migration(tmp_path):
     # The legacy data is still reachable via the dataset read
     df = pd.read_parquet(str(pq_dir))
     assert len(df) == 1
+
+
+# ---- Confidence weight stamping (Task 1) -----------------------------------
+
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize('confidence,weight', [
+    ('High', 1.0), ('Moderate', 0.75), ('Low', 0.5),
+])
+def test_confirmed_writer_stamps_confidence(tmp_path, confidence, weight):
+    pq = tmp_path / 'confirmed'
+    w = ConfirmedPixelsWriter(str(pq))
+    w.append_polygon(
+        tile_id='t0001', polygon_uid='t0001::a::0',
+        rows=np.array([0, 1]), cols=np.array([0, 1]),
+        spectra=np.zeros((2, 59), dtype=np.float32),
+        label_class='hcp', confidence=confidence,
+    )
+    df = pd.read_parquet(str(pq))
+    assert (df['confidence_weight'] == weight).all()
+    assert (df['confidence_tier'] == f'Reviewed-{confidence}').all()
+
+
+def test_review_confidence_weights_values():
+    assert REVIEW_CONFIDENCE_WEIGHTS == {'High': 1.0, 'Moderate': 0.75, 'Low': 0.5}

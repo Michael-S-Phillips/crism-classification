@@ -28,6 +28,12 @@ _DECISION_COLS = [
     'co_occurring_classes',
 ]
 
+# Reviewer confidence → per-polygon training sample weight. Stamped together
+# with a 'Reviewed-<tier>' label that is intentionally OUTSIDE
+# data/dataset.py::_TIER_WEIGHTS so _collapse_labels passes the literal weight
+# through verbatim (leaving base-parquet High/Moderate/Low weights untouched).
+REVIEW_CONFIDENCE_WEIGHTS = {'High': 1.0, 'Moderate': 0.75, 'Low': 0.5}
+
 
 def confirmed_schema_columns() -> list[str]:
     return (
@@ -166,6 +172,8 @@ def _rows_for_polygon(
     cols: np.ndarray,
     spectra: np.ndarray,
     label_dict: dict[str, float],
+    weight: float = 1.0,
+    tier: str = 'High',
 ) -> pd.DataFrame:
     n = spectra.shape[0]
     polygon_id_int = _polygon_id_int(polygon_uid)
@@ -179,8 +187,8 @@ def _rows_for_polygon(
         data[f'm{i}'] = spectra[:, i].astype(np.float64)
     for c in _LABEL_COLS:
         data[c] = np.full(n, label_dict[c], dtype=np.float64)
-    data['confidence_weight'] = np.full(n, 1.0, dtype=np.float64)
-    data['confidence_tier'] = ['High'] * n
+    data['confidence_weight'] = np.full(n, weight, dtype=np.float64)
+    data['confidence_tier'] = [tier] * n
     data['split'] = ['train'] * n
     return pd.DataFrame(data, columns=confirmed_schema_columns())
 
@@ -241,14 +249,16 @@ class ConfirmedPixelsWriter:
     def append_polygon(self, *, tile_id: str, polygon_uid: str,
                         rows: np.ndarray, cols: np.ndarray,
                         spectra: np.ndarray, label_class: str,
-                        extra_classes: Optional[list] = None) -> None:
+                        extra_classes: Optional[list] = None,
+                        confidence: str = 'High') -> None:
         """Write rows for ``polygon_uid`` with positive labels for
         ``label_class`` and every class in ``extra_classes`` (co-occurring
-        minerals). Writes one small file; never reads the accumulated
-        history."""
+        minerals), stamped with the reviewer ``confidence`` weight/tier."""
         all_classes = [label_class] + list(extra_classes or [])
+        weight = REVIEW_CONFIDENCE_WEIGHTS[confidence]
         df = _rows_for_polygon(tile_id, polygon_uid, rows, cols, spectra,
-                                _label_dict_for_many(all_classes))
+                                _label_dict_for_many(all_classes),
+                                weight=weight, tier=f'Reviewed-{confidence}')
         path = os.path.join(self.output_dir, _polygon_filename(polygon_uid))
         _atomic_write_parquet(df, path)
 
