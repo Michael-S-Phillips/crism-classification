@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 
 from scripts.build_7cls_dataset import load_confirmed_mineral_positives, load_bland_review, load_reassigned_minerals
+from scripts.build_7cls_dataset import load_junk_ambiguous, load_alteration_mc11
 
 
 def _confirmed_row(polygon_id, label_col, weight, tier, n=3):
@@ -113,3 +114,55 @@ def test_bland_review_excludes_mineral_reassignments(tmp_path):
     # only the other=1.0 polygon survives in the bland pool
     assert (out['bland'] > 0).all()
     assert (out['olivine_t1'] == 0).all()
+
+
+def _tagged_hardneg_row(polygon_id, tag, weight, tier, n=3):
+    d = {
+        'tile_id': ['t1250'] * n,
+        'polygon_id': np.full(n, polygon_id, dtype=np.int64),
+        'pixel_row': np.arange(n), 'pixel_col': np.arange(n),
+    }
+    for i in range(59):
+        d[f'm{i}'] = np.zeros(n)
+    for c in ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase',
+              'other', 'alteration']:
+        d[c] = np.zeros(n)
+    d['confidence_weight'] = np.full(n, weight)
+    d['confidence_tier'] = [tier] * n
+    d['split'] = ['train'] * n
+    d['negative_of'] = [tag] * n
+    return pd.DataFrame(d)
+
+
+def test_junk_preserves_per_polygon_weight(tmp_path):
+    hdir = tmp_path / 'hardneg'
+    hdir.mkdir()
+    _tagged_hardneg_row(1, 'ambiguous', 0.5, 'Reviewed-Low').to_parquet(
+        hdir / 'p_amb.parquet', index=False)
+    out = load_junk_ambiguous(str(hdir))
+    assert (out['junk'] > 0).all()
+    assert (out['confidence_weight'] == 0.5).all()
+    assert (out['confidence_tier'] == 'Reviewed-Low').all()
+
+
+def test_alteration_preserves_per_polygon_weight(tmp_path):
+    hdir = tmp_path / 'hardneg'
+    hdir.mkdir()
+    _tagged_hardneg_row(2, 'alteration', 0.75, 'Reviewed-Moderate').to_parquet(
+        hdir / 'p_alt.parquet', index=False)
+    out = load_alteration_mc11(str(hdir))
+    assert (out['alteration'] > 0).all()
+    assert (out['confidence_weight'] == 0.75).all()
+    assert (out['confidence_tier'] == 'Reviewed-Moderate').all()
+
+
+def test_bland_review_preserves_per_polygon_weight(tmp_path):
+    hdir = tmp_path / 'hardneg'
+    hdir.mkdir()
+    # _hardneg_row sets confidence_weight=0.5, tier 'Reviewed-Low', negative_of=''
+    _hardneg_row(3, 'other').to_parquet(hdir / 'p_bland.parquet', index=False)
+    out = load_bland_review(str(hdir), 'mc13_blands', mc13=True, seed_offset=10,
+                            n_bland=1000)
+    assert (out['bland'] > 0).all()
+    assert (out['confidence_weight'] == 0.5).all()
+    assert (out['confidence_tier'] == 'Reviewed-Low').all()

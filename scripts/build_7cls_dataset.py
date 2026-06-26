@@ -50,7 +50,6 @@ DEFAULT_OUT           = os.path.join(PROJ, 'data', 'mrral_pixels_7cls.parquet')
 N_BLAND_PER_SOURCE = 300_000   # rows per bland source (bland tiles, mc13, mc11)
 MAX_PX_PER_POLYGON = 20_000    # per-polygon cap applied to review blands
 SPLIT_FRACS = {'train': 0.70, 'val': 0.15, 'test': 0.15}
-REVIEW_WEIGHT = 2.0
 SEED = 42
 
 # MC13 tiles: t1028..t1396 (rows where tile_id matches this range)
@@ -241,8 +240,8 @@ def load_confirmed_mineral_positives(confirmed_dir: str,
 
     # stamp 7cls cols (plag in confirmed pixels is always 0 — no real plag in MC13)
     df = _stamp_7cls_cols(df, bland=0.0, junk=0.0, alteration=0.0)
-    # Preserve the per-polygon reviewer confidence weight/tier instead of the
-    # old flat REVIEW_WEIGHT override (defaults fill legacy/mixed-schema rows).
+    # Preserve the per-polygon reviewer confidence weight/tier; fill legacy/
+    # mixed-schema rows that lack these columns with default 1.0/'High'.
     df = _fill_confidence_defaults(df)
     df = _assign_tile_splits(df, SEED + 300)
     splits = df['split'].value_counts().to_dict()
@@ -289,8 +288,7 @@ def load_bland_review(hn_dir: str, source_label: str,
     print(f'  {source_label}: splits {splits}')
 
     df = _stamp_7cls_cols(df, bland=1.0, junk=0.0, alteration=0.0)
-    df['confidence_weight'] = np.float32(REVIEW_WEIGHT)
-    df['confidence_tier']   = 'Reviewed'
+    df = _fill_confidence_defaults(df)
     return df
 
 
@@ -332,8 +330,7 @@ def load_junk_ambiguous(hn_dir: str) -> pd.DataFrame:
     print(f'  junk splits: {splits}')
 
     df = _stamp_7cls_cols(df, bland=0.0, junk=1.0, alteration=0.0)
-    df['confidence_weight'] = np.float32(REVIEW_WEIGHT)
-    df['confidence_tier']   = 'Reviewed'
+    df = _fill_confidence_defaults(df)
     return df
 
 
@@ -349,8 +346,7 @@ def load_alteration_mc11(hn_dir: str) -> pd.DataFrame:
     print(f'  alteration splits: {splits}')
 
     df = _stamp_7cls_cols(df, bland=0.0, junk=0.0, alteration=1.0)
-    df['confidence_weight'] = np.float32(REVIEW_WEIGHT)
-    df['confidence_tier']   = 'Reviewed'
+    df = _fill_confidence_defaults(df)
     return df
 
 
