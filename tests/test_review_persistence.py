@@ -37,10 +37,20 @@ def test_decision_log_creates_csv_and_appends_header(tmp_path):
     assert list(df.columns) == [
         'ts', 'source_gpkg', 'layer', 'polygon_uid', 'tile_id',
         'predicted_class', 'decision', 'corrected_class', 'n_pixels', 'area_m2',
-        'co_occurring_classes',
+        'co_occurring_classes', 'confidence',
     ]
     assert df.iloc[0]['polygon_uid'] == 't0001::thresh_0.95::0'
     assert df.iloc[0]['ts']  # iso8601 string
+
+
+def test_decision_log_records_confidence(tmp_path):
+    csv = tmp_path / 'decisions.csv'
+    log = DecisionLog(str(csv))
+    rec = _record()
+    rec['confidence'] = 'Moderate'
+    log.append(rec)
+    df = pd.read_csv(csv)
+    assert df.iloc[0]['confidence'] == 'Moderate'
 
 
 def test_decision_log_appends_without_rewriting_header(tmp_path):

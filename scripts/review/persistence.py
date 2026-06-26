@@ -26,6 +26,9 @@ _DECISION_COLS = [
     # is confirmed as the predicted class but also shows signals from others
     # (e.g. olivine + hcp). Empty for single-class confirms and all rejects.
     'co_occurring_classes',
+    # Reviewer confidence (High/Moderate/Low) logged for every decision. Only
+    # applied to the parquet weight for confirms and mineral reassignments.
+    'confidence',
 ]
 
 # Reviewer confidence → per-polygon training sample weight. Stamped together
