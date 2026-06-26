@@ -56,6 +56,10 @@ SEED = 42
 # MC13 tiles: t1028..t1396 (rows where tile_id matches this range)
 _MC13_TILE_NUMS = set(range(1028, 1397))
 
+# Mineral label columns used to distinguish mineral reassignments from bland
+# reassignments inside the negative_of='' hard-negative pool.
+_REASSIGN_MINERAL_COLS = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase']
+
 
 def _is_mc13(tid: str) -> bool:
     try:
@@ -258,6 +262,10 @@ def load_bland_review(hn_dir: str, source_label: str,
           f'({df["tile_id"].nunique()} tiles, '
           f'{df.groupby(["tile_id","polygon_id"]).ngroups} polygons)')
 
+    # Mineral reassignments (negative_of='' with a mineral label=1.0) share this
+    # pool; they belong in load_reassigned_minerals, not the bland pool.
+    df = df[~(df[_REASSIGN_MINERAL_COLS] > 0).any(axis=1)].copy()
+
     df = _per_polygon_cap(df, MAX_PX_PER_POLYGON, SEED + seed_offset)
     print(f'  {source_label}: {len(df):,} after {MAX_PX_PER_POLYGON:,}/polygon cap')
 
@@ -274,6 +282,36 @@ def load_bland_review(hn_dir: str, source_label: str,
     df = _stamp_7cls_cols(df, bland=1.0, junk=0.0, alteration=0.0)
     df['confidence_weight'] = np.float32(REVIEW_WEIGHT)
     df['confidence_tier']   = 'Reviewed'
+    return df
+
+
+def load_reassigned_minerals(hn_dir: str) -> pd.DataFrame:
+    """Reject→mineral reassignments live in hard_negatives with negative_of=''
+    and a mineral label = 1.0. Ingest them as weighted mineral positives
+    (preserving the reviewer confidence weight/tier), capped per polygon and
+    tile-split — NOT as bland (the prior behaviour, which mistrained them)."""
+    pool = _read_hn_tag(hn_dir, tag=None)
+    if pool.empty:
+        return pool
+    mineral_mask = (pool[_REASSIGN_MINERAL_COLS] > 0).any(axis=1)
+    df = pool[mineral_mask].copy()
+    print(f'  reassigned minerals: {len(df):,} rows '
+          f'({df["tile_id"].nunique()} tiles, '
+          f'{df.groupby(["tile_id","polygon_id"]).ngroups} polygons)')
+    if df.empty:
+        return df
+    df = _per_polygon_cap(df, MAX_PX_PER_POLYGON, SEED + 400)
+    df = _assign_tile_splits(df, SEED + 400)
+    splits = df['split'].value_counts().to_dict()
+    print(f'  reassigned minerals: splits {splits}')
+    # Preserve the parquet's confidence weight/tier (do not zero plagioclase —
+    # a reject→plagioclase reassignment is a real plag positive).
+    df = _stamp_7cls_cols(df, bland=0.0, junk=0.0, alteration=0.0,
+                          zero_plag=False)
+    if 'confidence_weight' not in df.columns:
+        df['confidence_weight'] = np.float32(1.0)
+    if 'confidence_tier' not in df.columns:
+        df['confidence_tier'] = 'High'
     return df
 
 
@@ -345,6 +383,10 @@ def main():
     mc13_bland = load_bland_review(args.hn_dir, 'mc13_blands', mc13=True,  seed_offset=10, n_bland=n_bland)
     mc11_bland = load_bland_review(args.hn_dir, 'mc11_blands', mc13=False, seed_offset=20, n_bland=n_bland)
 
+    # ── 3b. Reassigned minerals (reject→mineral) ─────────────────────────────
+    print('\nLoading reassigned mineral positives …')
+    reassigned = load_reassigned_minerals(args.hn_dir)
+
     # ── 4. Junk (ambiguous) ───────────────────────────────────────────────────
     print('\nLoading junk (ambiguous) source …')
     junk_df = load_junk_ambiguous(args.hn_dir)
@@ -362,6 +404,7 @@ def main():
 
     fragments = [base]
     for label, frag in [('confirmed', confirmed),
+                         ('reassigned', reassigned),
                          ('mc13_bland', mc13_bland),
                          ('mc11_bland', mc11_bland),
                          ('junk', junk_df),

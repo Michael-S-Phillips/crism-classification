@@ -2,7 +2,7 @@ import os
 import numpy as np
 import pandas as pd
 
-from scripts.build_7cls_dataset import load_confirmed_mineral_positives
+from scripts.build_7cls_dataset import load_confirmed_mineral_positives, load_bland_review, load_reassigned_minerals
 
 
 def _confirmed_row(polygon_id, label_col, weight, tier, n=3):
@@ -59,3 +59,47 @@ def test_confirmed_fills_legacy_rows_in_mixed_dir(tmp_path):
     assert (oliv['confidence_tier'] == 'High').all()
     assert (hcp['confidence_weight'] == 0.5).all()
     assert (hcp['confidence_tier'] == 'Reviewed-Low').all()
+
+
+def _hardneg_row(polygon_id, label_col, n=3):
+    d = {
+        'tile_id': ['t1250'] * n,  # MC13 region
+        'polygon_id': np.full(n, polygon_id, dtype=np.int64),
+        'pixel_row': np.arange(n), 'pixel_col': np.arange(n),
+    }
+    for i in range(59):
+        d[f'm{i}'] = np.zeros(n)
+    for c in ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase',
+              'other', 'alteration']:
+        d[c] = np.zeros(n)
+    d[label_col] = np.ones(n)
+    d['confidence_weight'] = np.full(n, 0.5)
+    d['confidence_tier'] = ['Reviewed-Low'] * n
+    d['split'] = ['train'] * n
+    d['negative_of'] = [''] * n
+    return pd.DataFrame(d)
+
+
+def _write_hardneg_dir(tmp_path):
+    hdir = tmp_path / 'hardneg'
+    hdir.mkdir()
+    _hardneg_row(1, 'olivine_t1').to_parquet(hdir / 'p_01.parquet', index=False)
+    _hardneg_row(2, 'other').to_parquet(hdir / 'p_02.parquet', index=False)
+    return str(hdir)
+
+
+def test_reassigned_minerals_routed_to_positives(tmp_path):
+    hdir = _write_hardneg_dir(tmp_path)
+    out = load_reassigned_minerals(hdir)
+    assert (out['olivine_t1'] > 0).all()
+    assert (out['bland'] == 0).all()
+    assert set(out['confidence_weight'].unique()) == {0.5}
+
+
+def test_bland_review_excludes_mineral_reassignments(tmp_path):
+    hdir = _write_hardneg_dir(tmp_path)
+    out = load_bland_review(hdir, 'mc13_blands', mc13=True, seed_offset=10,
+                            n_bland=1000)
+    # only the other=1.0 polygon survives in the bland pool
+    assert (out['bland'] > 0).all()
+    assert (out['olivine_t1'] == 0).all()
