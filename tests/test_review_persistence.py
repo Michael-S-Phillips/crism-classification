@@ -477,6 +477,8 @@ def test_hard_neg_alteration_is_tag_not_positive_label(tmp_path):
     assert df['alteration'].iloc[0] == 0.0, 'alteration label column must be 0 (tag, not positive)'
     for col in ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other']:
         assert df[col].iloc[0] == 0.0, f'{col} should be 0 when tagged alteration'
+    assert df['confidence_weight'].iloc[0] == 1.0
+    assert df['confidence_tier'].iloc[0] == 'Reviewed-High'
 
 
 # ---- Multi-label confirms (co-occurring minerals) --------------------------

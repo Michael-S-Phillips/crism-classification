@@ -156,7 +156,7 @@ def _label_dict_for_many(label_classes) -> dict[str, float]:
 def _is_mineral_class(label_class: str) -> bool:
     """True if ``label_class`` denotes a positive label assignment (vs. a
     tag like 'alteration'/'ambiguous' recorded via negative_of with no positive
-    label). Alteration is a tag: the 7-class build ingests it from
+    label). Alteration is a tag: it has a label column but the 7-class build ingests it from
     negative_of='alteration' (load_alteration_mc11), matching existing data."""
     return label_class in ('olivine', 'lcp', 'hcp', 'plagioclase') \
            or label_class in _BLAND_ALIASES
