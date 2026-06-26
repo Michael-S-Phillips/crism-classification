@@ -683,3 +683,19 @@ def test_hard_negatives_tag_reject_keeps_fixed_weight(tmp_path):
     assert df['confidence_weight'].iloc[0] == 1.0
     assert df['confidence_tier'].iloc[0] == 'High'
     assert df['negative_of'].iloc[0] == 'ambiguous'
+
+
+def test_hard_negatives_blank_corrected_keeps_fixed_weight(tmp_path):
+    pq = tmp_path / 'hardneg'
+    w = HardNegativesWriter(str(pq))
+    w.append_polygon(
+        tile_id='t0001', polygon_uid='t0001::c::0',
+        rows=np.array([0]), cols=np.array([0]),
+        spectra=np.zeros((1, 59), dtype=np.float32),
+        predicted_class='hcp', corrected_class=None,
+        confidence='Low',
+    )
+    df = pd.read_parquet(str(pq))
+    assert df['confidence_weight'].iloc[0] == 1.0
+    assert df['confidence_tier'].iloc[0] == 'High'
+    assert df['negative_of'].iloc[0] == 'hcp'

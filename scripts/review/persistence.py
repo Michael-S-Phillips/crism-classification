@@ -293,6 +293,11 @@ class HardNegativesWriter:
                         predicted_class: str,
                         corrected_class: Optional[str],
                         confidence: str = 'High') -> None:
+        """Write reject rows for ``polygon_uid``. ``confidence`` is applied
+        (weight + 'Reviewed-<tier>') ONLY to mineral reassignments; pure-negative
+        and non-mineral-tag rejects keep fixed weight=1.0 / tier='High'.
+        ``confidence`` must be a key in ``REVIEW_CONFIDENCE_WEIGHTS``; an unknown
+        value raises KeyError."""
         # Three cases for the reject:
         #  - no corrected_class:    "not {predicted_class}" with no positive label
         #  - mineral corrected:     positive label for the corrected class,
