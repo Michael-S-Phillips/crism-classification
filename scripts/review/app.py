@@ -29,9 +29,11 @@ from scripts.review.persistence import (
     DecisionLog, ConfirmedPixelsWriter, HardNegativesWriter,
 )
 
-DEFAULT_GPKG_DIR = '/mnt/mrdr/crism_classification/data/vector_mc13_6cls'
+DEFAULT_GPKG_DIR = '/mnt/mrdr/crism_classification/data/vector_mc13_7cls_v3_lrscale001'
 DEFAULT_MRRAL_DIR = '/mnt/mrdr/mc13'
-DEFAULT_OUT_DIR = '/mnt/mrdr/crism_classification/data/mc13_review_6cls'
+DEFAULT_OUT_DIR = '/mnt/mrdr/crism_classification/data/mc13_review_7cls_v3'
+# For MC11 review: gpkg dir data/vector_mc11_7cls_v3_lrscale001,
+# mrral dir /mnt/mrdr/mc11, out dir data/mc11_review_7cls_v3.
 # How many recent decisions to pull into the Previous-button history on
 # startup. Each rehydrated polygon is metadata-only; its spectrum is
 # loaded on demand when the user actually navigates back to it.
@@ -497,10 +499,18 @@ def main():
     # exclude bland/tags (those are only meaningful as the sole label).
     cooccur_options = [c for c in ['olivine', 'lcp', 'hcp', 'plagioclase']
                         if c != mineral]
+    # NOTE: all three decision inputs below are keyed by (mineral, polygon_uid).
+    # Without an explicit key, Streamlit derives widget identity from the
+    # construction params, which don't change across polygons — so selections
+    # (e.g. confidence=Low, co-occurring=hcp) silently STICK from one polygon
+    # to the next. Per-polygon keys reset each input to its default on every
+    # new polygon; Streamlit garbage-collects keyed state for widgets that are
+    # no longer rendered, so the per-uid keys don't accumulate.
     co_occurring = st.multiselect(
         'if confirmed, also present (co-occurring minerals):',
         options=cooccur_options,
         default=[],
+        key=f'cooccur::{mineral}::{item.polygon_uid}',
         help='Use when the polygon shows BOTH the predicted mineral and '
              'another primary mineral. Confirms write a multi-label row '
              '(both classes = 1.0) instead of single-class.',
@@ -519,9 +529,11 @@ def main():
         'if rejected, actually:',
         options=['', 'olivine', 'lcp', 'hcp', 'plagioclase', 'bland', 'alteration', 'ambiguous'],
         index=0,
+        key=f'corrected::{mineral}::{item.polygon_uid}',
     )
     confidence = st.radio(
         'confidence', ['High', 'Moderate', 'Low'], horizontal=True, index=0,
+        key=f'confidence::{mineral}::{item.polygon_uid}',
         help='Per-polygon training weight: High=1.0, Moderate=0.75, Low=0.5. '
              'Applied to confirms and reject→mineral reassignments.',
     )
