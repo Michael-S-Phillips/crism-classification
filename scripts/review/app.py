@@ -691,6 +691,13 @@ def main():
         if qdf.empty:
             st.info('No polygons in this gpkg/mineral combination.')
         else:
+            # The table key rotates (nonce) each time a selection is consumed.
+            # Popping the server-side widget state is NOT enough: the browser
+            # keeps the row highlighted and re-sends its selection with every
+            # interaction, so the jump re-fired after each navigation (the
+            # "hopping"). A new key = a new frontend component = selection
+            # truly cleared on both sides.
+            _tbl_nonce = st.session_state.setdefault('polygon_table_nonce', 0)
             sel = st.dataframe(
                 qdf,
                 selection_mode='single-row',
@@ -712,20 +719,15 @@ def main():
                         'corrected', width='small',
                         help="if rejected, the corrected class or tag"),
                 },
-                key='polygon_list_table',
+                key=f'polygon_list_table_{_tbl_nonce}',
             )
             if sel and sel.selection and sel.selection.rows:
                 row_idx = sel.selection.rows[0]
                 target_uid = qdf.iloc[row_idx]['polygon_uid']
                 current_uid = item.polygon_uid if item else None
-                # Consume the selection BEFORE acting: st.dataframe selections
-                # are sticky across reruns, and a stale row + the !=current
-                # guard was re-firing the jump after every subsequent
-                # navigation (Confirm/Next/Previous) — the app "hopped" back
-                # to the last table row clicked. Dropping the widget state
-                # resets the selection on the next run; clicking the same row
-                # again later still works (fresh selection event).
-                st.session_state.pop('polygon_list_table', None)
+                # Consume the selection by retiring this widget instance —
+                # see nonce comment above.
+                st.session_state['polygon_table_nonce'] = _tbl_nonce + 1
                 if target_uid != current_uid:
                     _jump_to_uid(target_uid)
                 st.rerun()
