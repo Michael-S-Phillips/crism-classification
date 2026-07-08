@@ -718,9 +718,17 @@ def main():
                 row_idx = sel.selection.rows[0]
                 target_uid = qdf.iloc[row_idx]['polygon_uid']
                 current_uid = item.polygon_uid if item else None
+                # Consume the selection BEFORE acting: st.dataframe selections
+                # are sticky across reruns, and a stale row + the !=current
+                # guard was re-firing the jump after every subsequent
+                # navigation (Confirm/Next/Previous) — the app "hopped" back
+                # to the last table row clicked. Dropping the widget state
+                # resets the selection on the next run; clicking the same row
+                # again later still works (fresh selection event).
+                st.session_state.pop('polygon_list_table', None)
                 if target_uid != current_uid:
                     _jump_to_uid(target_uid)
-                    st.rerun()
+                st.rerun()
 
 
 if __name__ == '__main__':
