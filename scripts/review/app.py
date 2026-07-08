@@ -34,6 +34,10 @@ DEFAULT_MRRAL_DIR = '/mnt/mrdr/mc13'
 DEFAULT_OUT_DIR = '/mnt/mrdr/crism_classification/data/mc13_review_7cls_v3'
 # For MC11 review: gpkg dir data/vector_mc11_7cls_v3_lrscale001,
 # mrral dir /mnt/mrdr/mc11, out dir data/mc11_review_7cls_v3.
+# Default spectrum-plot wavelength window (nm). The mrral cube's first band
+# (~410 nm) is frequently noisy; it stays out of the display AND out of the
+# y-range computation.
+PLOT_XRANGE_NM = (450.0, 2500.0)
 # How many recent decisions to pull into the Previous-button history on
 # startup. Each rehydrated polygon is metadata-only; its spectrum is
 # loaded on demand when the user actually navigates back to it.
@@ -207,15 +211,25 @@ def make_spectrum_figure(spectra: np.ndarray,
         line=dict(width=2, color='royalblue'), name='mean',
     ))
 
-    # Step 2: clamp the y-axis only if the to-be-drawn data extends outside
-    # the physical reflectance range. Checks the actual traces, not raw
-    # spectra — catches the case where outliers survived the filter and
-    # still bias the mean+std.
-    yaxis_args: dict = {}
-    trace_max = float(np.nanmax(upper)) if upper.size else 1.0
-    trace_min = float(np.nanmin(lower)) if lower.size else 0.0
-    if trace_max > 1.05 or trace_min < -0.05:
-        yaxis_args['range'] = [0.0, 1.0]
+    # Step 2: robust explicit y-range. Compute it ONLY from bands inside the
+    # displayed x-window (the ~410 nm band sits outside it and is often
+    # noisy), and trim the top/bottom percentiles of the envelope so a single
+    # spurious band that survived the pixel filter can't stretch the axis.
+    # Always set an explicit range — plotly autoscale on the raw envelope is
+    # what let outliers squash the spectral features (~1 in 5 polygons).
+    win = ((wavelengths_nm >= PLOT_XRANGE_NM[0]) &
+           (wavelengths_nm <= PLOT_XRANGE_NM[1]))
+    if not win.any():
+        win = np.ones(len(wavelengths_nm), dtype=bool)
+    y_lo = float(np.nanpercentile(lower[win], 2))
+    y_hi = float(np.nanpercentile(upper[win], 98))
+    if not (np.isfinite(y_lo) and np.isfinite(y_hi)) or y_hi <= y_lo:
+        y_lo, y_hi = 0.0, 1.0
+    else:
+        pad = 0.05 * max(y_hi - y_lo, 0.05)
+        y_lo = max(y_lo - pad, -0.05)   # clamp to physical reflectance range
+        y_hi = min(y_hi + pad, 1.05)
+    yaxis_args = {'range': [y_lo, y_hi]}
 
     title = None
     if n_dropped:
@@ -223,6 +237,7 @@ def make_spectrum_figure(spectra: np.ndarray,
 
     fig.update_layout(
         xaxis_title='wavelength (nm)', yaxis_title='reflectance',
+        xaxis=dict(range=list(PLOT_XRANGE_NM)),
         yaxis=yaxis_args,
         title=title, title_font_size=10,
         height=400, margin=dict(l=40, r=20, t=30, b=40), showlegend=False,
@@ -377,6 +392,11 @@ def main():
         st.session_state['current_item'] = item
         st.session_state['current_bundle'] = bundle
         st.session_state['current_thumb'] = thumb
+        if thumb is None:
+            # Context image shows by default. On failure _load_thumb_for_current
+            # warns and leaves current_thumb None, and the 'Show context image'
+            # button remains as a manual retry.
+            _load_thumb_for_current()
         _evict_old_cache_entries()
 
     def _advance():
@@ -395,7 +415,7 @@ def main():
                 geometry=item.geometry, tile_id=item.tile_id,
                 mrral_dir=mrral_dir, source_crs=item.source_crs,
             )
-            # Thumbnail is lazy — only loaded when user clicks "Show context".
+            # Thumbnail is loaded by _set_current (context image on by default).
             uid = item.polygon_uid
             st.session_state['cache'][uid] = (item, bundle, None)
             hist.append(uid)

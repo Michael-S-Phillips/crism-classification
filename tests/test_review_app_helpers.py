@@ -63,3 +63,30 @@ def test_make_spectrum_figure_zero_pixels_returns_empty_figure():
     )
     assert isinstance(fig, Figure)
     # No data crash; ok to be empty
+
+
+def test_make_spectrum_figure_default_xrange_450_2500():
+    spectra = np.full((10, 59), 0.3, dtype=np.float32)
+    fig = make_spectrum_figure(spectra, np.linspace(410, 2457, 59))
+    assert list(fig.layout.xaxis.range) == [450.0, 2500.0]
+
+
+def test_make_spectrum_figure_yrange_robust_to_spurious_band():
+    # Flat 0.3 spectra with ONE in-window band at 0.9 (survives the [-0.5,1.5]
+    # pixel filter and the <=1.05 clamp): the y-axis must not stretch to 0.9.
+    spectra = np.full((10, 59), 0.3, dtype=np.float32)
+    spectra[:, 30] = 0.9
+    fig = make_spectrum_figure(spectra, np.linspace(410, 2457, 59))
+    y_lo, y_hi = fig.layout.yaxis.range
+    assert y_hi < 0.6, f'spurious band stretched y to {y_hi}'
+    assert y_lo < 0.3 < y_hi
+
+
+def test_make_spectrum_figure_yrange_ignores_out_of_window_band():
+    # Band 0 (~410 nm, outside the 450-2500 display window) is noisy-high:
+    # it must not drive the y-range.
+    spectra = np.full((10, 59), 0.3, dtype=np.float32)
+    spectra[:, 0] = 0.95
+    fig = make_spectrum_figure(spectra, np.linspace(410, 2457, 59))
+    y_lo, y_hi = fig.layout.yaxis.range
+    assert y_hi < 0.6, f'out-of-window band stretched y to {y_hi}'
