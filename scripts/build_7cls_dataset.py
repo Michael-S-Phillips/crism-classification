@@ -43,8 +43,16 @@ PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 DEFAULT_BASE_PARQUET  = os.path.join(PROJ, 'data', 'mrral_pixels.parquet')
-DEFAULT_CONFIRMED_DIR = os.path.join(PROJ, 'data', 'mc13_review', 'confirmed_pixels')
-DEFAULT_HN_DIR        = os.path.join(PROJ, 'data', 'mc13_review', 'hard_negatives')
+# Review sessions are additive: the original MC13 session plus the
+# confidence-graded v3 session (MC13 + MC11, mixed in one dir).
+DEFAULT_CONFIRMED_DIRS = [
+    os.path.join(PROJ, 'data', 'mc13_review', 'confirmed_pixels'),
+    os.path.join(PROJ, 'data', 'mc13_review_7cls_v3', 'confirmed_pixels'),
+]
+DEFAULT_HN_DIRS = [
+    os.path.join(PROJ, 'data', 'mc13_review', 'hard_negatives'),
+    os.path.join(PROJ, 'data', 'mc13_review_7cls_v3', 'hard_negatives'),
+]
 DEFAULT_OUT           = os.path.join(PROJ, 'data', 'mrral_pixels_7cls.parquet')
 
 N_BLAND_PER_SOURCE = 300_000   # rows per bland source (bland tiles, mc13, mc11)
@@ -74,19 +82,35 @@ _MAX_BLAND_RAW: int | None = None   # set by --max_bland_raw (debug/dry-run only
 import pyarrow.dataset as _pads
 
 
-def _read_hn_tag(hn_dir: str, tag: str | None) -> pd.DataFrame:
-    """Read hard_negatives rows by negative_of tag via predicate pushdown."""
+def _as_dirs(dirs: str | list[str]) -> list[str]:
+    """Accept a single dir or a list of dirs (old + new review sessions)."""
+    return [dirs] if isinstance(dirs, str) else list(dirs)
+
+
+def _read_hn_tag(hn_dirs: str | list[str], tag: str | None) -> pd.DataFrame:
+    """Read hard_negatives rows by negative_of tag via predicate pushdown.
+    Accepts one dir or several (multi-session review data); schemas may
+    differ across sessions (e.g. old files lack the alteration column) —
+    pd.concat unifies with NaN, which downstream fillna paths handle."""
     if tag is None:
         expr = pc.field('negative_of').is_null() | (pc.field('negative_of') == '')
     else:
         expr = pc.field('negative_of') == tag
-    if _MAX_BLAND_RAW is not None:
-        # Use scanner.head() so we never materialise the full file set.
-        ds = _pads.dataset(hn_dir, format='parquet')
-        table = ds.scanner(filter=expr).head(_MAX_BLAND_RAW)
-    else:
-        table = pq.read_table(hn_dir, filters=expr)
-    return table.to_pandas()
+    parts = []
+    for hn_dir in _as_dirs(hn_dirs):
+        if not os.path.exists(hn_dir):
+            print(f'  WARNING: hn_dir missing, skipping: {hn_dir}')
+            continue
+        if _MAX_BLAND_RAW is not None:
+            # Use scanner.head() so we never materialise the full file set.
+            ds = _pads.dataset(hn_dir, format='parquet')
+            table = ds.scanner(filter=expr).head(_MAX_BLAND_RAW)
+        else:
+            table = pq.read_table(hn_dir, filters=expr)
+        parts.append(table.to_pandas())
+    if not parts:
+        return pd.DataFrame()
+    return pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0]
 
 
 def _per_polygon_cap(df: pd.DataFrame, max_per: int, seed: int) -> pd.DataFrame:
@@ -220,17 +244,22 @@ def _build_base(path: str, n_bland_target: int) -> pd.DataFrame:
     return out
 
 
-def load_confirmed_mineral_positives(confirmed_dir: str,
+def load_confirmed_mineral_positives(confirmed_dirs: str | list[str],
                                       template: pd.DataFrame) -> pd.DataFrame | None:
-    if not os.path.exists(confirmed_dir):
-        print(f'  no confirmed_pixels dir found, skipping')
+    parts = []
+    for confirmed_dir in _as_dirs(confirmed_dirs):
+        if not os.path.exists(confirmed_dir):
+            print(f'  no confirmed_pixels dir at {confirmed_dir}, skipping')
+            continue
+        files = [f for f in os.listdir(confirmed_dir) if f.endswith('.parquet')]
+        if not files:
+            continue
+        print(f'Loading confirmed mineral positives from {confirmed_dir} '
+              f'({len(files)} files)')
+        parts.extend(pd.read_parquet(os.path.join(confirmed_dir, f))
+                     for f in files)
+    if not parts:
         return None
-    files = [f for f in os.listdir(confirmed_dir) if f.endswith('.parquet')]
-    if not files:
-        return None
-    print(f'Loading confirmed mineral positives from {confirmed_dir} '
-          f'({len(files)} files)')
-    parts = [pd.read_parquet(os.path.join(confirmed_dir, f)) for f in files]
     df = pd.concat(parts, ignore_index=True)
     print(f'  {len(df):,} confirmed rows')
 
@@ -363,8 +392,11 @@ def load_alteration_mc11(hn_dir: str) -> pd.DataFrame:
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--base_parquet',  default=DEFAULT_BASE_PARQUET)
-    ap.add_argument('--confirmed_dir', default=DEFAULT_CONFIRMED_DIR)
-    ap.add_argument('--hn_dir',        default=DEFAULT_HN_DIR)
+    ap.add_argument('--confirmed_dir', nargs='+', default=DEFAULT_CONFIRMED_DIRS,
+                    help='One or more confirmed_pixels dirs (review sessions '
+                         'are additive)')
+    ap.add_argument('--hn_dir',        nargs='+', default=DEFAULT_HN_DIRS,
+                    help='One or more hard_negatives dirs')
     ap.add_argument('--out',           default=DEFAULT_OUT)
     ap.add_argument('--n_bland',       type=int, default=N_BLAND_PER_SOURCE,
                     help=f'Rows per bland source (default {N_BLAND_PER_SOURCE:,})')

@@ -198,3 +198,30 @@ def test_reassigned_preserves_cooccurring_alteration(tmp_path):
     out = load_reassigned_minerals(str(hdir))
     assert (out['olivine_t1'] > 0).all()
     assert (out['alteration'] == 1.0).all()
+
+
+def test_confirmed_loads_from_multiple_dirs(tmp_path):
+    d1 = tmp_path / 'old_confirmed'; d1.mkdir()
+    d2 = tmp_path / 'new_confirmed'; d2.mkdir()
+    # old-style file: no alteration column, High/1.0
+    old = _confirmed_row(1, 'hcp', 1.0, 'High').drop(columns=['alteration'])
+    old.to_parquet(d1 / 'p_old.parquet', index=False)
+    _confirmed_row(2, 'olivine_t1', 0.5, 'Reviewed-Low').to_parquet(
+        d2 / 'p_new.parquet', index=False)
+    template = _confirmed_row(0, 'olivine_t1', 1.0, 'Reviewed-High').assign(
+        bland=0.0, junk=0.0)
+    out = load_confirmed_mineral_positives([str(d1), str(d2)], template)
+    assert set(out['polygon_id']) == {1, 2}
+    assert set(np.unique(out['confidence_weight'])) == {1.0, 0.5}
+    assert out['alteration'].notna().all()
+
+
+def test_hn_loaders_read_multiple_dirs(tmp_path):
+    d1 = tmp_path / 'old_hn'; d1.mkdir()
+    d2 = tmp_path / 'new_hn'; d2.mkdir()
+    _hardneg_row(1, 'other').to_parquet(d1 / 'p_b1.parquet', index=False)
+    _hardneg_row(2, 'other').to_parquet(d2 / 'p_b2.parquet', index=False)
+    out = load_bland_review([str(d1), str(d2)], 'mc13_blands', mc13=True,
+                            seed_offset=10, n_bland=1000)
+    assert set(out['polygon_id']) == {1, 2}
+    assert (out['bland'] > 0).all()

@@ -12,13 +12,15 @@
 # Build the 7-class training parquet + patch cache.
 #
 # Data design (see scripts/build_7cls_dataset.py for full rationale):
-#   - Plagioclase: zeroed in base parquet; MTRDR synth rows are sole plag source
-#   - Alteration: MC11 review only (103.9k pixels, 65 polygons, polygon-level split)
+#   - Review sessions are ADDITIVE: original MC13 session (weight 1.0) + the
+#     confidence-graded v3 session (MC13+MC11, per-polygon 0.5/0.75/1.0)
+#   - Plagioclase: Argyre/Hellas gpkg (base-parquet splits) + MTRDR synth
+#   - Alteration: review tags (negative_of='alteration') + alteration confirms,
+#     per-polygon confidence weights preserved
 #   - Bland (was "other"): 3 sources × 300k rows, each 70/15/15 independently:
-#       1. Bland tiles (8 tiles, subsampled from ~900k)
-#       2. MC13 review blands (rejected polygons from MC13 review)
-#       3. MC11 review blands (rejected polygons from MC11 review)
-#   - Junk (new): ambiguous hard_negatives (34k), 70/15/15 tile split, weight=2.0
+#       1. Bland tiles  2. MC13 review blands  3. MC11 review blands (tile-id range)
+#   - Reassigned minerals (reject→mineral, incl. multi-label): weighted positives
+#   - Junk: ambiguous hard_negatives, 70/15/15 tile split, per-polygon weights
 #
 # Outputs:
 #   data/mrral_pixels_7cls.parquet
@@ -37,11 +39,21 @@ mkdir -p logs data/patch_cache_7cls
 PARQUET="data/mrral_pixels_7cls.parquet"
 CACHE_DIR="data/patch_cache_7cls"
 
+# Guard: the v3 review session data must be rsynced from the workstation first
+for d in data/mc13_review_7cls_v3/confirmed_pixels data/mc13_review_7cls_v3/hard_negatives; do
+    if [ ! -d "$d" ]; then
+        echo "ERROR: $d missing — rsync data/mc13_review_7cls_v3 from workstation first"
+        exit 1
+    fi
+done
+
 echo "=== step 1: build 7-class parquet ==="
 python -u scripts/build_7cls_dataset.py \
     --base_parquet  data/mrral_pixels.parquet \
     --confirmed_dir data/mc13_review/confirmed_pixels \
+                    data/mc13_review_7cls_v3/confirmed_pixels \
     --hn_dir        data/mc13_review/hard_negatives \
+                    data/mc13_review_7cls_v3/hard_negatives \
     --out           "$PARQUET" || exit 1
 
 echo "=== step 2: build patch cache ==="
