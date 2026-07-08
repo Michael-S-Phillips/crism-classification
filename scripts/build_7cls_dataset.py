@@ -183,6 +183,11 @@ def _stamp_7cls_cols(df: pd.DataFrame,
         out['alteration'] = np.float32(alteration)
     elif 'alteration' not in out.columns:
         out['alteration'] = np.float32(0.0)
+    else:
+        # alteration=None preserves existing values (e.g. alteration confirms
+        # and co-occurring alteration). Legacy files lack the column, so a
+        # mixed-dir concat leaves NaN — fill those rows with 0.
+        out['alteration'] = out['alteration'].fillna(np.float32(0.0))
     # keep 'other' mirroring bland for backward compat with 5/6-class pipelines
     out['other'] = out['bland']
     return out
@@ -238,8 +243,10 @@ def load_confirmed_mineral_positives(confirmed_dir: str,
     df = _per_polygon_cap(df, MAX_PX_PER_POLYGON, SEED + 300)
     print(f'  {len(df):,} after {MAX_PX_PER_POLYGON:,}/polygon cap')
 
-    # stamp 7cls cols (plag in confirmed pixels is always 0 — no real plag in MC13)
-    df = _stamp_7cls_cols(df, bland=0.0, junk=0.0, alteration=0.0)
+    # stamp 7cls cols. alteration=None preserves the parquet's alteration
+    # labels (alteration confirms + co-occurring alteration) — a 0.0 stamp
+    # here used to wipe them into all-zero-label rows.
+    df = _stamp_7cls_cols(df, bland=0.0, junk=0.0, alteration=None)
     # Preserve the per-polygon reviewer confidence weight/tier; fill legacy/
     # mixed-schema rows that lack these columns with default 1.0/'High'.
     df = _fill_confidence_defaults(df)
@@ -312,8 +319,9 @@ def load_reassigned_minerals(hn_dir: str) -> pd.DataFrame:
     splits = df['split'].value_counts().to_dict()
     print(f'  reassigned minerals: splits {splits}')
     # Preserve the parquet's confidence weight/tier (do not zero plagioclase —
-    # a reject→plagioclase reassignment is a real plag positive).
-    df = _stamp_7cls_cols(df, bland=0.0, junk=0.0, alteration=0.0,
+    # a reject→plagioclase reassignment is a real plag positive; alteration=None
+    # keeps co-occurring alteration labels).
+    df = _stamp_7cls_cols(df, bland=0.0, junk=0.0, alteration=None,
                           zero_plag=False)
     df = _fill_confidence_defaults(df)
     return df

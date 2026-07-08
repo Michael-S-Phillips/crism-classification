@@ -789,3 +789,34 @@ def test_hard_negatives_tag_branch_ignores_extra_classes(tmp_path):
     df = pd.read_parquet(str(pq))
     assert df['hcp'].iloc[0] == 0.0
     assert df['negative_of'].iloc[0] == 'ambiguous'
+
+
+def test_confirmed_writer_cooccurring_alteration(tmp_path):
+    pq = tmp_path / 'confirmed'
+    w = ConfirmedPixelsWriter(str(pq))
+    w.append_polygon(
+        tile_id='t0001', polygon_uid='t0001::coalt::0',
+        rows=np.array([0]), cols=np.array([0]),
+        spectra=np.zeros((1, 59), dtype=np.float32),
+        label_class='hcp', extra_classes=['alteration'],
+        confidence='Moderate',
+    )
+    df = pd.read_parquet(str(pq))
+    assert df['hcp'].iloc[0] == 1.0
+    assert df['alteration'].iloc[0] == 1.0
+
+
+def test_hard_negatives_reassignment_cooccurring_alteration(tmp_path):
+    pq = tmp_path / 'hardneg'
+    w = HardNegativesWriter(str(pq))
+    w.append_polygon(
+        tile_id='t0001', polygon_uid='t0001::coalt::1',
+        rows=np.array([0]), cols=np.array([0]),
+        spectra=np.zeros((1, 59), dtype=np.float32),
+        predicted_class='plagioclase', corrected_class='olivine',
+        extra_classes=['alteration'], confidence='Low',
+    )
+    df = pd.read_parquet(str(pq))
+    assert df['olivine_t1'].iloc[0] == 1.0
+    assert df['alteration'].iloc[0] == 1.0
+    assert df['negative_of'].iloc[0] == ''

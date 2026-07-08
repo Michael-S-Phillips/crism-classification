@@ -166,3 +166,35 @@ def test_bland_review_preserves_per_polygon_weight(tmp_path):
     assert (out['bland'] > 0).all()
     assert (out['confidence_weight'] == 0.5).all()
     assert (out['confidence_tier'] == 'Reviewed-Low').all()
+
+
+def test_confirmed_preserves_alteration_label(tmp_path):
+    # An alteration confirm (alteration=1.0 in the parquet) must survive the
+    # build — the loader used to stamp alteration=0.0, wiping it to an
+    # all-zero-label row.
+    cdir = tmp_path / 'confirmed'
+    cdir.mkdir()
+    _confirmed_row(1, 'alteration', 1.0, 'Reviewed-High').to_parquet(
+        cdir / 'p_alt.parquet', index=False)
+    # legacy file without an alteration column -> NaN after concat -> fill 0
+    legacy = _confirmed_row(2, 'hcp', 1.0, 'Reviewed-High').drop(
+        columns=['alteration'])
+    legacy.to_parquet(cdir / 'p_leg.parquet', index=False)
+    template = _confirmed_row(0, 'olivine_t1', 1.0, 'Reviewed-High').assign(
+        bland=0.0, junk=0.0)
+    out = load_confirmed_mineral_positives(str(cdir), template)
+    alt_rows = out[out['polygon_id'] == 1]
+    leg_rows = out[out['polygon_id'] == 2]
+    assert (alt_rows['alteration'] == 1.0).all()
+    assert (leg_rows['alteration'] == 0.0).all()  # NaN filled, not propagated
+
+
+def test_reassigned_preserves_cooccurring_alteration(tmp_path):
+    hdir = tmp_path / 'hardneg'
+    hdir.mkdir()
+    row = _hardneg_row(1, 'olivine_t1')
+    row['alteration'] = 1.0  # co-occurring alteration on a mineral reassignment
+    row.to_parquet(hdir / 'p_coalt.parquet', index=False)
+    out = load_reassigned_minerals(str(hdir))
+    assert (out['olivine_t1'] > 0).all()
+    assert (out['alteration'] == 1.0).all()

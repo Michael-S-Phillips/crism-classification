@@ -516,9 +516,12 @@ def main():
     # training. Selecting hcp here writes hcp=1.0 alongside olivine=1.0,
     # which is what the loss actually wants for mixed-mineralogy polygons.
     # Options exclude the current mineral (it's implicitly included) and
-    # exclude bland/tags (those are only meaningful as the sole label).
-    cooccur_options = [c for c in ['olivine', 'lcp', 'hcp', 'plagioclase']
-                        if c != mineral]
+    # exclude bland/ambiguous (those are only meaningful as the sole label).
+    # alteration IS allowed as co-occurring: mixed mafic+alteration polygons
+    # are real and the multi-label loss wants both classes positive.
+    cooccur_options = [c for c in
+                       ['olivine', 'lcp', 'hcp', 'plagioclase', 'alteration']
+                       if c != mineral]
     # NOTE: all three decision inputs below are keyed by (mineral, polygon_uid).
     # Without an explicit key, Streamlit derives widget identity from the
     # construction params, which don't change across polygons — so selections
