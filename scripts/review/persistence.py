@@ -297,17 +297,21 @@ class HardNegativesWriter:
                         spectra: np.ndarray,
                         predicted_class: str,
                         corrected_class: Optional[str],
+                        extra_classes: Optional[list] = None,
                         confidence: str = 'High') -> None:
         """Write reject rows for ``polygon_uid``. ``confidence`` is applied
         (weight + 'Reviewed-<tier>') to ALL active assignments — both mineral
         reassignments AND non-mineral tags (alteration, ambiguous). Only pure
         rejects (no corrected_class) keep fixed weight=1.0 / tier='High'.
-        ``confidence`` must be a key in ``REVIEW_CONFIDENCE_WEIGHTS``; an unknown
-        value raises KeyError."""
+        ``extra_classes`` are co-occurring minerals for a mineral reassignment
+        (e.g. corrected 'olivine' + extra ['hcp'] writes a multi-label row);
+        ignored on the pure-reject and tag branches. ``confidence`` must be a
+        key in ``REVIEW_CONFIDENCE_WEIGHTS``; an unknown value raises KeyError."""
         # Three cases for the reject:
         #  - no corrected_class:    "not {predicted_class}" with no positive label;
         #                           fixed weight (pure discard, no reviewer opinion)
-        #  - mineral corrected:     positive label for the corrected class,
+        #  - mineral corrected:     positive label(s) for the corrected class
+        #                           (+ any co-occurring extra_classes),
         #                           stamped with the reviewer confidence weight
         #  - tag (e.g. 'alteration', 'ambiguous'): all-zero labels, negative_of=tag,
         #                           stamped with the reviewer confidence weight
@@ -316,7 +320,8 @@ class HardNegativesWriter:
             label = {c: 0.0 for c in _LABEL_COLS}
             negative_of = predicted_class
         elif _is_mineral_class(corrected_class):
-            label = _label_dict_for(corrected_class)
+            label = _label_dict_for_many(
+                [corrected_class] + list(extra_classes or []))
             negative_of = ''
             weight = REVIEW_CONFIDENCE_WEIGHTS[confidence]
             tier = f'Reviewed-{confidence}'

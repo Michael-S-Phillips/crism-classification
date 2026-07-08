@@ -527,13 +527,16 @@ def main():
     # new polygon; Streamlit garbage-collects keyed state for widgets that are
     # no longer rendered, so the per-uid keys don't accumulate.
     co_occurring = st.multiselect(
-        'if confirmed, also present (co-occurring minerals):',
+        'also present (co-occurring minerals):',
         options=cooccur_options,
         default=[],
         key=f'cooccur::{mineral}::{item.polygon_uid}',
-        help='Use when the polygon shows BOTH the predicted mineral and '
-             'another primary mineral. Confirms write a multi-label row '
-             '(both classes = 1.0) instead of single-class.',
+        help='Applies to confirms AND reject→mineral reassignments. Use when '
+             'the polygon shows more than one primary mineral: a confirm '
+             'writes predicted+co-occurring, a reject with "actually: X" '
+             'writes X+co-occurring (all classes = 1.0) instead of '
+             'single-class. Ignored for tag rejects (bland/alteration/'
+             'ambiguous).',
     )
 
     # Decision buttons + corrected-class dropdown.
@@ -568,6 +571,13 @@ def main():
                 confirmed_writer.drop_polygon(item.polygon_uid)
             elif prev == 'reject':
                 hardneg_writer.drop_polygon(item.polygon_uid)
+        # co_occurring applies to confirms and to reject→mineral reassignments
+        # (the writer ignores it on tag/pure-reject branches; keep the csv in
+        # step with what actually lands in the parquet).
+        _cooccur_applies = (
+            decision == 'confirm'
+            or (decision == 'reject'
+                and corrected in ('olivine', 'lcp', 'hcp', 'plagioclase')))
         log.append(dict(
             source_gpkg=item.source_gpkg, layer=item.layer,
             polygon_uid=item.polygon_uid, tile_id=item.tile_id,
@@ -575,7 +585,7 @@ def main():
             corrected_class=(corrected if decision == 'reject' else ''),
             n_pixels=n_px, area_m2=item.area_m2,
             co_occurring_classes=(';'.join(co_occurring)
-                                   if decision == 'confirm' else ''),
+                                   if _cooccur_applies else ''),
             confidence=confidence,
         ))
         # Patch the cached polygon-list table so the decision column stays
@@ -602,6 +612,7 @@ def main():
                 rows=bundle.rows, cols=bundle.cols, spectra=bundle.spectra,
                 predicted_class=mineral,
                 corrected_class=(corrected or None),
+                extra_classes=co_occurring or None,
                 confidence=confidence,
             )
             hardneg_writer.flush()

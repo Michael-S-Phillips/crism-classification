@@ -753,3 +753,39 @@ def test_hard_negatives_ambiguous_tag_weighted(tmp_path):
     assert df['negative_of'].iloc[0] == 'ambiguous'
     assert df['confidence_weight'].iloc[0] == 0.5
     assert df['confidence_tier'].iloc[0] == 'Reviewed-Low'
+
+
+def test_hard_negatives_multilabel_reassignment(tmp_path):
+    # reject→olivine with co-occurring hcp: BOTH labels positive, weighted.
+    pq = tmp_path / 'hardneg'
+    w = HardNegativesWriter(str(pq))
+    w.append_polygon(
+        tile_id='t0001', polygon_uid='t0001::multi::0',
+        rows=np.array([0]), cols=np.array([0]),
+        spectra=np.zeros((1, 59), dtype=np.float32),
+        predicted_class='plagioclase', corrected_class='olivine',
+        extra_classes=['hcp'], confidence='Moderate',
+    )
+    df = pd.read_parquet(str(pq))
+    assert df['olivine_t1'].iloc[0] == 1.0
+    assert df['hcp'].iloc[0] == 1.0
+    assert df['plagioclase'].iloc[0] == 0.0
+    assert df['negative_of'].iloc[0] == ''
+    assert df['confidence_weight'].iloc[0] == 0.75
+    assert df['confidence_tier'].iloc[0] == 'Reviewed-Moderate'
+
+
+def test_hard_negatives_tag_branch_ignores_extra_classes(tmp_path):
+    # extra_classes must not leak positive labels onto tag rejects.
+    pq = tmp_path / 'hardneg'
+    w = HardNegativesWriter(str(pq))
+    w.append_polygon(
+        tile_id='t0001', polygon_uid='t0001::tagx::0',
+        rows=np.array([0]), cols=np.array([0]),
+        spectra=np.zeros((1, 59), dtype=np.float32),
+        predicted_class='plagioclase', corrected_class='ambiguous',
+        extra_classes=['hcp'], confidence='Low',
+    )
+    df = pd.read_parquet(str(pq))
+    assert df['hcp'].iloc[0] == 0.0
+    assert df['negative_of'].iloc[0] == 'ambiguous'
