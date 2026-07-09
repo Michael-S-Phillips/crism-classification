@@ -51,7 +51,7 @@ OUTPUT_COLS = ["class", "source", "tile_id", "polygon_id",
 _KEY_COLS = ["tile_id", "pixel_row", "pixel_col"]
 
 # Source precedence for dedupe (lower rank wins).
-_SOURCE_RANK = {"reassigned": 0, "confirmed": 1, "hand": 2}
+_SOURCE_RANK = {"reassigned": 0, "tag": 1, "confirmed": 2, "hand": 3}
 
 # Columns we ever need to read from a source frame (bands + labels + meta).
 _READ_META = ["tile_id", "polygon_id", "pixel_row", "pixel_col",
@@ -164,6 +164,35 @@ def _read_reassigned(dirs):
         for c in _MINERAL_COLS:
             mineral_hit |= df[c].to_numpy() > 0.5
         parts.append(df.loc[mineral_hit].reset_index(drop=True))
+    if not parts:
+        return pd.DataFrame()
+    return pd.concat(parts, ignore_index=True)
+
+
+def _read_alteration_tags(dirs):
+    """Dedicated alteration review tags: hard_negatives rows with
+    negative_of='alteration'. These are alteration positives regardless of the
+    mineral label columns (the 7cls build stamps alteration=1.0 on them), so we
+    force alteration=1.0 rather than relying on the raw label cols. Same
+    predicate-pushdown + column-projection pattern as _read_reassigned."""
+    expr = pc.field("negative_of") == "alteration"
+    parts = []
+    for d in _as_dirs(dirs):
+        if not os.path.exists(d):
+            continue
+        avail = set(_first_parquet_schema(d))
+        want = _READ_META + BAND_COLS + _MINERAL_COLS + ["negative_of"]
+        want = [c for c in want if c in avail]
+        if "alteration" in avail:
+            want.append("alteration")
+        df = pq.read_table(d, columns=want, filters=expr).to_pandas()
+        df = _ensure_labels(df)
+        # Stamp alteration positive and zero the mineral cols so the class
+        # collapse emits exactly one alteration row (multi=False) per pixel.
+        for c in _MINERAL_COLS:
+            df[c] = 0.0
+        df["alteration"] = 1.0
+        parts.append(df.reset_index(drop=True))
     if not parts:
         return pd.DataFrame()
     return pd.concat(parts, ignore_index=True)
@@ -288,19 +317,25 @@ def _build_viz(full_df, bland_df, seed, viz_per_class, viz_polygon_cap):
 
 def assemble(hand_path, confirmed_dirs, reassigned_dirs,
              out_path=None, viz_out_path=None, bland_path="__hand__",
+             tag_dirs="__reassigned__",
              seed=42, viz_per_class=5000, viz_polygon_cap=200, write=True):
     """Assemble the labeled-spectra corpus and viz subsample.
 
     Returns (full_df, viz_df). If ``bland_path`` is the sentinel ``"__hand__"``
-    it defaults to ``hand_path``; pass None to skip the bland reference.
+    it defaults to ``hand_path``; pass None to skip the bland reference. The
+    alteration-tag source (``tag_dirs``) defaults to the same hard_negatives
+    dirs as ``reassigned_dirs``.
     """
     if bland_path == "__hand__":
         bland_path = hand_path
+    if tag_dirs == "__reassigned__":
+        tag_dirs = reassigned_dirs
 
     exploded = []
     for reader, src in ((_read_hand(hand_path), "hand"),
                         (_read_confirmed(confirmed_dirs), "confirmed"),
-                        (_read_reassigned(reassigned_dirs), "reassigned")):
+                        (_read_reassigned(reassigned_dirs), "reassigned"),
+                        (_read_alteration_tags(tag_dirs), "tag")):
         ex = _explode_classes(reader, src)
         if not ex.empty:
             exploded.append(ex)

@@ -141,6 +141,25 @@ def test_reassigned_negative_of_filter(tmp_path):
     assert oliv["source"].iloc[0] == "reassigned"
 
 
+def test_alteration_tag_source(tmp_path):
+    # negative_of='alteration' rows are alteration positives (source='tag'),
+    # even with all mineral label cols 0; ambiguous stays excluded.
+    hn = _write_dir(tmp_path, "hard_negatives", [
+        {"tile_id": "T1", "pixel_row": 1, "negative_of": "alteration",
+         "confidence_weight": 0.75},          # -> class='alteration', tag
+        {"tile_id": "T1", "pixel_row": 2, "negative_of": "ambiguous"},  # excl
+    ], with_negative_of=True)
+    full, _ = assemble(hand_path=None, confirmed_dirs=[],
+                       reassigned_dirs=[hn], bland_path=None, write=False)
+    alt = full[full["class"] == "alteration"]
+    assert len(alt) == 1
+    assert alt["source"].iloc[0] == "tag"
+    assert not bool(alt["multi"].iloc[0])
+    assert alt["confidence_weight"].iloc[0] == 0.75
+    # the ambiguous row produced nothing at all
+    assert len(full) == 1
+
+
 def test_viz_per_polygon_cap_and_class_total(tmp_path):
     rows = []
     # lcp: one polygon, 1000 px -> capped to 200
