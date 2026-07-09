@@ -38,6 +38,9 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from split_units import assign_unit_balanced_splits, achieved_fractions
 
 PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -59,6 +62,12 @@ N_BLAND_PER_SOURCE = 300_000   # rows per bland source (bland tiles, mc13, mc11)
 MAX_PX_PER_POLYGON = 20_000    # per-polygon cap applied to review blands
 SPLIT_FRACS = {'train': 0.70, 'val': 0.15, 'test': 0.15}
 SEED = 42
+
+# Mineral classes balanced by the unit-aware splitter across every labeled
+# source (olivine tier-1/tier-2 kept separate; alteration included). 'bland'
+# and 'junk' are volume classes balanced on their own single-class column.
+BALANCE_COLS = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase',
+                'alteration']
 
 # MC13 tiles: t1028..t1396 (rows where tile_id matches this range)
 _MC13_TILE_NUMS = set(range(1028, 1397))
@@ -154,38 +163,6 @@ def _fill_confidence_defaults(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _assign_tile_splits(df: pd.DataFrame, seed: int) -> pd.DataFrame:
-    """70/15/15 split by tile_id so val/test have distinct spatial footprints."""
-    tids = np.sort(df['tile_id'].unique())
-    rng = np.random.default_rng(seed)
-    perm = rng.permutation(len(tids))
-    n_hold = max(1, int(round(len(tids) * SPLIT_FRACS['val'])))
-    test_tids = set(tids[perm[:n_hold]])
-    val_tids  = set(tids[perm[n_hold:2 * n_hold]])
-    out = df.copy()
-    out['split'] = np.where(
-        out['tile_id'].isin(test_tids), 'test',
-        np.where(out['tile_id'].isin(val_tids), 'val', 'train'))
-    return out
-
-
-def _assign_polygon_splits(df: pd.DataFrame, seed: int) -> pd.DataFrame:
-    """70/15/15 split by (tile_id, polygon_id) so val/test hold out whole polygons."""
-    polys = np.sort(df.apply(
-        lambda r: f'{r.tile_id}_{r.polygon_id}', axis=1).unique())
-    rng = np.random.default_rng(seed)
-    perm = rng.permutation(len(polys))
-    n_hold = max(1, int(round(len(polys) * SPLIT_FRACS['val'])))
-    test_polys = set(polys[perm[:n_hold]])
-    val_polys  = set(polys[perm[n_hold:2 * n_hold]])
-    key = df.apply(lambda r: f'{r.tile_id}_{r.polygon_id}', axis=1)
-    out = df.copy()
-    out['split'] = np.where(
-        key.isin(test_polys), 'test',
-        np.where(key.isin(val_polys), 'val', 'train'))
-    return out
-
-
 def _stamp_7cls_cols(df: pd.DataFrame,
                      bland: float = 0.0,
                      junk: float = 0.0,
@@ -227,17 +204,30 @@ def _build_base(path: str, n_bland_target: int) -> pd.DataFrame:
     bland_mask = df.get('other', pd.Series(0.0, index=df.index)) > 0
     print(f'  bland tile rows (other=1): {int(bland_mask.sum()):,}')
 
-    # ── non-bland rows: preserve gpkg plag (Argyre/Hellas); keep existing splits ──
+    # ── non-bland rows: preserve gpkg plag (Argyre/Hellas) ──
     non_bland = df[~bland_mask].copy()
     non_bland = _stamp_7cls_cols(non_bland, bland=0.0, junk=0.0, alteration=None,
                                   zero_plag=False)
+    # OVERRIDE the inherited (base-parquet) splits with the unit-aware splitter:
+    # adjacent-tile polygons mapping the same unit are clustered and held out
+    # together, killing the interleave leakage the inherited splits carried.
+    non_bland['split'] = assign_unit_balanced_splits(non_bland, BALANCE_COLS, SEED)
+    print('  non-bland gpkg rows: unit-balanced achieved val/test fractions:')
+    print(achieved_fractions(non_bland, non_bland['split'], BALANCE_COLS)
+          .to_string())
 
     # ── bland tile rows: subsample to n_bland_target ──
     bland_df = df[bland_mask].copy()
     bland_df = _subsample(bland_df, n_bland_target, SEED)
     bland_df = _stamp_7cls_cols(bland_df, bland=1.0, junk=0.0, alteration=0.0)
+    if len(bland_df):
+        bland_df['split'] = assign_unit_balanced_splits(bland_df, ['other'], SEED + 1)
     print(f'  bland tiles after subsample: {len(bland_df):,} '
           f'(target {n_bland_target:,})')
+    if len(bland_df):
+        print('  bland tiles: unit-balanced achieved fractions:')
+        print(achieved_fractions(bland_df, bland_df['split'], ['other'])
+              .to_string())
 
     out = pd.concat([non_bland, bland_df], ignore_index=True)
     print(f'  base after modification: {len(out):,} rows')
@@ -279,9 +269,9 @@ def load_confirmed_mineral_positives(confirmed_dirs: str | list[str],
     # Preserve the per-polygon reviewer confidence weight/tier; fill legacy/
     # mixed-schema rows that lack these columns with default 1.0/'High'.
     df = _fill_confidence_defaults(df)
-    df = _assign_tile_splits(df, SEED + 300)
+    df['split'] = assign_unit_balanced_splits(df, BALANCE_COLS, SEED + 300)
     splits = df['split'].value_counts().to_dict()
-    print(f'  confirmed minerals: tile-level splits {splits}')
+    print(f'  confirmed minerals: unit-balanced splits {splits}')
 
     # align columns to template
     for c in template.columns:
@@ -319,11 +309,11 @@ def load_bland_review(hn_dir: str, source_label: str,
     if df.empty:
         print(f'  {source_label}: 0 rows after filtering — skipping')
         return df
-    df = _assign_tile_splits(df, SEED + seed_offset + 2)
-    splits = df['split'].value_counts().to_dict()
-    print(f'  {source_label}: splits {splits}')
-
     df = _stamp_7cls_cols(df, bland=1.0, junk=0.0, alteration=0.0)
+    df['split'] = assign_unit_balanced_splits(df, ['other'], SEED + seed_offset + 2)
+    splits = df['split'].value_counts().to_dict()
+    print(f'  {source_label}: unit-balanced splits {splits}')
+
     df = _fill_confidence_defaults(df)
     return df
 
@@ -344,14 +334,15 @@ def load_reassigned_minerals(hn_dir: str) -> pd.DataFrame:
     if df.empty:
         return df
     df = _per_polygon_cap(df, MAX_PX_PER_POLYGON, SEED + 400)
-    df = _assign_tile_splits(df, SEED + 400)
-    splits = df['split'].value_counts().to_dict()
-    print(f'  reassigned minerals: splits {splits}')
     # Preserve the parquet's confidence weight/tier (do not zero plagioclase —
     # a reject→plagioclase reassignment is a real plag positive; alteration=None
-    # keeps co-occurring alteration labels).
+    # keeps co-occurring alteration labels). Stamp BEFORE the split so the
+    # 'alteration' balance column exists (legacy hn files lack it).
     df = _stamp_7cls_cols(df, bland=0.0, junk=0.0, alteration=None,
                           zero_plag=False)
+    df['split'] = assign_unit_balanced_splits(df, BALANCE_COLS, SEED + 400)
+    splits = df['split'].value_counts().to_dict()
+    print(f'  reassigned minerals: unit-balanced splits {splits}')
     df = _fill_confidence_defaults(df)
     return df
 
@@ -362,11 +353,13 @@ def load_junk_ambiguous(hn_dir: str) -> pd.DataFrame:
     print(f'  junk (ambiguous): {len(df):,} rows '
           f'({df["tile_id"].nunique()} tiles)')
 
-    df = _assign_tile_splits(df, SEED + 100)
-    splits = df['split'].value_counts().to_dict()
-    print(f'  junk splits: {splits}')
-
+    # Stamp BEFORE the split so the 'junk' balance column exists; all rows are
+    # junk, so balancing on it is exactly total-pixel balancing.
     df = _stamp_7cls_cols(df, bland=0.0, junk=1.0, alteration=0.0)
+    df['split'] = assign_unit_balanced_splits(df, ['junk'], SEED + 100)
+    splits = df['split'].value_counts().to_dict()
+    print(f'  junk unit-balanced splits: {splits}')
+
     df = _fill_confidence_defaults(df)
     return df
 
@@ -378,11 +371,12 @@ def load_alteration_mc11(hn_dir: str) -> pd.DataFrame:
           f'({df["tile_id"].nunique()} tiles, '
           f'{df["polygon_id"].nunique()} polygons)')
 
-    df = _assign_polygon_splits(df, SEED + 200)
-    splits = df['split'].value_counts().to_dict()
-    print(f'  alteration splits: {splits}')
-
+    # Stamp BEFORE the split so 'alteration'=1.0 exists for balancing.
     df = _stamp_7cls_cols(df, bland=0.0, junk=0.0, alteration=1.0)
+    df['split'] = assign_unit_balanced_splits(df, ['alteration'], SEED + 200)
+    splits = df['split'].value_counts().to_dict()
+    print(f'  alteration unit-balanced splits: {splits}')
+
     df = _fill_confidence_defaults(df)
     return df
 
@@ -465,8 +459,9 @@ def main():
 
     # ── 7. Summary ────────────────────────────────────────────────────────────
     print('\n=== 7-class dataset summary ===')
-    label_cols = ['olivine_t1', 'lcp', 'hcp', 'plagioclase', 'bland',
-                  'alteration', 'junk']
+    frac_cols = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase',
+                 'bland', 'alteration', 'junk']
+    label_cols = [c for c in frac_cols if c != 'olivine_t2']
     for split in ('train', 'val', 'test'):
         sub = out[out['split'] == split]
         print(f'\n{split}: {len(sub):,} rows')
@@ -476,6 +471,18 @@ def main():
                 print(f'  {c:>14}: {n:>9,}')
         if 'confidence_tier' in sub.columns:
             print(f'  tiers: {sub["confidence_tier"].value_counts().to_dict()}')
+
+    # per-class × split positive-pixel table + achieved fractions over the
+    # combined frame (the honest, unit-balanced holdout view).
+    present = [c for c in frac_cols if c in out.columns]
+    counts = pd.DataFrame(
+        {s: [(out.loc[out['split'] == s, c] > 0.5).sum() for c in present]
+         for s in ('train', 'val', 'test')},
+        index=present)
+    print('\nPer-class × split positive-pixel counts:')
+    print(counts.to_string())
+    print('\nAchieved per-class split fractions (combined frame):')
+    print(achieved_fractions(out, out['split'], present).to_string())
 
     print(f'\nTotal: {len(out):,} rows')
     print(f'Output: {args.out}')

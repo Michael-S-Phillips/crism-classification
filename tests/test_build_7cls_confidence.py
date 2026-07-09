@@ -1,9 +1,18 @@
+import math
 import os
+import sys
+
 import numpy as np
 import pandas as pd
 
 from scripts.build_7cls_dataset import load_confirmed_mineral_positives, load_bland_review, load_reassigned_minerals
 from scripts.build_7cls_dataset import load_junk_ambiguous, load_alteration_mc11
+from scripts.build_7cls_dataset import _build_base, BALANCE_COLS
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts'))
+import split_units as su
+
+PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _confirmed_row(polygon_id, label_col, weight, tier, n=3):
@@ -225,3 +234,158 @@ def test_hn_loaders_read_multiple_dirs(tmp_path):
                             seed_offset=10, n_bland=1000)
     assert set(out['polygon_id']) == {1, 2}
     assert (out['bland'] > 0).all()
+
+
+# ── Task B: unit-balanced splits ─────────────────────────────────────────────
+
+def _spread_tiles(n):
+    """n real tile_ids whose centers are pairwise >0.25deg apart (csv order)."""
+    cc = pd.read_csv(os.path.join(PROJ, 'data', 'tile_centers.csv'))
+    return cc['tile_id'].tolist()[:n]
+
+
+def _confirmed_poly(tile_id, polygon_id, label_col, n, weight=1.0,
+                    tier='Reviewed-High'):
+    """A confirmed-pixels parquet frame: n pixels of one class on one tile."""
+    d = {
+        'tile_id': [tile_id] * n,
+        'polygon_id': np.full(n, polygon_id, dtype=np.int64),
+        'pixel_row': np.full(n, 750, dtype=np.int64),
+        'pixel_col': np.full(n, 750, dtype=np.int64),
+    }
+    for i in range(59):
+        d[f'm{i}'] = np.zeros(n)
+    for c in ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase',
+              'other', 'alteration']:
+        d[c] = np.zeros(n)
+    d[label_col] = np.ones(n)
+    d['confidence_weight'] = np.full(n, weight)
+    d['confidence_tier'] = [tier] * n
+    d['split'] = ['train'] * n
+    return pd.DataFrame(d)
+
+
+def _centroid(tile_id, mean_row, mean_col):
+    lat, lon = su.tile_center_deg(tile_id)
+    lon_c = lon + 5.0 * ((mean_col / 1500.0) - 0.5)
+    lat_c = lat - 5.0 * ((mean_row / 1500.0) - 0.5)
+    return lat_c, lon_c
+
+
+def _geo_dist(a, b):
+    dlat = a[0] - b[0]
+    dlon = (a[1] - b[1] + 180.0) % 360.0 - 180.0
+    mlat = math.radians((a[0] + b[0]) / 2.0)
+    return math.hypot(dlat, dlon * math.cos(mlat))
+
+
+def test_confirmed_multi_unit_holds_out_every_class_in_val(tmp_path):
+    """Multi-unit confirmed dir -> every mineral class keeps >=5% pixels in val.
+
+    Under the old tile-level split a whole class can land entirely in train
+    (esp. a class backed by one tile), leaving 0% in val. The unit-balanced
+    splitter's min-holdout guard forces every class to keep >=MIN_HOLDOUT_FRAC.
+    """
+    cdir = tmp_path / 'confirmed'
+    cdir.mkdir()
+    tiles = _spread_tiles(40)
+    # Classes the confirmed loader actually preserves (plagioclase is zeroed by
+    # the loader — it comes from gpkg/reassigned/synth, not confirmed).
+    # olivine_t2 gets a single unit (worst case for the min-holdout guard);
+    # the rest get 3 spread units each.
+    layout = {
+        'olivine_t1': tiles[0:3],
+        'olivine_t2': tiles[3:4],
+        'lcp':        tiles[4:7],
+        'hcp':        tiles[7:10],
+        'alteration': tiles[10:13],
+    }
+    pid = 1
+    for cls, cls_tiles in layout.items():
+        for t in cls_tiles:
+            _confirmed_poly(t, pid, cls, 1000).to_parquet(
+                cdir / f'p_{pid:08d}.parquet', index=False)
+            pid += 1
+    template = _confirmed_poly(tiles[0], 0, 'olivine_t1', 3).assign(
+        bland=0.0, junk=0.0)
+    out = load_confirmed_mineral_positives(str(cdir), template)
+    frac = su.achieved_fractions(out, out['split'], list(layout))
+    for c in layout:
+        assert frac.loc[c, 'val'] >= su.MIN_HOLDOUT_FRAC, (c, frac.loc[c].to_dict())
+
+
+def test_build_base_overrides_inherited_split_no_leakage(tmp_path):
+    """_build_base overrides gpkg rows' inherited splits with the unit splitter.
+
+    Two same-class (plag) polygon pairs straddle adjacent tile edges so each
+    pair is <0.25deg apart (one geologic unit); they arrive pre-assigned to
+    ALTERNATING train/val. After _build_base, each unit lands in ONE split
+    (override happened) and no val polygon sits within LINK_DEG of a same-class
+    train polygon.
+    """
+    # t0433 right edge (col1500)->lon318 ; t0434 left edge (col0)->lon318 : merge
+    # t0434 right edge (col1500)->lon323; t0435 left edge (col0)->lon323 : merge
+    # the two units are ~5deg apart -> separate.
+    def _poly(tile_id, polygon_id, mean_col, split, n=500):
+        d = {
+            'tile_id': [tile_id] * n,
+            'polygon_id': np.full(n, polygon_id, dtype=np.int64),
+            'pixel_row': np.full(n, 750, dtype=np.int64),
+            'pixel_col': np.full(n, mean_col, dtype=np.int64),
+            'other': np.zeros(n),
+            'olivine_t1': np.zeros(n), 'olivine_t2': np.zeros(n),
+            'lcp': np.zeros(n), 'hcp': np.zeros(n),
+            'plagioclase': np.ones(n), 'alteration': np.zeros(n),
+            'split': [split] * n,
+        }
+        return pd.DataFrame(d)
+
+    def _bland(tile_id, polygon_id, n=500):
+        d = {
+            'tile_id': [tile_id] * n,
+            'polygon_id': np.full(n, polygon_id, dtype=np.int64),
+            'pixel_row': np.full(n, 750, dtype=np.int64),
+            'pixel_col': np.full(n, 750, dtype=np.int64),
+            'other': np.ones(n),
+            'olivine_t1': np.zeros(n), 'olivine_t2': np.zeros(n),
+            'lcp': np.zeros(n), 'hcp': np.zeros(n),
+            'plagioclase': np.zeros(n), 'alteration': np.zeros(n),
+            'split': ['train'] * n,
+        }
+        return pd.DataFrame(d)
+
+    meta = [(1, 't0433', 1500), (2, 't0434', 0),
+            (3, 't0434', 1500), (4, 't0435', 0)]
+    frames = [
+        _poly('t0433', 1, 1500, 'train'),
+        _poly('t0434', 2, 0,    'val'),
+        _poly('t0434', 3, 1500, 'train'),
+        _poly('t0435', 4, 0,    'val'),
+        _bland('t0101', 10),
+        _bland('t0102', 11),
+    ]
+    base_df = pd.concat(frames, ignore_index=True)
+    path = tmp_path / 'base.parquet'
+    base_df.to_parquet(path, index=False)
+
+    out = _build_base(str(path), n_bland_target=10_000)
+    plag = out[out['plagioclase'] > 0.5]
+
+    # override: each unit (pair) collapses to a single split (was alternating)
+    poly_split = {p: plag[plag['polygon_id'] == p]['split'].iloc[0]
+                  for p, *_ in meta}
+    assert poly_split[1] == poly_split[2], 'unit (t0433/t0434 edge) must share a split'
+    assert poly_split[3] == poly_split[4], 'unit (t0434/t0435 edge) must share a split'
+
+    # independent leakage scan: no val plag polygon within LINK_DEG of a
+    # same-class train plag polygon.
+    cents = {p: _centroid(t, 750, mc) for p, t, mc in meta}
+    for p, t, mc in meta:
+        if poly_split[p] != 'val':
+            continue
+        for q, tq, mcq in meta:
+            if poly_split[q] != 'train':
+                continue
+            d = _geo_dist(cents[p], cents[q])
+            assert d > su.LINK_DEG, (
+                f'val plag poly {p} within {d:.3f}deg of train plag poly {q}')
