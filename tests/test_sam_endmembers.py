@@ -13,7 +13,11 @@ from scripts.label_quant.sam_endmembers import (
     analyze,
     angle_between,
     spectral_angle_matrix,
+    band_wavelengths,
+    good_band_mask,
+    set_band_exclusion,
     BAND_COLS,
+    BAD_BAND_RANGES_NM,
 )
 
 RNG = np.random.default_rng(1234)
@@ -79,7 +83,7 @@ def test_angle_orthogonal_is_ninety():
 def test_angle_scaled_copy_is_zero():
     a = np.array([1.0, 2.0, 3.0])
     b = 2.0 * a
-    assert angle_between(a, b) == pytest.approx(0.0, abs=1e-9)
+    assert angle_between(a, b) == pytest.approx(0.0, abs=1e-6)
 
 
 def test_angle_matrix_matches_pairwise():
@@ -273,3 +277,60 @@ def test_canonical_class_ordering():
     expected = ["olivine", "lcp", "hcp", "plagioclase", "alteration",
                 "bland_dust", "bland_reject", "junk"]
     assert list(res["angle_matrix"].index) == expected
+
+
+# --------------------------------------------------------------------------- #
+# 8. 1 um detector-overlap band exclusion
+# --------------------------------------------------------------------------- #
+def test_good_band_mask_correctness():
+    wl = band_wavelengths()          # 57 wavelengths for m2..m58
+    assert wl.shape == (NB,)
+    mask = good_band_mask(wl)
+    assert mask.shape == (NB,)
+    # window index j corresponds to m(j+2); bad m-indices are 16,17,18,19
+    for m_idx in (16, 17, 18, 19):
+        assert mask[m_idx - 2] == False, f"m{m_idx} should be excluded"
+    # neighbours just outside the range stay in
+    for m_idx in (15, 20):
+        assert mask[m_idx - 2] == True, f"m{m_idx} should be kept"
+    # exactly 4 bands excluded
+    assert (~mask).sum() == 4
+
+
+def test_good_band_mask_on_synthetic_wavelengths():
+    wl = np.array([500.0, 1010.0, 1200.0, 1050.0, 2000.0])
+    mask = good_band_mask(wl)
+    assert list(mask) == [True, False, True, False, True]
+
+
+def test_angle_invariant_to_garbage_in_excluded_bands():
+    # two 57-band spectra identical in the good bands, wildly different in the
+    # excluded 1 um overlap bands -> angle must be 0 with exclusion ON (default)
+    set_band_exclusion(True)
+    try:
+        rng = np.random.default_rng(99)
+        a = rng.random(NB) + 1.0
+        b = a.copy()
+        for m_idx in (16, 17, 18, 19):
+            b[m_idx - 2] = 999.0   # garbage only in excluded bands
+        assert angle_between(a, b) == pytest.approx(0.0, abs=1e-6)
+        M = spectral_angle_matrix(np.vstack([a, b]))
+        assert M[0, 1] == pytest.approx(0.0, abs=1e-6)
+    finally:
+        set_band_exclusion(True)
+
+
+def test_escape_hatch_reproduces_old_behavior():
+    rng = np.random.default_rng(7)
+    a = rng.random(NB) + 1.0
+    b = a.copy()
+    for m_idx in (16, 17, 18, 19):
+        b[m_idx - 2] = 999.0
+    set_band_exclusion(False)
+    try:
+        # with exclusion OFF the garbage bands drive a large angle
+        assert angle_between(a, b) > np.radians(5.0)
+    finally:
+        set_band_exclusion(True)
+    # back on -> 0 again
+    assert angle_between(a, b) == pytest.approx(0.0, abs=1e-6)

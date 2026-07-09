@@ -17,6 +17,7 @@ from scripts.label_quant.sam_classify_tiles import (
     mineral_mask,
     polygonize_mask,
 )
+from scripts.label_quant.sam_endmembers import set_band_exclusion
 
 NB = 57
 
@@ -149,3 +150,24 @@ def test_polygonize_counts_and_min_px():
     empty = polygonize_mask(np.zeros((20, 20), dtype=bool), valid,
                             transform, crs, min_px=4)
     assert len(empty) == 0
+
+
+# --------------------------------------------------------------------------- #
+# band-exclusion consistency: classification ignores 1 um overlap bands
+# --------------------------------------------------------------------------- #
+def test_classification_ignores_overlap_bands():
+    set_band_exclusion(True)
+    try:
+        E = np.array([_unit(0), _unit(1)])   # idx0 mineral, idx1 background
+        cube = np.zeros((NB, 1, 1), dtype=float)
+        # a pixel whose good-band shape matches the mineral endmember exactly,
+        # but with huge junk injected into the excluded overlap bands (m16-m19,
+        # window idx 14-17). It must still classify as the mineral (angle 0).
+        cube[:, 0, 0] = E[0].copy()
+        for widx in (14, 15, 16, 17):
+            cube[widx, 0, 0] = 500.0
+        argmin, minang, valid = assign_pixels(cube, E)
+        assert argmin[0, 0] == 0
+        assert minang[0, 0] == pytest.approx(0.0, abs=1e-6)
+    finally:
+        set_band_exclusion(True)

@@ -39,6 +39,7 @@ Spec: docs/superpowers/specs/2026-07-09-label-quantification-design.md
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import time
 from itertools import combinations
@@ -49,6 +50,79 @@ import pyarrow.parquet as pq
 
 # --- Analysis window: m2..m58 (57 bands, 534-2457 nm). --------------------- #
 BAND_COLS = [f"m{i}" for i in range(2, 59)]
+
+# --- 1 um VNIR/IR detector-overlap exclusion -------------------------------- #
+# On L2-normalized corpus spectra the ~1056 nm band (m19) carries 2x the
+# within-class variance of any other band, and m16/m17 (1021.0/1023.3 nm) are
+# the duplicated junction pair. Excluding wavelengths in this range from the
+# spectral-angle math removes a detector artefact, not mineralogy. Bands are
+# masked BEFORE L2 normalization so they contribute nothing to the norm either.
+# Endmember CSVs still store all 57 band values; the mask applies at math time.
+BAD_BAND_RANGES_NM = [(1000.0, 1065.0)]
+
+_PROJ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_WAVELENGTH_SIDECAR = os.path.join(
+    _PROJ, "reports", "floor_tests", "v3b_lrscale001", "nili",
+    "vector_nili_6cls_wavelengths.json")
+
+# Module-level toggle + cached mask. Exclusion is ON by default.
+_BAND_EXCLUSION = True
+_GOOD_MASK = None  # cached bool array of length len(BAND_COLS)
+
+
+def band_wavelengths(path: str | None = None) -> np.ndarray:
+    """Wavelengths (nm) for the 57-band window m2..m58.
+
+    Loads the same sidecar the vectorize modules use (indices 2..58 of the
+    59-band list). Falls back to an even linspace over 533.74-2456.79 nm if the
+    sidecar is missing.
+    """
+    path = path or _WAVELENGTH_SIDECAR
+    try:
+        with open(path) as f:
+            wl = json.load(f)["wavelengths_nm"]
+        arr = np.asarray(wl[2:59], dtype=float)
+        if arr.shape[0] == len(BAND_COLS):
+            return arr
+    except (OSError, KeyError, ValueError):
+        pass
+    return np.linspace(533.74, 2456.79, len(BAND_COLS))
+
+
+def good_band_mask(wavelengths_nm) -> np.ndarray:
+    """Boolean keep-mask: False where wavelength falls in a BAD_BAND_RANGES_NM."""
+    wl = np.asarray(wavelengths_nm, dtype=float)
+    bad = np.zeros(wl.shape[0], dtype=bool)
+    for lo, hi in BAD_BAND_RANGES_NM:
+        bad |= (wl >= lo) & (wl <= hi)
+    return ~bad
+
+
+def active_good_mask() -> np.ndarray:
+    """Cached keep-mask over the 57-band window (built from band_wavelengths)."""
+    global _GOOD_MASK
+    if _GOOD_MASK is None:
+        _GOOD_MASK = good_band_mask(band_wavelengths())
+    return _GOOD_MASK
+
+
+def set_band_exclusion(enabled: bool) -> None:
+    """Toggle 1 um overlap-band exclusion in the angle math (default ON)."""
+    global _BAND_EXCLUSION
+    _BAND_EXCLUSION = bool(enabled)
+
+
+def apply_band_mask(X: np.ndarray) -> np.ndarray:
+    """Drop excluded columns from X iff exclusion is ON and X's last axis is the
+    full 57-band window. Arrays of any other width pass through unchanged (so
+    small synthetic vectors in tests are untouched)."""
+    X = np.asarray(X, dtype=float)
+    if not _BAND_EXCLUSION:
+        return X
+    mask = active_good_mask()
+    if X.shape[-1] != mask.shape[0]:
+        return X
+    return X[..., mask]
 
 # Canonical display order for known classes. Any class present in the corpus
 # but absent here is still analysed (appended, sorted) — classes are derived
@@ -65,8 +139,8 @@ KEY_COLS = ["class", "source", "tile_id", "polygon_id"]
 # --------------------------------------------------------------------------- #
 def angle_between(a: np.ndarray, b: np.ndarray) -> float:
     """Spectral angle (radians) between two vectors."""
-    a = np.asarray(a, dtype=float)
-    b = np.asarray(b, dtype=float)
+    a = apply_band_mask(a)
+    b = apply_band_mask(b)
     denom = np.linalg.norm(a) * np.linalg.norm(b)
     if denom == 0.0:
         return float("nan")
@@ -79,7 +153,7 @@ def spectral_angle_matrix(X: np.ndarray) -> np.ndarray:
 
     L2-normalizes the rows then angles = arccos(clip(N @ N.T, -1, 1)).
     """
-    X = np.asarray(X, dtype=float)
+    X = apply_band_mask(X)
     norms = np.linalg.norm(X, axis=1, keepdims=True)
     norms = np.where(norms == 0.0, 1.0, norms)
     N = X / norms
@@ -89,8 +163,8 @@ def spectral_angle_matrix(X: np.ndarray) -> np.ndarray:
 
 def _angles_to(X: np.ndarray, v: np.ndarray) -> np.ndarray:
     """Spectral angles (radians) from every row of X to a single vector v."""
-    X = np.asarray(X, dtype=float)
-    v = np.asarray(v, dtype=float)
+    X = apply_band_mask(X)
+    v = apply_band_mask(v)
     xn = np.linalg.norm(X, axis=1)
     vn = np.linalg.norm(v)
     denom = xn * vn
@@ -389,7 +463,14 @@ def write_reports(res: dict, out_dir: str, min_px: int, runtime_s: float | None 
         lines.append(f"Runtime: {runtime_s:.1f} s.\n")
 
     lines.append("\n## Interpretation caveat\n")
+    excl = ("ON" if _BAND_EXCLUSION else "OFF")
+    bad_str = ", ".join(f"{lo:g}-{hi:g}" for lo, hi in BAD_BAND_RANGES_NM)
     lines.append(
+        f"1 um VNIR/IR detector-overlap band exclusion: {excl}. Bands with\n"
+        f"wavelength in [{bad_str}] nm (m16,m17,m18,m19 — the 1021/1023 nm\n"
+        "junction duplicate pair and the high-variance ~1056 nm band) are\n"
+        "dropped BEFORE L2 normalization in ALL angle math, so they contribute\n"
+        "nothing to the spectral angle. Endmember CSV still stores all 57 bands.\n\n"
         "Raw-reflectance spectral angles are continuum/albedo-dominated (all\n"
         "inter-class medoid angles come out <3 deg), so absolute suspect counts\n"
         "are structurally inflated. Read margins as a RELATIVE worst-offenders\n"
@@ -464,8 +545,14 @@ def main(argv=None):
     ap.add_argument("--corpus", default="data/labeled_spectra.parquet")
     ap.add_argument("--out_dir", default="reports/label_quantification")
     ap.add_argument("--min_px", type=int, default=10)
+    ap.add_argument("--no_band_exclusion", dest="bad_bands", action="store_false",
+                    help="Reproduce old behavior: keep the 1 um overlap bands "
+                         "(m16-m19) in the angle math.")
+    ap.add_argument("--bad_bands", dest="bad_bands", action="store_true",
+                    default=True, help="Exclude 1 um overlap bands (default).")
     args = ap.parse_args(argv)
 
+    set_band_exclusion(args.bad_bands)
     t0 = time.time()
     df = _read_corpus(args.corpus)
     res = analyze(df, min_px=args.min_px)

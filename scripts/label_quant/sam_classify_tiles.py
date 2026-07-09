@@ -35,6 +35,12 @@ from affine import Affine
 from pyproj import CRS
 from shapely.geometry import shape as shapely_shape
 
+# Band exclusion (1 um detector overlap) must stay consistent with the
+# endmember analysis — reuse its mask/toggle instead of duplicating.
+from scripts.label_quant.sam_endmembers import (
+    apply_band_mask, set_band_exclusion, band_wavelengths, good_band_mask,
+)
+
 PROJ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 NODATA = 65535
@@ -79,9 +85,11 @@ def angles_deg(X: np.ndarray, E: np.ndarray) -> np.ndarray:
     """Spectral angles in DEGREES between rows of X (N, B) and rows of E (K, B).
 
     Returns (N, K). Zero-norm rows yield 90 deg (they are masked out upstream).
+    The 1 um detector-overlap bands are dropped (via apply_band_mask) before
+    normalization so tile angles stay consistent with the endmember analysis.
     """
-    X = np.asarray(X, dtype=float)
-    E = np.asarray(E, dtype=float)
+    X = apply_band_mask(np.asarray(X, dtype=float))
+    E = apply_band_mask(np.asarray(E, dtype=float))
     xn = np.linalg.norm(X, axis=1, keepdims=True)
     en = np.linalg.norm(E, axis=1, keepdims=True)
     xn = np.where(xn == 0.0, 1.0, xn)
@@ -384,8 +392,13 @@ def main(argv=None):
                     default="reports/label_quantification/endmembers.csv")
     ap.add_argument("--out_dir", required=True)
     ap.add_argument("--angles", nargs="+", type=float, default=DEFAULT_ANGLES)
+    ap.add_argument("--no_band_exclusion", dest="bad_bands", action="store_false",
+                    help="Keep the 1 um overlap bands (m16-m19) in the angle math.")
+    ap.add_argument("--bad_bands", dest="bad_bands", action="store_true",
+                    default=True, help="Exclude 1 um overlap bands (default).")
     args = ap.parse_args(argv)
 
+    set_band_exclusion(args.bad_bands)
     counts, dist_stats = run(args.tiles, args.tile_dir, args.endmembers,
                              args.out_dir, args.angles)
 
