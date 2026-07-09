@@ -161,22 +161,58 @@ def _geo_dist(a, b, link=None):
     return math.hypot(dlat, dlon * math.cos(mlat))
 
 
-def test_no_val_polygon_near_same_class_train():
+def test_lat_scaled_lon_pair_shares_unit_and_no_leakage():
+    """Reproduces the raw-lon-cell bug (Finding 1) at high latitude.
+
+    Tile t0101 center is (-62.5, 7.5); cos(|lat|) ~= 0.46. Two same-class
+    polygons at pixel columns 672 and 818 are raw Delta-lon ~= 0.487 apart
+    (between 1x and 2x LINK_DEG) but only ~0.225 apart in cos-lat-scaled
+    degrees (< LINK_DEG). With buckets keyed by RAW longitude cells they land
+    2 lon-cells apart, so the (-1,0,1) scan never compares them: they never
+    union and can be split across train/val -> leakage.
+
+    Asserts (a) the scaled-close same-class pair shares a unit, and (b) after
+    the balanced split no val polygon is within LINK_DEG (cos-lat scaled,
+    360-wrap) of a same-class train polygon -- computed independently of the
+    splitter's own unit machinery.
+    """
     lc = ['a', 'b', 'c']
-    tiles = _spread_tiles(40)
-    rng = np.random.default_rng(3)
     parts = []
     meta = []
-    pid = 0
-    for i, t in enumerate(tiles):
-        # place a couple of adjacent polygons per tile to create real proximity
-        for k in range(2):
-            mr, mc = 500 + 400 * k, 500 + 400 * k
-            labels = [c for c in lc if rng.random() < 0.6] or ['a']
-            parts.append(make_poly(t, pid, mr, mc, int(rng.integers(500, 4000)), labels, lc))
-            meta.append((pid, t, mr, mc, labels))
-            pid += 1
+    # The bug pair: same tile, same class 'a', scaled-close but 2 raw cells apart.
+    parts.append(make_poly('t0101', 100, 750, 672, 5000, ['a'], lc))
+    meta.append((100, 't0101', 750, 672, ['a']))
+    parts.append(make_poly('t0101', 101, 750, 818, 800, ['a'], lc))
+    meta.append((101, 't0101', 750, 818, ['a']))
+    # Filler units (classes b, c) across widely spread tiles so the greedy
+    # assigner produces multiple splits and the min-holdout guard is exercised.
+    tiles = _spread_tiles(40)
+    rng = np.random.default_rng(3)
+    pid = 200
+    for t in tiles:
+        labels = [c for c in ('b', 'c') if rng.random() < 0.7] or ['b']
+        parts.append(make_poly(t, pid, 750, 750, int(rng.integers(1000, 4000)), labels, lc))
+        meta.append((pid, t, 750, 750, labels))
+        pid += 1
     df = pd.concat(parts, ignore_index=True)
+
+    # Sanity: the pair really is in the bug regime.
+    c100 = _centroid('t0101', 750, 672)
+    c101 = _centroid('t0101', 750, 818)
+    raw_dlon = abs((c100[1] - c101[1] + 180.0) % 360.0 - 180.0)
+    assert su.LINK_DEG < raw_dlon < 2 * su.LINK_DEG, raw_dlon
+    assert _geo_dist(c100, c101) < su.LINK_DEG, _geo_dist(c100, c101)
+
+    # (a) scaled-close same-class polygons MUST share a unit.
+    units = su.polygon_units(df)
+    u100 = units[df.polygon_id == 100].iloc[0]
+    u101 = units[df.polygon_id == 101].iloc[0]
+    assert u100 == u101, (
+        'lat-scaled-close same-class polygons must merge into one unit '
+        f'(got units {u100} and {u101})')
+
+    # (b) independent leakage scan: no val polygon within LINK_DEG (scaled,
+    #     360-wrap) of a same-class train polygon.
     splits = su.assign_unit_balanced_splits(df, lc, seed=42)
     poly_split = {p: splits[df.polygon_id == p].iloc[0] for p, *_ in meta}
     cents = {p: _centroid(t, mr, mc) for p, t, mr, mc, _ in meta}

@@ -133,8 +133,16 @@ def _link_components(lat: np.ndarray, lon: np.ndarray, link_deg: float) -> np.nd
     link2 = link_deg * link_deg
     for i in range(n):
         lci, loi = int(lat_cell[i]), int(lon_cell[i])
+        # Longitude is scaled by cos(lat) in the distance, so at latitude a pair
+        # within link_deg scaled-degrees can differ in RAW longitude by up to
+        # link_deg / cos(lat) -- spanning more than one lon-cell. Widen the
+        # lon-cell scan by K = ceil(1 / cos(lat)) cells (clamped), evaluating
+        # cos at the worst-case (highest-|lat|) edge of the row.
+        edge_lat = min(abs(lat[i]) + cell, 89.0)
+        K = int(np.ceil(1.0 / np.cos(np.radians(edge_lat))))
+        K = max(1, min(K, 8))
         for dla in (-1, 0, 1):
-            for dlo in (-1, 0, 1):
+            for dlo in range(-K, K + 1):
                 key = (lci + dla, (loi + dlo) % n_lon_cells)
                 for j in buckets.get(key, ()):
                     if j <= i:
