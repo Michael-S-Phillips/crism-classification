@@ -141,13 +141,14 @@ def test_reassigned_negative_of_filter(tmp_path):
     assert oliv["source"].iloc[0] == "reassigned"
 
 
-def test_alteration_tag_source(tmp_path):
-    # negative_of='alteration' rows are alteration positives (source='tag'),
-    # even with all mineral label cols 0; ambiguous stays excluded.
+def test_alteration_and_junk_tag_sources(tmp_path):
+    # negative_of='alteration' -> class='alteration' (source='tag');
+    # negative_of='ambiguous' -> class='junk' (source='tag'). Both from tags.
     hn = _write_dir(tmp_path, "hard_negatives", [
         {"tile_id": "T1", "pixel_row": 1, "negative_of": "alteration",
          "confidence_weight": 0.75},          # -> class='alteration', tag
-        {"tile_id": "T1", "pixel_row": 2, "negative_of": "ambiguous"},  # excl
+        {"tile_id": "T1", "pixel_row": 2, "negative_of": "ambiguous",
+         "confidence_weight": 0.5},           # -> class='junk', tag
     ], with_negative_of=True)
     full, _ = assemble(hand_path=None, confirmed_dirs=[],
                        reassigned_dirs=[hn], bland_path=None, write=False)
@@ -156,8 +157,65 @@ def test_alteration_tag_source(tmp_path):
     assert alt["source"].iloc[0] == "tag"
     assert not bool(alt["multi"].iloc[0])
     assert alt["confidence_weight"].iloc[0] == 0.75
-    # the ambiguous row produced nothing at all
-    assert len(full) == 1
+    junk = full[full["class"] == "junk"]
+    assert len(junk) == 1
+    assert junk["source"].iloc[0] == "tag"
+    assert not bool(junk["multi"].iloc[0])
+    assert junk["confidence_weight"].iloc[0] == 0.5
+    assert len(full) == 2
+
+
+def test_base_bland_in_full_parquet(tmp_path):
+    # mrral_pixels rows with other>0.5 become class='bland', source='hand',
+    # in the FULL corpus (not just viz), weight forced 1.0.
+    hand = _write_hand(tmp_path, [
+        {"pixel_row": 0, "lcp": 1.0},                       # mineral
+        {"pixel_row": 1, "other": 1.0, "confidence_weight": 0.25},  # bland
+        {"pixel_row": 2, "other": 1.0, "confidence_weight": 0.5},   # bland
+    ])
+    full, viz = assemble(hand_path=hand, confirmed_dirs=[], reassigned_dirs=[],
+                         write=False)
+    bland = full[full["class"] == "bland"]
+    assert len(bland) == 2
+    assert set(bland["source"]) == {"hand"}
+    assert (bland["confidence_weight"] == 1.0).all()   # forced
+    assert not bland["multi"].any()
+    assert (full["class"] == "lcp").sum() == 1
+    # bland reaches the viz subsample too
+    assert (viz["class"] == "bland").sum() == 2
+
+
+def test_review_bland_reassigned_not_collapsed(tmp_path):
+    # negative_of='' rows with other>0.5 and NO mineral -> class='bland',
+    # source='reassigned' (reject->bland). Must NOT be collapsed into a mineral.
+    hn = _write_dir(tmp_path, "hard_negatives", [
+        {"tile_id": "T1", "pixel_row": 1, "other": 1.0, "negative_of": "",
+         "confidence_weight": 0.75},          # review-bland
+        {"tile_id": "T1", "pixel_row": 2, "olivine_t1": 1.0,
+         "negative_of": ""},                  # mineral reassign
+    ], with_negative_of=True)
+    full, _ = assemble(hand_path=None, confirmed_dirs=[],
+                       reassigned_dirs=[hn], bland_path=None, write=False)
+    bland = full[full["class"] == "bland"]
+    assert len(bland) == 1
+    assert bland["source"].iloc[0] == "reassigned"
+    assert bland["confidence_weight"].iloc[0] == 0.75
+    # the bland pixel did NOT leak into any mineral class
+    assert (full["class"].isin(["olivine", "lcp", "hcp", "plagioclase",
+                                "alteration"])).sum() == 1
+    assert (full["class"] == "olivine").sum() == 1
+
+
+def test_band_dtype_is_float32(tmp_path):
+    hand = _write_hand(tmp_path, [
+        {"pixel_row": 0, "lcp": 1.0},
+        {"pixel_row": 1, "other": 1.0},
+    ])
+    full, viz = assemble(hand_path=hand, confirmed_dirs=[], reassigned_dirs=[],
+                         write=False)
+    for col in BAND_COLS:
+        assert full[col].dtype == np.float32
+        assert viz[col].dtype == np.float32
 
 
 def test_viz_per_polygon_cap_and_class_total(tmp_path):

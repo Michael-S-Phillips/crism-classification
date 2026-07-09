@@ -26,6 +26,7 @@ hard-negative pool is filtered on read instead of materialised.
 from __future__ import annotations
 
 import argparse
+import gc
 import glob
 import os
 
@@ -105,23 +106,46 @@ def _ensure_labels(df):
     return df
 
 
-def _read_hand(path):
-    """Hand labels: other<=0.5 & any mineral>0.5. Alteration intentionally NOT
-    read (design table: hand contributes 5 mineral classes only)."""
+def _downcast_bands(df):
+    """Cast band columns to float32. Reflectance angle math is insensitive to
+    the fidelity loss and it halves the corpus footprint (the bland-tile rows
+    alone add ~877k rows)."""
+    for c in BAND_COLS:
+        if c in df.columns:
+            df[c] = df[c].astype(np.float32)
+    return df
+
+
+def _read_mrral_pixels(path, include_bland=True):
+    """Read mrral_pixels.parquet once and split into two sources:
+
+    - hand minerals: other<=0.5 & any mineral>0.5 (alteration NOT read; per the
+      design table hand contributes the 5 mineral classes only).
+    - base bland:    other>0.5 (class='bland' later).
+
+    Both carry full confidence (weight 1.0); the tier-derived confidence_weight
+    the training pipeline stamped in is discarded. Returns (hand_df, bland_df).
+    """
+    empty = pd.DataFrame()
     if path is None or not os.path.exists(path):
-        return pd.DataFrame()
+        return empty, empty
     cols = _READ_META + BAND_COLS + _MINERAL_COLS
-    df = pq.read_table(path, columns=cols).to_pandas()
-    df = _ensure_labels(df)
+    avail = set(_first_parquet_schema(path))
+    cols = [c for c in cols if c in avail]
+    df = _downcast_bands(_ensure_labels(pq.read_table(
+        path, columns=cols).to_pandas()))
     mineral_hit = np.zeros(len(df), dtype=bool)
     for c in _MINERAL_COLS:
         mineral_hit |= df[c].to_numpy() > 0.5
-    keep = (df["other"].to_numpy() <= 0.5) & mineral_hit
-    df = df.loc[keep].reset_index(drop=True)
-    # Hand labels are original annotations at full confidence; discard the
-    # tier-derived confidence_weight the training pipeline stamped in.
-    df["confidence_weight"] = 1.0
-    return df
+    other = df["other"].to_numpy()
+    hand = df.loc[(other <= 0.5) & mineral_hit].reset_index(drop=True)
+    hand["confidence_weight"] = 1.0
+    bland = empty
+    if include_bland:
+        bland = df.loc[other > 0.5].reset_index(drop=True)
+    del df
+    gc.collect()
+    return hand, bland
 
 
 def _read_confirmed(dirs):
@@ -137,18 +161,33 @@ def _read_confirmed(dirs):
         if "alteration" in avail:
             want.append("alteration")
         df = pq.read_table(d, columns=want).to_pandas()
-        parts.append(_ensure_labels(df))
+        parts.append(_downcast_bands(_ensure_labels(df)))
     if not parts:
         return pd.DataFrame()
     return pd.concat(parts, ignore_index=True)
 
 
-def _read_reassigned(dirs):
-    """Reassigned pixels from hard_negatives: negative_of is null/'' AND any
-    mineral>0.5. Predicate pushdown on negative_of (copied from
-    build_7cls_dataset._read_hn_tag) + column projection keeps the 2.8 GB pool
-    off the heap."""
-    expr = pc.field("negative_of").is_null() | (pc.field("negative_of") == "")
+def _mineral_any_expr():
+    """pyarrow expression: any of the five mineral cols > 0.5."""
+    e = None
+    for c in _MINERAL_COLS:
+        term = pc.field(c) > 0.5
+        e = term if e is None else (e | term)
+    return e
+
+
+def _cat(parts):
+    parts = [p for p in parts if not p.empty]
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
+
+def _read_reassigned_minerals(dirs):
+    """Reject-pool (negative_of null/'') rows with any mineral>0.5 -> mineral
+    reassignments. Both predicates pushed into pyarrow (negative_of pushdown
+    copied from build_7cls_dataset._read_hn_tag) so only the ~38k matches
+    materialise."""
+    expr = (pc.field("negative_of").is_null()
+            | (pc.field("negative_of") == "")) & _mineral_any_expr()
     parts = []
     for d in _as_dirs(dirs):
         if not os.path.exists(d):
@@ -158,41 +197,48 @@ def _read_reassigned(dirs):
         want = [c for c in want if c in avail]
         if "alteration" in avail:
             want.append("alteration")
-        df = pq.read_table(d, columns=want, filters=expr).to_pandas()
-        df = _ensure_labels(df)
-        mineral_hit = np.zeros(len(df), dtype=bool)
-        for c in _MINERAL_COLS:
-            mineral_hit |= df[c].to_numpy() > 0.5
-        parts.append(df.loc[mineral_hit].reset_index(drop=True))
-    if not parts:
-        return pd.DataFrame()
-    return pd.concat(parts, ignore_index=True)
+        parts.append(_downcast_bands(_ensure_labels(pq.read_table(
+            d, columns=want, filters=expr).to_pandas())))
+    return _cat(parts)
 
 
-def _read_alteration_tags(dirs):
-    """Dedicated alteration review tags: hard_negatives rows with
-    negative_of='alteration'. These are alteration positives regardless of the
-    mineral label columns (the 7cls build stamps alteration=1.0 on them), so we
-    force alteration=1.0 rather than relying on the raw label cols. Same
-    predicate-pushdown + column-projection pattern as _read_reassigned."""
-    expr = pc.field("negative_of") == "alteration"
+def _read_reject_bland(dirs):
+    """Reject-pool rows with other>0.5 and NO mineral -> reject->bland
+    reassignments. This is the pool's bulk (~8.6M rows), so we push the full
+    predicate into pyarrow AND project ONLY the output columns (no mineral/
+    other/negative_of), converting Arrow -> pandas with self_destruct to keep
+    peak memory bounded."""
+    expr = ((pc.field("negative_of").is_null() | (pc.field("negative_of") == ""))
+            & (pc.field("other") > 0.5) & ~_mineral_any_expr())
     parts = []
     for d in _as_dirs(dirs):
         if not os.path.exists(d):
             continue
         avail = set(_first_parquet_schema(d))
-        want = _READ_META + BAND_COLS + _MINERAL_COLS + ["negative_of"]
+        want = ["tile_id", "polygon_id", "pixel_row", "pixel_col",
+                "confidence_weight"] + BAND_COLS
         want = [c for c in want if c in avail]
-        if "alteration" in avail:
-            want.append("alteration")
+        tbl = pq.read_table(d, columns=want, filters=expr)
+        parts.append(_downcast_bands(tbl.to_pandas(
+            split_blocks=True, self_destruct=True)))
+        del tbl
+    return _cat(parts)
+
+
+def _read_tag_rows(dirs, tag):
+    """Read hard_negatives rows with negative_of==tag (predicate pushdown +
+    projection). Returns raw rows; the caller stamps the fixed class."""
+    expr = pc.field("negative_of") == tag
+    parts = []
+    for d in _as_dirs(dirs):
+        if not os.path.exists(d):
+            continue
+        avail = set(_first_parquet_schema(d))
+        want = ["tile_id", "polygon_id", "pixel_row", "pixel_col",
+                "confidence_weight", "negative_of"] + BAND_COLS
+        want = [c for c in want if c in avail]
         df = pq.read_table(d, columns=want, filters=expr).to_pandas()
-        df = _ensure_labels(df)
-        # Stamp alteration positive and zero the mineral cols so the class
-        # collapse emits exactly one alteration row (multi=False) per pixel.
-        for c in _MINERAL_COLS:
-            df[c] = 0.0
-        df["alteration"] = 1.0
-        parts.append(df.reset_index(drop=True))
+        parts.append(_downcast_bands(df))
     if not parts:
         return pd.DataFrame()
     return pd.concat(parts, ignore_index=True)
@@ -237,22 +283,57 @@ def _explode_classes(df, source):
         parts.append(sub)
     if not parts:
         return pd.DataFrame(columns=OUTPUT_COLS + ["pixel_row", "pixel_col"])
-    return pd.concat(parts, ignore_index=True)
+    return _downcast_bands(pd.concat(parts, ignore_index=True))
+
+
+def _fixed_class_rows(df, class_name, source, force_weight=None):
+    """Stamp a raw frame as a single fixed class (bland/junk/alteration tags):
+    one row per pixel, multi=False. Produces the same explode-shaped columns so
+    it concatenates with _explode_classes output before dedupe."""
+    if df is None or df.empty:
+        return pd.DataFrame(columns=OUTPUT_COLS + ["pixel_row", "pixel_col"])
+    # Copy only the columns we keep (band data can be millions of rows).
+    keep = ["tile_id", "pixel_row", "pixel_col"] + [
+        c for c in BAND_COLS if c in df.columns]
+    out = df[keep].copy()
+    out["polygon_id"] = (df["polygon_id"].to_numpy()
+                         if "polygon_id" in df.columns else "")
+    if force_weight is not None:
+        out["confidence_weight"] = float(force_weight)
+    elif "confidence_weight" in df.columns:
+        out["confidence_weight"] = df["confidence_weight"].fillna(
+            1.0).astype(float).to_numpy()
+    else:
+        out["confidence_weight"] = 1.0
+    out.insert(0, "class", class_name)
+    out["source"] = source
+    out["multi"] = False
+    return _downcast_bands(out)
 
 
 def _dedupe(df):
     """Precedence dedupe on (tile_id, pixel_row, pixel_col, class); drop the
-    internal pixel key columns and return OUTPUT_COLS order."""
+    internal pixel key columns and return OUTPUT_COLS order.
+
+    Deduping is done on lightweight key/rank arrays (never a copy of the full
+    wide frame) so the ~4M-row corpus does not blow the memory budget: stable
+    argsort by source rank, then keep the first occurrence of each key."""
     if df.empty:
         return pd.DataFrame(columns=OUTPUT_COLS)
-    df = df.copy()
-    df["_rank"] = df["source"].map(_SOURCE_RANK).fillna(99).astype(int)
-    df = df.sort_values("_rank", kind="stable")
-    df = df.drop_duplicates(subset=["tile_id", "pixel_row", "pixel_col",
-                                    "class"], keep="first")
-    df = df.drop(columns=["_rank", "pixel_row", "pixel_col"])
-    df["multi"] = df["multi"].astype(bool)
-    return df[OUTPUT_COLS].reset_index(drop=True)
+    rank = df["source"].map(_SOURCE_RANK).fillna(99).astype(np.int16).to_numpy()
+    order = np.argsort(rank, kind="stable")  # lower rank (higher precedence) 1st
+    keys = pd.MultiIndex.from_arrays([
+        df["tile_id"].to_numpy()[order],
+        df["pixel_row"].to_numpy()[order],
+        df["pixel_col"].to_numpy()[order],
+        df["class"].to_numpy()[order],
+    ])
+    keep_positions = order[~keys.duplicated(keep="first")]
+    del keys, order, rank
+    gc.collect()
+    out = df.iloc[keep_positions].drop(columns=["pixel_row", "pixel_col"])
+    out["multi"] = out["multi"].astype(bool)
+    return out[OUTPUT_COLS].reset_index(drop=True)
 
 
 def _per_polygon_cap(df, max_per, seed):
@@ -278,38 +359,17 @@ def _subsample(df, n, seed):
         drop=True)
 
 
-def _bland_reference(path, n, seed):
-    """Bland reference cloud for the visualizer: mrral_pixels other>0.5,
-    class='bland', multi=False. Viz-only (never in the full corpus)."""
-    if path is None or not os.path.exists(path):
-        return pd.DataFrame(columns=OUTPUT_COLS)
-    cols = ["tile_id", "polygon_id", "other", "confidence_weight"] + BAND_COLS
-    avail = set(_first_parquet_schema(path))
-    cols = [c for c in cols if c in avail]
-    df = pq.read_table(path, columns=cols).to_pandas()
-    df = df.loc[df["other"].to_numpy() > 0.5].reset_index(drop=True)
-    df = _subsample(df, n, seed)
-    # Bland is a hand-sourced reference cloud -> full confidence.
-    df["confidence_weight"] = 1.0
-    if "polygon_id" not in df.columns:
-        df["polygon_id"] = ""
-    df["class"] = "bland"
-    df["source"] = "hand"
-    df["multi"] = False
-    return df[OUTPUT_COLS].reset_index(drop=True)
-
-
-def _build_viz(full_df, bland_df, seed, viz_per_class, viz_polygon_cap):
+def _build_viz(full_df, seed, viz_per_class, viz_polygon_cap):
+    """Per-class viz subsample: per-polygon cap then class cap. Applied
+    uniformly to every class present, including bland and junk."""
     parts = []
-    for cls in CLASSES:
+    for cls in CLASSES + ["bland", "junk"]:
         sub = full_df[full_df["class"] == cls]
         if sub.empty:
             continue
         sub = _per_polygon_cap(sub, viz_polygon_cap, seed)
         sub = _subsample(sub, viz_per_class, seed)
         parts.append(sub)
-    if bland_df is not None and not bland_df.empty:
-        parts.append(bland_df)
     if not parts:
         return pd.DataFrame(columns=OUTPUT_COLS)
     return pd.concat(parts, ignore_index=True)[OUTPUT_COLS]
@@ -321,35 +381,51 @@ def assemble(hand_path, confirmed_dirs, reassigned_dirs,
              seed=42, viz_per_class=5000, viz_polygon_cap=200, write=True):
     """Assemble the labeled-spectra corpus and viz subsample.
 
-    Returns (full_df, viz_df). If ``bland_path`` is the sentinel ``"__hand__"``
-    it defaults to ``hand_path``; pass None to skip the bland reference. The
-    alteration-tag source (``tag_dirs``) defaults to the same hard_negatives
-    dirs as ``reassigned_dirs``.
+    Returns (full_df, viz_df). Base bland rows (other>0.5) are read from
+    ``hand_path`` and included in the full corpus unless ``bland_path`` is None
+    (which skips only the base-bland source; reject->bland reassignments from
+    ``reassigned_dirs`` are always included). The tag sources (alteration,
+    junk) read from ``tag_dirs``, which defaults to ``reassigned_dirs``.
     """
-    if bland_path == "__hand__":
-        bland_path = hand_path
     if tag_dirs == "__reassigned__":
         tag_dirs = reassigned_dirs
+    include_base_bland = bland_path is not None
 
-    exploded = []
-    for reader, src in ((_read_hand(hand_path), "hand"),
-                        (_read_confirmed(confirmed_dirs), "confirmed"),
-                        (_read_reassigned(reassigned_dirs), "reassigned"),
-                        (_read_alteration_tags(tag_dirs), "tag")):
-        ex = _explode_classes(reader, src)
-        if not ex.empty:
-            exploded.append(ex)
+    # Build each source's output-shaped frame, freeing raw reads immediately;
+    # the reject->bland source alone is ~8.6M rows on a 15GB box.
+    frames = []
+    hand_df, base_bland_df = _read_mrral_pixels(
+        hand_path, include_bland=include_base_bland)
+    frames.append(_explode_classes(hand_df, "hand"))
+    del hand_df
+    frames.append(_fixed_class_rows(base_bland_df, "bland", "hand",
+                                    force_weight=1.0))
+    del base_bland_df
+    frames.append(_explode_classes(_read_confirmed(confirmed_dirs),
+                                   "confirmed"))
+    frames.append(_explode_classes(_read_reassigned_minerals(reassigned_dirs),
+                                   "reassigned"))
+    frames.append(_fixed_class_rows(_read_tag_rows(tag_dirs, "alteration"),
+                                    "alteration", "tag"))
+    frames.append(_fixed_class_rows(_read_tag_rows(tag_dirs, "ambiguous"),
+                                    "junk", "tag"))
+    frames.append(_fixed_class_rows(_read_reject_bland(reassigned_dirs),
+                                    "bland", "reassigned"))
+    frames = [f for f in frames if not f.empty]
+    gc.collect()
 
-    if exploded:
-        combined = pd.concat(exploded, ignore_index=True)
+    if frames:
+        combined = pd.concat(frames, ignore_index=True)
     else:
         combined = pd.DataFrame(columns=OUTPUT_COLS + ["pixel_row",
                                                        "pixel_col"])
+    del frames
+    gc.collect()
     full_df = _dedupe(combined)
+    del combined
+    gc.collect()
 
-    bland_df = _bland_reference(bland_path, viz_per_class, seed)
-    viz_df = _build_viz(full_df, bland_df, seed, viz_per_class,
-                        viz_polygon_cap)
+    viz_df = _build_viz(full_df, seed, viz_per_class, viz_polygon_cap)
 
     if write:
         if out_path:
