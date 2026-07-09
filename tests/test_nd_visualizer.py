@@ -60,6 +60,29 @@ def _make_corpus(tmp_path):
     return str(viz_path), str(em_path)
 
 
+def _make_full_corpus(tmp_path):
+    """Write a synthetic *full* pixel corpus (labeled_spectra-style, m2..m58,
+    no pixel coords) with a few multi-pixel polygons; return its path."""
+    rng = np.random.RandomState(3)
+    rows = []
+    specs = [("lcp", "hand", "t01", 6, 20),
+             ("hcp", "reassigned", "t02", 3, 12),
+             ("olivine", "hand", "t03", 1, 8)]
+    for ci, (cls, source, tile, pid, n) in enumerate(specs):
+        center = np.linspace(0.1, 0.4, NB) + 0.05 * ci
+        for _ in range(n):
+            spec = center + rng.normal(0, 0.01, NB)
+            rows.append({
+                "class": cls, "source": source, "tile_id": tile,
+                "polygon_id": pid, "confidence_weight": 1.0, "multi": False,
+                **{c: v for c, v in zip(BAND_COLS, spec)},
+            })
+    corpus = pd.DataFrame(rows)
+    path = tmp_path / "labeled_spectra.parquet"
+    corpus.to_parquet(path)
+    return str(path), specs
+
+
 @pytest.fixture
 def app(tmp_path, monkeypatch):
     viz_path, em_path = _make_corpus(tmp_path)
@@ -229,6 +252,94 @@ def test_resolve_clicked_points_empty_and_dedupe(tmp_path, monkeypatch):
     ]}}
     out = mod.resolve_clicked_points(event, df)
     assert list(out.index) == [3]
+
+
+def test_apply_relabel_mineral_and_discard(tmp_path, monkeypatch):
+    corpus_path, specs = _make_full_corpus(tmp_path)
+    relabels_dir = str(tmp_path / "ndviz_relabels")
+    monkeypatch.setenv("NDVIZ_CORPUS", corpus_path)
+    monkeypatch.setenv("NDVIZ_RELABELS_DIR", relabels_dir)
+    mod = _load_module()
+
+    # polygon 0: lcp/hand → reassign to hcp (Moderate); polygon 2: olivine → discard
+    lcp = {"class": "lcp", "source": "hand", "tile_id": "t01", "polygon_id": 6}
+    oli = {"class": "olivine", "source": "hand", "tile_id": "t03", "polygon_id": 1}
+    w1 = mod.apply_relabel([lcp], "hcp", "Moderate", corpus_path, relabels_dir)
+    w2 = mod.apply_relabel([oli], "discard", "High", corpus_path, relabels_dir)
+    assert len(w1) == 1 and w1[0]["n_px"] == 20
+    assert len(w2) == 1 and w2[0]["n_px"] == 8
+
+    # hard_negatives parquet contents
+    hn = pd.read_parquet(os.path.join(relabels_dir, "hard_negatives"))
+    # 59 bands present, m0/m1 filled 0.0
+    assert {"m0", "m1", "m58"}.issubset(hn.columns)
+    assert (hn["m0"] == 0.0).all() and (hn["m1"] == 0.0).all()
+
+    reassigned = hn[hn["negative_of"] == ""]
+    discarded = hn[hn["negative_of"] == "olivine"]
+    assert len(reassigned) == 20 and len(discarded) == 8
+    # mineral reassignment: hcp positive, Moderate weight (0.75)
+    assert (reassigned["hcp"] == 1.0).all()
+    assert (reassigned["lcp"] == 0.0).all()
+    assert np.allclose(reassigned["confidence_weight"], 0.75)
+    assert (reassigned["confidence_tier"] == "Reviewed-Moderate").all()
+    # pure discard: no positive label, fixed weight 1.0, negative_of=orig class
+    label_cols = ["olivine_t1", "olivine_t2", "lcp", "hcp", "plagioclase",
+                  "other", "alteration"]
+    assert (discarded[label_cols].to_numpy() == 0.0).all()
+    assert np.allclose(discarded["confidence_weight"], 1.0)
+
+    # decisions.csv: two rows with correct provenance
+    dec = pd.read_csv(os.path.join(relabels_dir, "decisions.csv"))
+    assert len(dec) == 2
+    assert set(dec["source_gpkg"]) == {"ndviz"}
+    assert set(dec["predicted_class"]) == {"lcp", "olivine"}
+    assert dec.set_index("predicted_class").loc["lcp", "corrected_class"] == "hcp"
+    assert (dec["area_m2"] == 0).all()
+    assert mod.relabel_session_count(relabels_dir) == 2
+
+
+def test_apply_relabel_tag_semantics(tmp_path, monkeypatch):
+    corpus_path, _ = _make_full_corpus(tmp_path)
+    relabels_dir = str(tmp_path / "ndviz_relabels")
+    monkeypatch.setenv("NDVIZ_CORPUS", corpus_path)
+    monkeypatch.setenv("NDVIZ_RELABELS_DIR", relabels_dir)
+    mod = _load_module()
+    poly = {"class": "hcp", "source": "reassigned", "tile_id": "t02",
+            "polygon_id": 3}
+    mod.apply_relabel([poly], "alteration", "Low", corpus_path, relabels_dir)
+    hn = pd.read_parquet(os.path.join(relabels_dir, "hard_negatives"))
+    # alteration is a TAG: negative_of='alteration', no positive labels
+    assert (hn["negative_of"] == "alteration").all()
+    label_cols = ["olivine_t1", "olivine_t2", "lcp", "hcp", "plagioclase",
+                  "other", "alteration"]
+    assert (hn[label_cols].to_numpy() == 0.0).all()
+    assert np.allclose(hn["confidence_weight"], 0.5)  # Low
+
+
+def test_relabel_panel_renders(tmp_path, monkeypatch):
+    viz_path, em_path = _make_corpus(tmp_path)
+    corpus_path, _ = _make_full_corpus(tmp_path)
+    relabels_dir = str(tmp_path / "ndviz_relabels")
+    monkeypatch.setenv("NDVIZ_PARQUET", viz_path)
+    monkeypatch.setenv("NDVIZ_ENDMEMBERS", em_path)
+    monkeypatch.setenv("NDVIZ_WAVELENGTHS", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("NDVIZ_CORPUS", corpus_path)
+    monkeypatch.setenv("NDVIZ_RELABELS_DIR", relabels_dir)
+    at = AppTest.from_file(APP_PATH, default_timeout=60)
+    at.run()
+    # seed a clicked pixel identifying a real corpus polygon, enable 2-D mode
+    at.session_state["clicked"] = [{
+        "class": "lcp", "source": "hand", "tile_id": "t01", "polygon_id": 6,
+        "confidence_weight": 1.0,
+        **{c: 0.2 for c in BAND_COLS},
+    }]
+    at.checkbox(key="pick2d").set_value(True).run()
+    assert not at.exception
+    # the relabel selectbox must be present
+    assert at.selectbox(key="relabel_as").value in (
+        "olivine", "lcp", "hcp", "plagioclase", "alteration", "bland",
+        "ambiguous", "discard")
 
 
 def test_py_compile():

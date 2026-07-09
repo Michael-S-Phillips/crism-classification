@@ -38,6 +38,13 @@ DEFAULT_ENDMEMBERS = os.environ.get(
 DEFAULT_WAVELENGTHS = os.environ.get(
     "NDVIZ_WAVELENGTHS",
     "reports/floor_tests/v3b_lrscale001/nili/vector_nili_6cls_wavelengths.json")
+# Full (coordinate-free) pixel corpus + review-format session dir for relabels.
+DEFAULT_CORPUS = os.environ.get("NDVIZ_CORPUS", "data/labeled_spectra.parquet")
+DEFAULT_RELABELS_DIR = os.environ.get("NDVIZ_RELABELS_DIR", "data/ndviz_relabels")
+
+# Relabel targets exposed in the visualizer's "relabel as:" selectbox.
+RELABEL_OPTIONS = ["olivine", "lcp", "hcp", "plagioclase", "alteration",
+                   "bland", "ambiguous", "discard"]
 
 # Review-app class palette (fixed).
 CLASS_PALETTE = {
@@ -129,6 +136,88 @@ def resolve_clicked_points(event, df: pd.DataFrame) -> pd.DataFrame:
         if 0 <= rid < len(df) and rid not in row_ids:
             row_ids.append(rid)
     return df.iloc[row_ids]
+
+
+def polygon_uid(orig_class, source, tile_id, polygon_id) -> str:
+    """Stable, self-describing polygon identity for the relabel session."""
+    return f"ndviz::{orig_class}::{source}::{tile_id}::{polygon_id}"
+
+
+def read_polygon_rows(corpus_path: str, cls, source, tile_id, polygon_id
+                      ) -> pd.DataFrame:
+    """Read every pixel row for one polygon from the corpus via predicate
+    pushdown on (class, source, tile_id, polygon_id)."""
+    import pyarrow.parquet as pq
+    flt = [("class", "=", cls), ("source", "=", source),
+           ("tile_id", "=", tile_id), ("polygon_id", "=", int(polygon_id))]
+    return pq.read_table(corpus_path, filters=flt).to_pandas()
+
+
+def relabel_session_count(relabels_dir: str) -> int:
+    """Number of decisions logged this session (decisions.csv rows, minus
+    header)."""
+    csv_path = os.path.join(relabels_dir, "decisions.csv")
+    if not os.path.exists(csv_path):
+        return 0
+    with open(csv_path) as fp:
+        n = sum(1 for _ in fp)
+    return max(0, n - 1)
+
+
+def apply_relabel(polygons, new_label: str, confidence: str,
+                  corpus_path: str, relabels_dir: str) -> list:
+    """Write a whole-polygon relabel to a review-format session dir.
+
+    ``polygons`` is a list of dicts with keys class, source, tile_id,
+    polygon_id (as carried in the scatter customdata). ``new_label`` is one of
+    RELABEL_OPTIONS. Reuses ``scripts.review.persistence`` (DecisionLog +
+    HardNegativesWriter) so the output is ingestible by the 7-class build.
+
+    Band note: the corpus is coordinate-free and holds only m2..m58; the
+    persistence schema needs 59 bands (m0..m58) + pixel_row/pixel_col. m0/m1
+    are filled 0.0 (they lie below the 450 nm analysis window) and pixel
+    coords are synthesized (row index / 0) — the corpus does not store them.
+    """
+    from scripts.review.persistence import DecisionLog, HardNegativesWriter
+
+    dlog = DecisionLog(os.path.join(relabels_dir, "decisions.csv"))
+    hn = HardNegativesWriter(os.path.join(relabels_dir, "hard_negatives"))
+
+    written = []
+    for p in polygons:
+        cls, source = p["class"], p["source"]
+        tile_id, pid = p["tile_id"], p["polygon_id"]
+        sub = read_polygon_rows(corpus_path, cls, source, tile_id, pid)
+        n = len(sub)
+        if n == 0:
+            continue
+
+        spectra = np.zeros((n, 59), dtype=float)
+        for i in range(2, 59):  # m0/m1 stay 0.0 (outside analysis window)
+            spectra[:, i] = sub[f"m{i}"].to_numpy(dtype=float)
+        rows_idx = np.arange(n, dtype=np.int64)   # synthetic: no coords in corpus
+        cols_idx = np.zeros(n, dtype=np.int64)
+
+        uid = polygon_uid(cls, source, tile_id, pid)
+        if new_label == "discard":
+            corrected, decision = None, "reject"
+        else:
+            corrected, decision = new_label, "reassign"
+
+        hn.append_polygon(
+            tile_id=str(tile_id), polygon_uid=uid, rows=rows_idx, cols=cols_idx,
+            spectra=spectra, predicted_class=cls, corrected_class=corrected,
+            confidence=confidence)
+
+        dlog.append({
+            "source_gpkg": "ndviz", "layer": source, "polygon_uid": uid,
+            "tile_id": str(tile_id), "predicted_class": cls,
+            "decision": decision, "corrected_class": (corrected or ""),
+            "n_pixels": n, "area_m2": 0, "confidence": confidence,
+        })
+        written.append({"uid": uid, "tile_id": tile_id, "polygon_id": pid,
+                        "orig_class": cls, "new_label": new_label, "n_px": n})
+    return written
 
 
 def stratified_subsample(df: pd.DataFrame, budget: int, seed: int = 0) -> pd.DataFrame:
@@ -488,6 +577,62 @@ def main():
 
     if caption_lines:
         st.markdown("**Clicked pixels:**  \n" + "  \n".join(caption_lines))
+
+    # ---- relabel panel (whole polygon) ----------------------------------- #
+    corpus_path = DEFAULT_CORPUS
+    relabels_dir = DEFAULT_RELABELS_DIR
+
+    @st.cache_data(show_spinner=False)
+    def _poly_count(cpath, cls, source, tile_id, pid):
+        try:
+            return len(read_polygon_rows(cpath, cls, source, tile_id, pid))
+        except Exception:
+            return 0
+
+    if clicked_recs:
+        st.subheader("Relabel")
+        st.caption("Whole polygons of the clicked pixels. Deselect any you "
+                   "don't want to relabel, choose a new label + confidence, "
+                   "then Apply.")
+        # dedupe clicked pixels to unique source polygons
+        polys = {}
+        for rec in clicked_recs:
+            key = (rec.get("class"), rec.get("source"), rec.get("tile_id"),
+                   rec.get("polygon_id"))
+            polys[key] = rec
+
+        chosen = []
+        for (cls, source, tile_id, pid) in polys:
+            n = _poly_count(corpus_path, cls, source, tile_id, pid)
+            cb_key = f"relabel_pick_{tile_id}_{pid}_{cls}_{source}"
+            if st.checkbox(f"{tile_id}/{pid} {cls} ({source}, {n} px in corpus)",
+                           value=True, key=cb_key):
+                chosen.append({"class": cls, "source": source,
+                               "tile_id": tile_id, "polygon_id": pid})
+
+        new_label = st.selectbox("relabel as:", RELABEL_OPTIONS,
+                                 key="relabel_as")
+        conf = st.radio("confidence", ["High", "Moderate", "Low"], index=0,
+                        horizontal=True, key="relabel_conf")
+
+        if st.button("Apply relabel"):
+            if not chosen:
+                st.warning("No polygons selected.")
+            else:
+                written = apply_relabel(chosen, new_label, conf, corpus_path,
+                                        relabels_dir)
+                if written:
+                    summary = ", ".join(
+                        f"{w['tile_id']}/{w['polygon_id']} {w['orig_class']}"
+                        f"→{w['new_label']} ({w['n_px']} px)" for w in written)
+                    st.success(f"Relabeled {len(written)} polygon(s) → "
+                               f"{relabels_dir}: {summary}")
+                    st.session_state["clicked"] = []
+                else:
+                    st.warning("Selected polygons had no rows in the corpus.")
+
+    st.sidebar.metric("relabels this session",
+                      relabel_session_count(DEFAULT_RELABELS_DIR))
 
 
 def _rgba(hex_color: str, alpha: float) -> str:
