@@ -225,6 +225,50 @@ def test_angle_to_endmember(app):
     assert app.selectbox(key="em_color").value is not None
 
 
+def test_band_exclusion_pca_input_masking(tmp_path, monkeypatch):
+    """The PCA/random fit matrix uses apply_band_mask: 53 good cols when the
+    exclusion toggle is ON, 57 when OFF."""
+    viz_path, _ = _make_corpus(tmp_path)
+    monkeypatch.setenv("NDVIZ_PARQUET", viz_path)
+    mod = _load_module()
+    M = np.random.RandomState(0).rand(12, 57)
+    mod.set_band_exclusion(True)
+    assert mod.apply_band_mask(M).shape[1] == 53
+    mod.set_band_exclusion(False)
+    assert mod.apply_band_mask(M).shape[1] == 57
+    mod.set_band_exclusion(True)  # restore module default
+
+
+def test_band_exclusion_toggle_runs_clean(app):
+    app.run()
+    assert not app.exception
+    # default ON → toggle OFF → back ON, app clean in each state
+    app.checkbox(key="exclude_bands").set_value(False).run()
+    assert not app.exception
+    app.checkbox(key="exclude_bands").set_value(True).run()
+    assert not app.exception
+
+
+def test_angle_coloring_finite_both_toggle_states(app):
+    app.run()
+    app.radio(key="color_mode").set_value("angle to endmember").run()
+    for state in (True, False):
+        app.checkbox(key="exclude_bands").set_value(state).run()
+        assert not app.exception
+        # spectra panel angle captions computed without error implies finite;
+        # also directly exercise the masked angle math in this toggle state
+    # direct finite check via the module helper in both states
+    mod = _load_module()
+    em = pd.read_csv(os.environ["NDVIZ_ENDMEMBERS"])
+    X = np.random.RandomState(1).rand(20, 57)
+    v = em.iloc[0][BAND_COLS].to_numpy(dtype=float)
+    for state in (True, False):
+        mod.set_band_exclusion(state)
+        ang = mod.spectral_angles_deg(X, v)
+        assert np.all(np.isfinite(ang))
+    mod.set_band_exclusion(True)
+
+
 def test_angle_math_finite(tmp_path, monkeypatch):
     viz_path, em_path = _make_corpus(tmp_path)
     monkeypatch.setenv("NDVIZ_PARQUET", viz_path)

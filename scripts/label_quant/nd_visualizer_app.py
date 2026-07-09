@@ -26,7 +26,9 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from scripts.label_quant.sam_endmembers import _angles_to, BAND_COLS  # noqa: E402
+from scripts.label_quant.sam_endmembers import (  # noqa: E402
+    _angles_to, BAND_COLS, BAD_BAND_RANGES_NM, good_band_mask,
+    set_band_exclusion, apply_band_mask)
 
 # --------------------------------------------------------------------------- #
 # Module constants (overridable via env vars so tests can point at fixtures).
@@ -80,7 +82,11 @@ N_PCA = 10
 def spectral_angles_deg(X: np.ndarray, v: np.ndarray) -> np.ndarray:
     """Spectral angles (degrees) from every row of X to a single vector v.
 
-    Reuses the normalized-dot-arccos implementation from ``sam_endmembers``.
+    Reuses ``sam_endmembers._angles_to``, which internally calls
+    ``apply_band_mask`` on both inputs — so 1 um overlap-band exclusion is
+    ALREADY applied here (respecting the module-level toggle). Callers pass the
+    full 57-band window and must NOT pre-mask, or the columns would be dropped
+    twice.
     """
     return np.degrees(_angles_to(X, v))
 
@@ -366,7 +372,6 @@ def main():
 
     shown = stratified_subsample(filt, budget, seed=0).reset_index(drop=True)
     M = shown[BAND_COLS].to_numpy(dtype=float)
-    Mn = _l2_normalize(M)
 
     # customdata carrying row identity for click resolution (first col = row-id)
     row_id = np.arange(len(shown))
@@ -378,6 +383,21 @@ def main():
         shown["source"].to_numpy(dtype=object),
         shown["confidence_weight"].to_numpy(dtype=object),
     ])
+
+    # ---- sidebar: band exclusion ----------------------------------------- #
+    # 1 um detector-overlap bands (BAD_BAND_RANGES_NM → m16-m19) are excluded
+    # from the angle + PCA/random math, matching sam_endmembers. Toggle drives
+    # the module-level exclusion (so spectral_angles_deg follows automatically)
+    # AND the PCA/random input masking below (via apply_band_mask).
+    st.sidebar.header("Band exclusion")
+    exclude_bands = st.sidebar.checkbox(
+        "exclude 1 um overlap bands (angle + PCA)", value=True,
+        key="exclude_bands")
+    set_band_exclusion(exclude_bands)
+    good_mask = good_band_mask(wl)  # for raw-band labelling / spectra shading
+    # Good-band submatrix, masked BEFORE L2 (same order as sam_endmembers).
+    Mg = apply_band_mask(M)
+    Mgn = _l2_normalize(Mg)
 
     # ---- sidebar: projection --------------------------------------------- #
     st.sidebar.header("Projection")
@@ -391,9 +411,9 @@ def main():
     axis_titles = ["x", "y", "z"]
     if proj_mode == "PCA":
         from sklearn.decomposition import PCA
-        ncomp = min(N_PCA, M.shape[0], M.shape[1])
+        ncomp = min(N_PCA, Mg.shape[0], Mg.shape[1])
         pca = PCA(n_components=ncomp)
-        T = pca.fit_transform(Mn)
+        T = pca.fit_transform(Mgn)
         # Pad the transform to >=3 cols so the axis selectors always have 3.
         if T.shape[1] < 3:
             T = np.pad(T, ((0, 0), (0, 3 - T.shape[1])))
@@ -415,7 +435,9 @@ def main():
         axis_titles = [pc_labels[i] for i in sel_pcs]
     elif proj_mode == "Raw bands":
         opts = list(range(len(BAND_COLS)))
-        fmt = lambda i: f"{BAND_COLS[i]} ({wl[i]:.0f} nm)"
+        # all bands selectable; overlap bands flagged so the user knows.
+        fmt = lambda i: (f"{BAND_COLS[i]} ({wl[i]:.0f} nm)"
+                         + ("" if good_mask[i] else " (excluded band)"))
         cx = st.sidebar.selectbox("band X", opts, index=0, format_func=fmt,
                                   key="raw_x")
         cy = st.sidebar.selectbox("band Y", opts, index=min(20, len(opts) - 1),
@@ -432,9 +454,10 @@ def main():
                 np.random.SeedSequence().generate_state(1)[0])
         seed = st.session_state["rand_seed"]
         rng = np.random.default_rng(seed)
-        G = rng.standard_normal((len(BAND_COLS), 3))
+        # random orthonormal projection over the GOOD bands only.
+        G = rng.standard_normal((Mg.shape[1], 3))
         Q, _ = np.linalg.qr(G)
-        coords = Mn @ Q
+        coords = Mgn @ Q
         axis_titles = [f"rand{i + 1} (seed {seed})" for i in range(3)]
 
     # ---- sidebar: colour -------------------------------------------------- #
@@ -616,6 +639,16 @@ def main():
             ang = spectral_angles_deg(spec[None, :], active_em_vec)[0]
             meta += f", angle to {active_em_label} = {ang:.1f} deg"
         caption_lines.append(meta)
+
+    # Shade the detector-overlap region(s) — data is always plotted, but the
+    # band is flagged as excluded from the angle/PCA math.
+    for k, (lo, hi) in enumerate(BAD_BAND_RANGES_NM):
+        sfig.add_vrect(
+            x0=lo, x1=hi, fillcolor="grey", opacity=0.18, line_width=0,
+            annotation_text=("detector overlap (excluded from angle/PCA math)"
+                             if k == 0 else ""),
+            annotation_position="top left",
+            annotation=dict(font_size=10))
 
     sfig.update_layout(
         height=380, xaxis_title="wavelength (nm)", yaxis_title="reflectance",
