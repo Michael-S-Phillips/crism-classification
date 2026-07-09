@@ -61,8 +61,9 @@ def _make_corpus(tmp_path):
 
 
 def _make_full_corpus(tmp_path):
-    """Write a synthetic *full* pixel corpus (labeled_spectra-style, m2..m58,
-    no pixel coords) with a few multi-pixel polygons; return its path."""
+    """Write a synthetic *full* pixel corpus (labeled_spectra-style, m2..m58
+    WITH real pixel_row/pixel_col) with a few multi-pixel polygons; return
+    (path, specs). Each polygon's pixels get distinct in-bounds coords."""
     rng = np.random.RandomState(3)
     rows = []
     specs = [("lcp", "hand", "t01", 6, 20),
@@ -70,17 +71,40 @@ def _make_full_corpus(tmp_path):
              ("olivine", "hand", "t03", 1, 8)]
     for ci, (cls, source, tile, pid, n) in enumerate(specs):
         center = np.linspace(0.1, 0.4, NB) + 0.05 * ci
-        for _ in range(n):
+        for k in range(n):
             spec = center + rng.normal(0, 0.01, NB)
             rows.append({
                 "class": cls, "source": source, "tile_id": tile,
                 "polygon_id": pid, "confidence_weight": 1.0, "multi": False,
+                "pixel_row": np.int32(ci * 5 + k),
+                "pixel_col": np.int32(ci * 3 + (k % 4)),
                 **{c: v for c, v in zip(BAND_COLS, spec)},
             })
     corpus = pd.DataFrame(rows)
     path = tmp_path / "labeled_spectra.parquet"
     corpus.to_parquet(path)
     return str(path), specs
+
+
+def _make_tile_fixture(tmp_path, tile_id, n_bands=72, h=64, w=64):
+    """Write a tiny multi-band ENVI raster whose band1/band2 (m0/m1) are known
+    deterministic functions of (row, col), and return a glob pattern that
+    resolves to it (matching the app's {tile_id} substitution)."""
+    import rasterio
+    from rasterio.transform import from_origin
+    rr, cc = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
+    data = np.zeros((n_bands, h, w), dtype=np.float32)
+    data[0] = (rr * 1000 + cc).astype(np.float32)          # band1 = m0 marker
+    data[1] = (rr * 1000 + cc + 0.5).astype(np.float32)    # band2 = m1 marker
+    tile_dir = tmp_path / "mc99"
+    tile_dir.mkdir(exist_ok=True)
+    img = tile_dir / f"{tile_id}_mrral_00n000_0327_4.img"
+    with rasterio.open(
+            img, "w", driver="ENVI", height=h, width=w, count=n_bands,
+            dtype="float32", transform=from_origin(0, 0, 1, 1)) as ds:
+        ds.write(data)
+    # glob pattern with {tile_id} placeholder (like DEFAULT_TILE_GLOB)
+    return str(tmp_path / "mc*" / "{tile_id}_mrral_*_0327_4.img")
 
 
 @pytest.fixture
@@ -256,47 +280,82 @@ def test_resolve_clicked_points_empty_and_dedupe(tmp_path, monkeypatch):
 
 def test_apply_relabel_mineral_and_discard(tmp_path, monkeypatch):
     corpus_path, specs = _make_full_corpus(tmp_path)
+    tile_glob = _make_tile_fixture(tmp_path, "t01")
+    _make_tile_fixture(tmp_path, "t03")  # tile for the discard polygon
     relabels_dir = str(tmp_path / "ndviz_relabels")
     monkeypatch.setenv("NDVIZ_CORPUS", corpus_path)
     monkeypatch.setenv("NDVIZ_RELABELS_DIR", relabels_dir)
+    monkeypatch.setenv("NDVIZ_TILE_GLOB", tile_glob)
     mod = _load_module()
 
     # polygon 0: lcp/hand → reassign to hcp (Moderate); polygon 2: olivine → discard
     lcp = {"class": "lcp", "source": "hand", "tile_id": "t01", "polygon_id": 6}
     oli = {"class": "olivine", "source": "hand", "tile_id": "t03", "polygon_id": 1}
-    w1 = mod.apply_relabel([lcp], "hcp", "Moderate", corpus_path, relabels_dir)
-    w2 = mod.apply_relabel([oli], "discard", "High", corpus_path, relabels_dir)
-    assert len(w1) == 1 and w1[0]["n_px"] == 20
-    assert len(w2) == 1 and w2[0]["n_px"] == 8
+    w1 = mod.apply_relabel([lcp], "hcp", "Moderate", corpus_path, relabels_dir,
+                           tile_glob=tile_glob)
+    w2 = mod.apply_relabel([oli], "discard", "High", corpus_path, relabels_dir,
+                           tile_glob=tile_glob)
+    assert len(w1) == 1 and w1[0]["n_px"] == 20 and w1[0]["m01_ok"] is True
+    assert len(w2) == 1 and w2[0]["n_px"] == 8 and w2[0]["m01_ok"] is True
 
-    # hard_negatives parquet contents
     hn = pd.read_parquet(os.path.join(relabels_dir, "hard_negatives"))
-    # 59 bands present, m0/m1 filled 0.0
     assert {"m0", "m1", "m58"}.issubset(hn.columns)
-    assert (hn["m0"] == 0.0).all() and (hn["m1"] == 0.0).all()
 
-    reassigned = hn[hn["negative_of"] == ""]
+    # real coords preserved from the corpus (lcp polygon: rows 0..19, cols k%4)
+    reassigned = hn[hn["negative_of"] == ""].sort_values("pixel_row")
     discarded = hn[hn["negative_of"] == "olivine"]
     assert len(reassigned) == 20 and len(discarded) == 8
+    assert list(reassigned["pixel_row"]) == list(range(20))
+    assert list(reassigned["pixel_col"]) == [k % 4 for k in range(20)]
+    # m0/m1 read from the fixture raster: band1 = row*1000+col, band2 = +0.5
+    exp_m0 = reassigned["pixel_row"].to_numpy() * 1000 + reassigned["pixel_col"].to_numpy()
+    assert np.allclose(reassigned["m0"], exp_m0)
+    assert np.allclose(reassigned["m1"], exp_m0 + 0.5)
+    # m2..m58 still sourced from corpus (non-zero)
+    assert (reassigned["m2"] != 0).all()
+
     # mineral reassignment: hcp positive, Moderate weight (0.75)
     assert (reassigned["hcp"] == 1.0).all()
     assert (reassigned["lcp"] == 0.0).all()
     assert np.allclose(reassigned["confidence_weight"], 0.75)
     assert (reassigned["confidence_tier"] == "Reviewed-Moderate").all()
-    # pure discard: no positive label, fixed weight 1.0, negative_of=orig class
     label_cols = ["olivine_t1", "olivine_t2", "lcp", "hcp", "plagioclase",
                   "other", "alteration"]
     assert (discarded[label_cols].to_numpy() == 0.0).all()
     assert np.allclose(discarded["confidence_weight"], 1.0)
 
-    # decisions.csv: two rows with correct provenance
+    # decisions.csv: two rows with correct provenance, clean layer (no :nom01)
     dec = pd.read_csv(os.path.join(relabels_dir, "decisions.csv"))
     assert len(dec) == 2
     assert set(dec["source_gpkg"]) == {"ndviz"}
     assert set(dec["predicted_class"]) == {"lcp", "olivine"}
     assert dec.set_index("predicted_class").loc["lcp", "corrected_class"] == "hcp"
     assert (dec["area_m2"] == 0).all()
+    assert not dec["layer"].astype(str).str.contains(":nom01").any()
     assert mod.relabel_session_count(relabels_dir) == 2
+
+
+def test_apply_relabel_missing_tile_fallback(tmp_path, monkeypatch):
+    corpus_path, _ = _make_full_corpus(tmp_path)
+    # glob points at a dir with no matching tile → m0/m1 fall back to 0.0
+    empty_glob = str(tmp_path / "no_tiles" / "{tile_id}_mrral_*_0327_4.img")
+    relabels_dir = str(tmp_path / "ndviz_relabels")
+    monkeypatch.setenv("NDVIZ_CORPUS", corpus_path)
+    monkeypatch.setenv("NDVIZ_RELABELS_DIR", relabels_dir)
+    mod = _load_module()
+    warnings = []
+    poly = {"class": "lcp", "source": "hand", "tile_id": "t01", "polygon_id": 6}
+    w = mod.apply_relabel([poly], "hcp", "High", corpus_path, relabels_dir,
+                          tile_glob=empty_glob, warn=warnings.append)
+    assert w[0]["m01_ok"] is False
+    assert warnings, "expected a warning on missing tile"
+    hn = pd.read_parquet(os.path.join(relabels_dir, "hard_negatives"))
+    assert (hn["m0"] == 0.0).all() and (hn["m1"] == 0.0).all()
+    # real coords still preserved even in fallback
+    assert list(hn.sort_values("pixel_row")["pixel_row"]) == list(range(20))
+    # degraded rows flagged via ':nom01' in the decision log layer
+    dec = pd.read_csv(os.path.join(relabels_dir, "decisions.csv"))
+    assert dec["layer"].astype(str).str.endswith(":nom01").all()
 
 
 def test_apply_relabel_tag_semantics(tmp_path, monkeypatch):

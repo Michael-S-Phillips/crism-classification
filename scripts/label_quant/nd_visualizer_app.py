@@ -38,13 +38,18 @@ DEFAULT_ENDMEMBERS = os.environ.get(
 DEFAULT_WAVELENGTHS = os.environ.get(
     "NDVIZ_WAVELENGTHS",
     "reports/floor_tests/v3b_lrscale001/nili/vector_nili_6cls_wavelengths.json")
-# Full (coordinate-free) pixel corpus + review-format session dir for relabels.
+# Full pixel corpus (now with real pixel_row/pixel_col) + relabel session dir.
 DEFAULT_CORPUS = os.environ.get("NDVIZ_CORPUS", "data/labeled_spectra.parquet")
 DEFAULT_RELABELS_DIR = os.environ.get("NDVIZ_RELABELS_DIR", "data/ndviz_relabels")
 
 # Relabel targets exposed in the visualizer's "relabel as:" selectbox.
 RELABEL_OPTIONS = ["olivine", "lcp", "hcp", "plagioclase", "alteration",
                    "bland", "ambiguous", "discard"]
+
+# Source-tile glob for back-filling m0/m1 (raster bands 1-2) at real pixel
+# coords. {tile_id} is substituted; overridable so tests can point at a fixture.
+DEFAULT_TILE_GLOB = os.environ.get(
+    "NDVIZ_TILE_GLOB", "/mnt/mrdr/mc*/{tile_id}_mrral_*_0327_4.img")
 
 # Review-app class palette (fixed).
 CLASS_PALETTE = {
@@ -146,11 +151,43 @@ def polygon_uid(orig_class, source, tile_id, polygon_id) -> str:
 def read_polygon_rows(corpus_path: str, cls, source, tile_id, polygon_id
                       ) -> pd.DataFrame:
     """Read every pixel row for one polygon from the corpus via predicate
-    pushdown on (class, source, tile_id, polygon_id)."""
+    pushdown on (class, source, tile_id, polygon_id). Includes the real
+    pixel_row/pixel_col coords now carried by the corpus."""
     import pyarrow.parquet as pq
+    cols = (["class", "source", "tile_id", "polygon_id",
+             "pixel_row", "pixel_col"] + BAND_COLS)
     flt = [("class", "=", cls), ("source", "=", source),
            ("tile_id", "=", tile_id), ("polygon_id", "=", int(polygon_id))]
-    return pq.read_table(corpus_path, filters=flt).to_pandas()
+    return pq.read_table(corpus_path, columns=cols, filters=flt).to_pandas()
+
+
+def find_tile_img(tile_id: str, tile_glob: str = DEFAULT_TILE_GLOB):
+    """Return the source-tile .img path for ``tile_id`` (first glob match) or
+    None if not found."""
+    import glob
+    matches = sorted(glob.glob(tile_glob.format(tile_id=tile_id)))
+    return matches[0] if matches else None
+
+
+def read_m0_m1(tile_id: str, rows: np.ndarray, cols: np.ndarray,
+               tile_glob: str = DEFAULT_TILE_GLOB):
+    """Read raster bands 1-2 (m0, m1) at the given pixel coords from the
+    source tile. Returns (m0, m1, ok): ok is False (arrays zero-filled) when
+    the tile img is missing or the read fails."""
+    n = len(rows)
+    path = find_tile_img(tile_id, tile_glob)
+    if path is None:
+        return np.zeros(n), np.zeros(n), False
+    try:
+        import rasterio
+        with rasterio.open(path) as ds:
+            b0 = ds.read(1)
+            b1 = ds.read(2)
+        r = np.clip(rows.astype(int), 0, b0.shape[0] - 1)
+        c = np.clip(cols.astype(int), 0, b0.shape[1] - 1)
+        return b0[r, c].astype(float), b1[r, c].astype(float), True
+    except Exception:
+        return np.zeros(n), np.zeros(n), False
 
 
 def relabel_session_count(relabels_dir: str) -> int:
@@ -165,7 +202,8 @@ def relabel_session_count(relabels_dir: str) -> int:
 
 
 def apply_relabel(polygons, new_label: str, confidence: str,
-                  corpus_path: str, relabels_dir: str) -> list:
+                  corpus_path: str, relabels_dir: str,
+                  tile_glob: str = DEFAULT_TILE_GLOB, warn=None) -> list:
     """Write a whole-polygon relabel to a review-format session dir.
 
     ``polygons`` is a list of dicts with keys class, source, tile_id,
@@ -173,10 +211,11 @@ def apply_relabel(polygons, new_label: str, confidence: str,
     RELABEL_OPTIONS. Reuses ``scripts.review.persistence`` (DecisionLog +
     HardNegativesWriter) so the output is ingestible by the 7-class build.
 
-    Band note: the corpus is coordinate-free and holds only m2..m58; the
-    persistence schema needs 59 bands (m0..m58) + pixel_row/pixel_col. m0/m1
-    are filled 0.0 (they lie below the 450 nm analysis window) and pixel
-    coords are synthesized (row index / 0) — the corpus does not store them.
+    Rows carry genuine 59-band spectra: m2..m58 from the corpus, and m0/m1
+    read from raster bands 1-2 of the source tile at the real pixel coords.
+    When the tile img is missing/unreadable, m0/m1 fall back to 0.0, ``warn``
+    (if given, e.g. st.warning) is called, and ':nom01' is appended to the
+    decision log's ``layer`` value to mark the degraded rows.
     """
     from scripts.review.persistence import DecisionLog, HardNegativesWriter
 
@@ -192,11 +231,19 @@ def apply_relabel(polygons, new_label: str, confidence: str,
         if n == 0:
             continue
 
+        rows_idx = sub["pixel_row"].to_numpy(dtype=np.int64)
+        cols_idx = sub["pixel_col"].to_numpy(dtype=np.int64)
+
         spectra = np.zeros((n, 59), dtype=float)
-        for i in range(2, 59):  # m0/m1 stay 0.0 (outside analysis window)
+        for i in range(2, 59):
             spectra[:, i] = sub[f"m{i}"].to_numpy(dtype=float)
-        rows_idx = np.arange(n, dtype=np.int64)   # synthetic: no coords in corpus
-        cols_idx = np.zeros(n, dtype=np.int64)
+        m0, m1, ok = read_m0_m1(tile_id, rows_idx, cols_idx, tile_glob)
+        spectra[:, 0] = m0
+        spectra[:, 1] = m1
+        layer = source if ok else f"{source}:nom01"
+        if not ok and warn is not None:
+            warn(f"Tile img for {tile_id} not found/readable — m0/m1 set to "
+                 f"0.0 for polygon {tile_id}/{pid}.")
 
         uid = polygon_uid(cls, source, tile_id, pid)
         if new_label == "discard":
@@ -210,13 +257,14 @@ def apply_relabel(polygons, new_label: str, confidence: str,
             confidence=confidence)
 
         dlog.append({
-            "source_gpkg": "ndviz", "layer": source, "polygon_uid": uid,
+            "source_gpkg": "ndviz", "layer": layer, "polygon_uid": uid,
             "tile_id": str(tile_id), "predicted_class": cls,
             "decision": decision, "corrected_class": (corrected or ""),
             "n_pixels": n, "area_m2": 0, "confidence": confidence,
         })
         written.append({"uid": uid, "tile_id": tile_id, "polygon_id": pid,
-                        "orig_class": cls, "new_label": new_label, "n_px": n})
+                        "orig_class": cls, "new_label": new_label, "n_px": n,
+                        "m01_ok": ok})
     return written
 
 
@@ -620,7 +668,7 @@ def main():
                 st.warning("No polygons selected.")
             else:
                 written = apply_relabel(chosen, new_label, conf, corpus_path,
-                                        relabels_dir)
+                                        relabels_dir, warn=st.warning)
                 if written:
                     summary = ", ".join(
                         f"{w['tile_id']}/{w['polygon_id']} {w['orig_class']}"
