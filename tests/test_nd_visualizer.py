@@ -82,6 +82,19 @@ def test_projection_modes(app):
         assert not app.exception, f"exception in projection mode {mode}"
 
 
+def test_pca_component_selection(app):
+    app.run()
+    assert not app.exception
+    # PCA is the default projection mode; choose PC2/PC3/PC4 per axis
+    # (synthetic data has enough samples for >=4 components).
+    app.selectbox(key="pca_x").set_value(1).run()
+    app.selectbox(key="pca_y").set_value(2).run()
+    app.selectbox(key="pca_z").set_value(3).run()
+    assert not app.exception
+    assert app.selectbox(key="pca_x").value == 1
+    assert app.selectbox(key="pca_z").value == 3
+
+
 def test_angle_to_endmember(app):
     app.run()
     app.radio(key="color_mode").set_value("angle to endmember").run()

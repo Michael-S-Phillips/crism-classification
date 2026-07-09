@@ -55,6 +55,9 @@ SOURCE_PALETTE = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564
 
 GREY = "#cccccc"
 
+# Max principal components computed in PCA mode (bounded by data size at fit).
+N_PCA = 10
+
 
 # --------------------------------------------------------------------------- #
 # Pure helpers (importable / testable without Streamlit)
@@ -194,13 +197,28 @@ def main():
     axis_titles = ["x", "y", "z"]
     if proj_mode == "PCA":
         from sklearn.decomposition import PCA
-        ncomp = min(3, M.shape[0], M.shape[1])
+        ncomp = min(N_PCA, M.shape[0], M.shape[1])
         pca = PCA(n_components=ncomp)
-        coords = pca.fit_transform(Mn)
-        if coords.shape[1] < 3:
-            coords = np.pad(coords, ((0, 0), (0, 3 - coords.shape[1])))
-        evr = list(pca.explained_variance_ratio_) + [0.0, 0.0, 0.0]
-        axis_titles = [f"PC{i + 1} ({evr[i] * 100:.1f}%)" for i in range(3)]
+        T = pca.fit_transform(Mn)
+        # Pad the transform to >=3 cols so the axis selectors always have 3.
+        if T.shape[1] < 3:
+            T = np.pad(T, ((0, 0), (0, 3 - T.shape[1])))
+        evr = list(pca.explained_variance_ratio_) + [0.0] * 3
+        pc_labels = [f"PC{i + 1} ({evr[i] * 100:.1f}%)" for i in range(T.shape[1])]
+        pc_opts = list(range(T.shape[1]))
+        pc_fmt = lambda i: pc_labels[i]
+        # The component CHOICE just indexes columns of the (already fit)
+        # transform — changing it does NOT refit the PCA. Defaults PC1/2/3,
+        # clamped when fewer components are available.
+        sel_pcs = []
+        for axis, default, key in zip("XYZ", (0, 1, 2),
+                                      ("pca_x", "pca_y", "pca_z")):
+            sel_pcs.append(st.sidebar.selectbox(
+                f"PC for {axis} axis", pc_opts,
+                index=min(default, len(pc_opts) - 1),
+                format_func=pc_fmt, key=key))
+        coords = T[:, sel_pcs]
+        axis_titles = [pc_labels[i] for i in sel_pcs]
     elif proj_mode == "Raw bands":
         opts = list(range(len(BAND_COLS)))
         fmt = lambda i: f"{BAND_COLS[i]} ({wl[i]:.0f} nm)"
