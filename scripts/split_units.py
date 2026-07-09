@@ -30,6 +30,13 @@ LINK_DEG = 0.25
 SPLIT_FRACS = {'train': 0.70, 'val': 0.15, 'test': 0.15}
 MIN_HOLDOUT_FRAC = 0.05
 SPLIT_ORDER = ('train', 'val', 'test')
+# A val/test split may exceed its target share of a class by at most this
+# much when accepting a new unit; units that would overshoot go elsewhere
+# (train is never capped, so assignment always succeeds). Without the cap, a
+# giant unit (e.g. 30% of a class) arriving while the holdout deficits are
+# still full gets dumped into val, overshooting the 15% target to ~30% with
+# no way back (observed on the Task F joint union: alteration 0.58/0.29/0.13).
+HOLDOUT_OVERSHOOT_TOL = 0.02
 
 NOMINAL_WH = 1500.0  # nominal tile width/height in pixels for centroid approx
 POS_THRESH = 0.5     # label positive if value > POS_THRESH
@@ -197,8 +204,12 @@ def assign_unit_balanced_splits(df: pd.DataFrame, label_cols, seed: int,
 
     Greedy: units by total pixel count descending; each unit -> the split with the
     largest weighted per-class deficit vs SPLIT_FRACS targets; deterministic
-    tie-break by split order. Then a min-holdout guard forces the smallest train
-    donor unit into val/test while a class's val/test fraction < MIN_HOLDOUT_FRAC.
+    tie-break by split order. A val/test split is skipped for a unit when
+    accepting it would push any of the unit's classes past its target share
+    + HOLDOUT_OVERSHOOT_TOL (giant units otherwise overshoot the holdouts
+    irrecoverably; train is never capped). Then a min-holdout guard forces the
+    smallest train donor unit into val/test while a class's val/test fraction
+    < MIN_HOLDOUT_FRAC.
 
     Caveat: with too few units per class, the balance targets can be
     unreachable and the min-holdout guard can produce degenerate splits (e.g.
@@ -242,11 +253,20 @@ def assign_unit_balanced_splits(df: pd.DataFrame, label_cols, seed: int,
     # rebuilding them on every (unit, split) pair inside the greedy loop.
     tgt_valid = {s: targets[s] > eps for s in SPLIT_ORDER}
     safe_tgt = {s: np.where(tgt_valid[s], targets[s], 1.0) for s in SPLIT_ORDER}
+    safe_total = np.where(class_total > eps, class_total, 1.0)
+    caps = {s: (SPLIT_FRACS[s] + HOLDOUT_OVERSHOOT_TOL) * safe_total
+            for s in SPLIT_ORDER if s != 'train'}
     for u in order:
         uc = unit_class[u]  # (C,)
         best_split = None
         best_score = None
         for s in SPLIT_ORDER:
+            if s != 'train':
+                # holdout overshoot cap: skip val/test if any class carried by
+                # this unit would exceed target share + HOLDOUT_OVERSHOOT_TOL.
+                over = (uc > 0) & tgt_valid[s] & (current[s] + uc > caps[s])
+                if np.any(over):
+                    continue
             deficit = np.where(tgt_valid[s], (targets[s] - current[s]) / safe_tgt[s], 0.0)
             # only classes present in this unit contribute, weighted by its px of c
             score = float(np.sum(deficit * uc))

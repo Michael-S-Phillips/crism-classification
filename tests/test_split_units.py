@@ -105,6 +105,53 @@ def test_balance_40_units_within_5pct():
         assert abs(frac.loc[c, 'test'] - 0.15) <= 0.05, (c, frac.loc[c])
 
 
+def test_holdout_overshoot_capped_for_giant_units():
+    """Regression from the Task F joint union: 'alt' mass concentrated in two
+    giant units (36% and 30% of the class; the 30% one co-occurring with a
+    plag-heavy unit, like union unit 385) plus many small units. The plain
+    greedy dumps a giant into val when the val deficit is still full,
+    overshooting the 15% target to ~30% with no way back. Since small-unit
+    compositions reaching ~15% exist for every class, the splitter must land
+    every class within 0.05 of 70/15/15.
+    """
+    lc = ['mineral', 'alt', 'plag']
+    tiles = _spread_tiles(60)
+    tile_iter = iter(tiles)
+    parts = []
+    pid = 0
+
+    def add(n, labels):
+        nonlocal pid
+        parts.append(make_poly(next(tile_iter), pid, 750, 750, n, labels, lc))
+        pid += 1
+
+    # mineral filler first in greedy order (biggest units) so the alt giants
+    # arrive when train already holds mass but val/test alt deficits are full.
+    rng = np.random.default_rng(5)
+    for _ in range(20):
+        add(int(rng.integers(10_000, 30_000)), ['mineral'])
+    # class alt (total 26,134): giants 9455 (36%) + 7800 (30%, coupled with
+    # plag) then a small-unit tail that can compose ~15% val and ~15% test.
+    add(9455, ['alt'])
+    add(7800, ['alt', 'plag'])
+    add(2976, ['alt'])
+    add(1403, ['alt'])
+    for _ in range(15):
+        add(300, ['alt'])
+    # class plag (total 24,529): the coupled giant above + a mid/small tail.
+    for n in (4846, 3282, 1659, 1261, 816, 713, 613, 596, 585, 571, 562,
+              487, 404, 334):
+        add(n, ['plag'])
+
+    df = pd.concat(parts, ignore_index=True)
+    splits = su.assign_unit_balanced_splits(df, lc, seed=42)
+    frac = su.achieved_fractions(df, splits, lc)
+    for c in lc:
+        assert abs(frac.loc[c, 'train'] - 0.70) <= 0.05, (c, frac.loc[c].to_dict())
+        assert abs(frac.loc[c, 'val'] - 0.15) <= 0.05, (c, frac.loc[c].to_dict())
+        assert abs(frac.loc[c, 'test'] - 0.15) <= 0.05, (c, frac.loc[c].to_dict())
+
+
 # ── Group 4: min-holdout guard ──────────────────────────────────────────────
 
 def test_min_holdout_guard_fires():
