@@ -7,7 +7,7 @@ import pandas as pd
 
 from scripts.build_7cls_dataset import load_confirmed_mineral_positives, load_bland_review, load_reassigned_minerals
 from scripts.build_7cls_dataset import load_junk_ambiguous, load_alteration_mc11
-from scripts.build_7cls_dataset import _build_base, BALANCE_COLS
+from scripts.build_7cls_dataset import _build_base, BALANCE_COLS, MAX_PX_PER_POLYGON
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts'))
 import split_units as su
@@ -152,6 +152,24 @@ def test_junk_preserves_per_polygon_weight(tmp_path):
     assert (out['junk'] > 0).all()
     assert (out['confidence_weight'] == 0.5).all()
     assert (out['confidence_tier'] == 'Reviewed-Low').all()
+
+
+def test_junk_applies_per_polygon_cap(tmp_path):
+    """Junk (ambiguous) is the only review loader without the per-polygon
+    cap — a top-5-polygon-holds-56%-of-the-class concentration. A 25k-row
+    polygon must be capped to MAX_PX_PER_POLYGON (20,000); a 1k-row polygon
+    is left intact."""
+    hdir = tmp_path / 'hardneg'
+    hdir.mkdir()
+    _tagged_hardneg_row(1, 'ambiguous', 1.0, 'High', n=25_000).to_parquet(
+        hdir / 'p_big.parquet', index=False)
+    _tagged_hardneg_row(2, 'ambiguous', 1.0, 'High', n=1_000).to_parquet(
+        hdir / 'p_small.parquet', index=False)
+    out = load_junk_ambiguous(str(hdir))
+    big = out[out['polygon_id'] == 1]
+    small = out[out['polygon_id'] == 2]
+    assert len(big) == MAX_PX_PER_POLYGON
+    assert len(small) == 1_000
 
 
 def test_alteration_preserves_per_polygon_weight(tmp_path):

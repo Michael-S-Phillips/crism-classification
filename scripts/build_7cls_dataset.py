@@ -60,7 +60,6 @@ DEFAULT_OUT           = os.path.join(PROJ, 'data', 'mrral_pixels_7cls.parquet')
 
 N_BLAND_PER_SOURCE = 300_000   # rows per bland source (bland tiles, mc13, mc11)
 MAX_PX_PER_POLYGON = 20_000    # per-polygon cap applied to review blands
-SPLIT_FRACS = {'train': 0.70, 'val': 0.15, 'test': 0.15}
 SEED = 42
 
 # Mineral classes balanced by the unit-aware splitter across every labeled
@@ -352,6 +351,9 @@ def load_junk_ambiguous(hn_dir: str) -> pd.DataFrame:
     df = _read_hn_tag(hn_dir, tag='ambiguous')
     print(f'  junk (ambiguous): {len(df):,} rows '
           f'({df["tile_id"].nunique()} tiles)')
+
+    df = _per_polygon_cap(df, MAX_PX_PER_POLYGON, SEED + 100)
+    print(f'  junk (ambiguous): {len(df):,} after {MAX_PX_PER_POLYGON:,}/polygon cap')
 
     # Stamp BEFORE the split so the 'junk' balance column exists; all rows are
     # junk, so balancing on it is exactly total-pixel balancing.
