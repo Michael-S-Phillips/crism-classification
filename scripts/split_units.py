@@ -1,0 +1,280 @@
+"""Unit-aware, pixel-balanced train/val/test splitter for CRISM labeled pixels.
+
+Kills adjacent-tile unit leakage: polygons that map the same geologic unit
+across neighboring tiles are clustered into a single "unit", and whole units
+are assigned to a split. Assignment greedily balances per-class *pixel*
+fractions to 70/15/15, with a min-holdout guard so every class keeps >=5% of
+its pixels in val and test.
+
+Pure pandas/numpy. No rasterio, no network. Tile centers come from a committed
+lookup (`data/tile_centers.csv`) generated once from tile filenames.
+
+Public API:
+    tile_center_deg(tile_id) -> (lat, lon)
+    polygon_units(df, link_deg=LINK_DEG) -> pd.Series
+    assign_unit_balanced_splits(df, label_cols, seed, link_deg=LINK_DEG) -> pd.Series
+    achieved_fractions(df, splits, label_cols) -> pd.DataFrame
+
+`df` must have columns: tile_id, polygon_id, pixel_row, pixel_col, and the
+label columns (float; positive = value > 0.5).
+"""
+from __future__ import annotations
+
+import os
+
+import numpy as np
+import pandas as pd
+
+# ── Constants ────────────────────────────────────────────────────────────────
+LINK_DEG = 0.25
+SPLIT_FRACS = {'train': 0.70, 'val': 0.15, 'test': 0.15}
+MIN_HOLDOUT_FRAC = 0.05
+SPLIT_ORDER = ('train', 'val', 'test')
+
+NOMINAL_WH = 1500.0  # nominal tile width/height in pixels for centroid approx
+POS_THRESH = 0.5     # label positive if value > POS_THRESH
+
+_PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_TILE_CENTERS_CSV = os.path.join(_PROJ, 'data', 'tile_centers.csv')
+
+# module-level cache: tile_id -> (lat, lon)
+_TILE_CENTERS: dict[str, tuple[float, float]] | None = None
+
+
+def _load_tile_centers() -> dict[str, tuple[float, float]]:
+    global _TILE_CENTERS
+    if _TILE_CENTERS is None:
+        if not os.path.exists(_TILE_CENTERS_CSV):
+            raise FileNotFoundError(
+                f'tile centers lookup missing: {_TILE_CENTERS_CSV}. '
+                'Regenerate by globbing /mnt/mrdr/mc*/t*_mrral_*.img filenames.')
+        cc = pd.read_csv(_TILE_CENTERS_CSV)
+        _TILE_CENTERS = {
+            str(r.tile_id): (float(r.lat), float(r.lon))
+            for r in cc.itertuples(index=False)
+        }
+    return _TILE_CENTERS
+
+
+def tile_center_deg(tile_id: str) -> tuple[float, float]:
+    """Return (lat, lon) center of a tile from the committed lookup.
+
+    Filename coords (e.g. t1444_mrral_30n328) are the tile's lower-left/
+    reference corner; +2.5 deg each gives the center. Raises KeyError for
+    unknown tiles.
+    """
+    centers = _load_tile_centers()
+    try:
+        return centers[str(tile_id)]
+    except KeyError:
+        raise KeyError(
+            f'unknown tile_id {tile_id!r}: not in {_TILE_CENTERS_CSV}. '
+            'If this tile is real, regenerate the lookup from tile filenames.')
+
+
+# ── Polygon centroids & units ────────────────────────────────────────────────
+
+def _polygon_centroids(df: pd.DataFrame) -> pd.DataFrame:
+    """One row per (tile_id, polygon_id): mean pixel + geographic centroid."""
+    g = (df.groupby(['tile_id', 'polygon_id'], sort=True)
+           .agg(mean_row=('pixel_row', 'mean'),
+                mean_col=('pixel_col', 'mean'))
+           .reset_index())
+    latlon = g['tile_id'].map(tile_center_deg)
+    t_lat = latlon.map(lambda x: x[0]).to_numpy(dtype=float)
+    t_lon = latlon.map(lambda x: x[1]).to_numpy(dtype=float)
+    g['lat'] = t_lat - 5.0 * ((g['mean_row'].to_numpy() / NOMINAL_WH) - 0.5)
+    g['lon'] = t_lon + 5.0 * ((g['mean_col'].to_numpy() / NOMINAL_WH) - 0.5)
+    return g
+
+
+class _UnionFind:
+    def __init__(self, n: int):
+        self.parent = list(range(n))
+        self.rank = [0] * n
+
+    def find(self, x: int) -> int:
+        while self.parent[x] != x:
+            self.parent[x] = self.parent[self.parent[x]]
+            x = self.parent[x]
+        return x
+
+    def union(self, a: int, b: int) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra == rb:
+            return
+        if self.rank[ra] < self.rank[rb]:
+            ra, rb = rb, ra
+        self.parent[rb] = ra
+        if self.rank[ra] == self.rank[rb]:
+            self.rank[ra] += 1
+
+
+def _link_components(lat: np.ndarray, lon: np.ndarray, link_deg: float) -> np.ndarray:
+    """Single-linkage connected components; returns integer component id per point.
+
+    Distance: sqrt(dlat^2 + (dlon_wrapped * cos(mean_lat))^2) in degrees.
+    Grid-bucketed by link_deg cells so only nearby polygons are compared.
+    """
+    n = len(lat)
+    uf = _UnionFind(n)
+    if n <= 1:
+        return np.zeros(n, dtype=int)
+
+    cell = link_deg
+    # bucket by (lat_cell, lon_cell); lon wraps at 360
+    buckets: dict[tuple[int, int], list[int]] = {}
+    lat_cell = np.floor(lat / cell).astype(int)
+    lon_cell = np.floor((lon % 360.0) / cell).astype(int)
+    n_lon_cells = int(np.ceil(360.0 / cell))
+    for i in range(n):
+        buckets.setdefault((int(lat_cell[i]), int(lon_cell[i])), []).append(i)
+
+    link2 = link_deg * link_deg
+    for i in range(n):
+        lci, loi = int(lat_cell[i]), int(lon_cell[i])
+        for dla in (-1, 0, 1):
+            for dlo in (-1, 0, 1):
+                key = (lci + dla, (loi + dlo) % n_lon_cells)
+                for j in buckets.get(key, ()):
+                    if j <= i:
+                        continue
+                    dlat = lat[i] - lat[j]
+                    dlon = (lon[i] - lon[j] + 180.0) % 360.0 - 180.0
+                    mlat = np.radians((lat[i] + lat[j]) / 2.0)
+                    dscaled = dlon * np.cos(mlat)
+                    if dlat * dlat + dscaled * dscaled <= link2:
+                        uf.union(i, j)
+    roots = np.array([uf.find(i) for i in range(n)], dtype=int)
+    # normalize to compact 0..k-1 ids, order by first appearance
+    _, comp = np.unique(roots, return_inverse=True)
+    return comp
+
+
+def polygon_units(df: pd.DataFrame, link_deg: float = LINK_DEG) -> pd.Series:
+    """Unit id per row (indexed like df).
+
+    Polygon centroid = tile center + 5*((mean_col/1500)-.5) lon,
+    -(5*((mean_row/1500)-.5)) lat; single-linkage components at link_deg.
+    """
+    cents = _polygon_centroids(df)
+    comp = _link_components(cents['lat'].to_numpy(), cents['lon'].to_numpy(), link_deg)
+    cents['unit'] = comp
+    key = df[['tile_id', 'polygon_id']].merge(
+        cents[['tile_id', 'polygon_id', 'unit']],
+        on=['tile_id', 'polygon_id'], how='left')
+    out = pd.Series(key['unit'].to_numpy(), index=df.index, name='unit')
+    return out
+
+
+# ── Greedy pixel-balanced assignment ─────────────────────────────────────────
+
+def _positive_counts(df: pd.DataFrame, label_cols: list[str]) -> np.ndarray:
+    """Boolean positive matrix (n_rows x n_classes)."""
+    return (df[label_cols].to_numpy(dtype=float) > POS_THRESH)
+
+
+def assign_unit_balanced_splits(df: pd.DataFrame, label_cols, seed: int,
+                                link_deg: float = LINK_DEG) -> pd.Series:
+    """Assign whole geographic units to train/val/test, balancing per-class pixels.
+
+    Greedy: units by total pixel count descending; each unit -> the split with the
+    largest weighted per-class deficit vs SPLIT_FRACS targets; deterministic
+    tie-break by split order. Then a min-holdout guard forces the smallest train
+    donor unit into val/test while a class's val/test fraction < MIN_HOLDOUT_FRAC.
+
+    Returns a pd.Series of 'train'/'val'/'test' indexed like df.
+    """
+    label_cols = list(label_cols)
+    units = polygon_units(df, link_deg).to_numpy()
+    pos = _positive_counts(df, label_cols)  # (n, C)
+    n_classes = len(label_cols)
+
+    uniq_units = np.unique(units)
+    # per-unit total pixels and per-class positive pixel counts
+    unit_total: dict[int, int] = {}
+    unit_class: dict[int, np.ndarray] = {}
+    unit_rows: dict[int, np.ndarray] = {}
+    for u in uniq_units:
+        mask = units == u
+        unit_rows[u] = mask
+        unit_total[u] = int(mask.sum())
+        unit_class[u] = pos[mask].sum(axis=0).astype(float)
+
+    # class totals & per-split targets
+    class_total = pos.sum(axis=0).astype(float)  # (C,)
+    targets = {s: SPLIT_FRACS[s] * class_total for s in SPLIT_ORDER}  # each (C,)
+
+    # deterministic order: total px desc, seeded random tiebreak, then unit id
+    rng = np.random.default_rng(seed)
+    tiebreak = {u: rng.random() for u in uniq_units}
+    order = sorted(uniq_units, key=lambda u: (-unit_total[u], tiebreak[u], int(u)))
+
+    current = {s: np.zeros(n_classes, dtype=float) for s in SPLIT_ORDER}
+    assign: dict[int, str] = {}
+
+    eps = 1e-9
+    for u in order:
+        uc = unit_class[u]  # (C,)
+        best_split = None
+        best_score = None
+        for s in SPLIT_ORDER:
+            tgt = targets[s]
+            deficit = np.where(tgt > eps, (tgt - current[s]) / np.where(tgt > eps, tgt, 1.0), 0.0)
+            # only classes present in this unit contribute, weighted by its px of c
+            score = float(np.sum(deficit * uc))
+            if best_score is None or score > best_score + eps:
+                best_score = score
+                best_split = s
+            # ties: keep earliest split-order (already the first encountered)
+        assign[u] = best_split
+        current[best_split] += uc
+
+    # ── min-holdout guard ────────────────────────────────────────────────────
+    def frac_in(split_name: str, c: int) -> float:
+        tot = class_total[c]
+        if tot <= 0:
+            return 1.0  # absent class: nothing to hold out
+        return current[split_name][c] / tot
+
+    for holdout in ('val', 'test'):
+        for c in range(n_classes):
+            if class_total[c] <= 0:
+                continue
+            while frac_in(holdout, c) < MIN_HOLDOUT_FRAC:
+                # smallest train donor unit that contains class c
+                donors = [u for u in uniq_units
+                          if assign[u] == 'train' and unit_class[u][c] > 0]
+                if not donors:
+                    break
+                donor = min(donors, key=lambda u: (unit_total[u], tiebreak[u], int(u)))
+                uc = unit_class[donor]
+                current['train'] -= uc
+                current[holdout] += uc
+                assign[donor] = holdout
+
+    # ── materialize per-row split ────────────────────────────────────────────
+    split_arr = np.empty(len(df), dtype=object)
+    for u in uniq_units:
+        split_arr[unit_rows[u]] = assign[u]
+    return pd.Series(split_arr, index=df.index, name='split')
+
+
+def achieved_fractions(df: pd.DataFrame, splits, label_cols) -> pd.DataFrame:
+    """Per-class fraction of positive pixels in each split.
+
+    Rows = label_cols, columns = train/val/test. NaN class total -> 0 fractions.
+    """
+    label_cols = list(label_cols)
+    if not isinstance(splits, pd.Series):
+        splits = pd.Series(np.asarray(splits), index=df.index)
+    pos = _positive_counts(df, label_cols)  # (n, C)
+    sp = splits.to_numpy()
+    out = pd.DataFrame(0.0, index=label_cols, columns=list(SPLIT_ORDER))
+    totals = pos.sum(axis=0).astype(float)
+    for si, s in enumerate(SPLIT_ORDER):
+        mask = sp == s
+        counts = pos[mask].sum(axis=0).astype(float)
+        for ci, c in enumerate(label_cols):
+            out.loc[c, s] = counts[ci] / totals[ci] if totals[ci] > 0 else 0.0
+    return out
