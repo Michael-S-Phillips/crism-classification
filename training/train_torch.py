@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.dataset import CRISMPixelDataset, CRISMPatchDataset
 from training.losses import WeightedBCEWithLogitsLoss
-from evaluation.metrics import compute_full_metrics
+from evaluation.metrics import compute_full_metrics, compute_map
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ def train_torch_model(
     mrrsu_aux_dir: Optional[str] = None,
     is_aux_model: bool = False,
     min_delta: float = 0.0,
-    stop_metric: str = 'val_mAP',
+    stop_metric: str = 'val_mAP_core',
     decomp_lambda_recon: float = 1.0,
     decomp_lambda_eps: float = 0.1,
     decomp_lambda_T: float = 0.01,
@@ -93,7 +93,8 @@ def train_torch_model(
     **wandb_config
 ) -> Dict[str, Any]:
     """
-    Train a PyTorch model with early stopping on val mAP.
+    Train a PyTorch model with early stopping on val_mAP_core (mAP excluding
+    the junk class in 7-class mode; equal to plain val_mAP for 5/6-class).
 
     Automatically uses CRISMPatchDataset when mrrsu_map is provided (CNN/ViT),
     otherwise uses CRISMPixelDataset (MLP).
@@ -306,6 +307,14 @@ def train_torch_model(
     patience_counter = 0
     stopped_epoch = max_epochs
     metrics = {}
+    # Default monitored metric is val_mAP_core: mAP excluding the junk class
+    # (7-class mode only; identical to val_mAP for 5/6-class heads). Junk's
+    # noisy near-zero AP deflates and destabilizes plain val_mAP, so plain
+    # 'val_mAP' requests are promoted. Both values are still logged.
+    if stop_metric == 'val_mAP':
+        stop_metric = 'val_mAP_core'
+        logger.info("stop_metric 'val_mAP' promoted to 'val_mAP_core' "
+                    "(junk excluded; equal to val_mAP for 5/6-class runs)")
     logger.info(f"Early-stop metric: {stop_metric} (patience={patience})")
 
     for epoch in range(1, max_epochs + 1):
@@ -414,24 +423,33 @@ def train_torch_model(
 
         metrics = compute_full_metrics(y_true, y_score, conf_tiers)
         val_map = metrics['mAP']
+        # Core mAP: junk excluded in 7-class mode (LABEL_COLS_7CLASS width);
+        # for 5/6-class heads there is no junk class, so core == full.
+        if y_score.shape[1] == 7:
+            val_map_core = compute_map(y_true, y_score, exclude=('junk',))
+        else:
+            val_map_core = val_map
         if val_map > best_map:
             best_map = val_map
             best_map_state = copy.deepcopy(model.state_dict())
         flat = _flatten_metrics(metrics)
-        # Pick the scalar we early-stop on. Default 'val_mAP'. Any flat key works.
-        if stop_metric == 'val_mAP':
-            monitored = val_map
+        flat['val_mAP_core'] = val_map_core
+        # Pick the scalar we early-stop on. Default 'val_mAP_core'. Any flat
+        # key works ('val_mAP' itself is promoted to core above).
+        if stop_metric == 'val_mAP_core':
+            monitored = val_map_core
         elif stop_metric in flat:
             monitored = float(flat[stop_metric])
         else:
             raise KeyError(
                 f"stop_metric={stop_metric!r} not in available metrics: "
-                f"['val_mAP'] + {sorted(flat.keys())}"
+                f"{sorted(flat.keys())}"
             )
 
         logger.info(
             f"Epoch {epoch}/{max_epochs} | train_loss={np.mean(train_losses):.4f} | "
-            f"val_mAP={val_map:.4f} | {stop_metric}={monitored:.4f}"
+            f"val_mAP={val_map:.4f} | val_mAP_core={val_map_core:.4f} | "
+            f"{stop_metric}={monitored:.4f}"
         )
 
         if use_wandb:
@@ -497,9 +515,11 @@ def train_torch_model(
         )
         logger.info(f"Saved checkpoint: {ckpt_path} ({stop_metric}={best_monitored:.4f})")
 
-        # Secondary: best val_mAP — only written when stop_metric differs, so the
-        # two files are never identical copies.
-        if stop_metric != 'val_mAP' and best_map_state is not None:
+        # Secondary: best val_mAP — only written when it actually diverges from
+        # the monitored metric, so the two files are never identical copies
+        # (5/6-class runs have val_mAP_core == val_mAP every epoch).
+        if (stop_metric != 'val_mAP' and best_map_state is not None
+                and best_map != best_monitored):
             map_ckpt = os.path.join(checkpoint_dir, f'{model_name}_best_map.pt')
             torch.save(
                 {'model_state': best_map_state, 'stop_metric': 'val_mAP',

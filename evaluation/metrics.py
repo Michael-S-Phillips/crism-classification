@@ -25,10 +25,20 @@ def _class_names(n_classes: int) -> List[str]:
     return list(cols[:n_classes])
 
 
-def compute_map(y_true: np.ndarray, y_score: np.ndarray) -> float:
-    """Mean Average Precision across all classes. Skips classes with no positives."""
+def compute_map(y_true: np.ndarray, y_score: np.ndarray,
+                exclude: tuple = ()) -> float:
+    """Mean Average Precision across all classes. Skips classes with no positives.
+
+    exclude: class names (resolved via ``_class_names(y_score.shape[1])``)
+    dropped from the mean, e.g. ``exclude=('junk',)`` for the core stop metric.
+    Names not in the resolved label set are ignored (no-op). Default () keeps
+    the historical behavior.
+    """
+    class_names = _class_names(y_score.shape[1]) if exclude else []
     aps = []
     for i in range(y_true.shape[1]):
+        if i < len(class_names) and class_names[i] in exclude:
+            continue
         if y_true[:, i].sum() > 0:
             aps.append(average_precision_score(
                 (y_true[:, i] > 0.4).astype(int), y_score[:, i]
