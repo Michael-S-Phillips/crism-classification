@@ -74,6 +74,37 @@ def test_runs_without_exception(app):
     assert not app.exception
 
 
+def test_seven_class_synthetic(tmp_path, monkeypatch):
+    """Synthetic corpus with junk + bland: all 7 classes selectable, minerals
+    on / reference clouds off by default, app clean."""
+    rng = np.random.RandomState(1)
+    classes = ["olivine", "lcp", "hcp", "plagioclase", "alteration", "bland",
+               "junk"]
+    rows = []
+    for ci, cls in enumerate(classes):
+        center = np.linspace(0.1, 0.4, NB) + 0.05 * ci
+        for j in range(30):
+            spec = center + rng.normal(0, 0.01, NB)
+            rows.append({
+                "class": cls, "source": "hand", "tile_id": f"t{ci:02d}",
+                "polygon_id": j % 4, "confidence_weight": 1.0, "multi": False,
+                **{c: v for c, v in zip(BAND_COLS, spec)},
+            })
+    viz_path = tmp_path / "viz7.parquet"
+    pd.DataFrame(rows).to_parquet(viz_path)
+    monkeypatch.setenv("NDVIZ_PARQUET", str(viz_path))
+    monkeypatch.setenv("NDVIZ_ENDMEMBERS", str(tmp_path / "missing.csv"))
+    monkeypatch.setenv("NDVIZ_WAVELENGTHS", str(tmp_path / "missing.json"))
+    at = AppTest.from_file(APP_PATH, default_timeout=60)
+    at.run()
+    assert not at.exception
+    cf = at.multiselect(key="f_classes")
+    assert set(cf.options) == set(classes), "class filter missing options"
+    # minerals on, bland+junk off by default
+    assert "junk" not in cf.value and "bland" not in cf.value
+    assert {"olivine", "lcp", "hcp", "plagioclase", "alteration"} <= set(cf.value)
+
+
 def test_projection_modes(app):
     app.run()
     assert not app.exception

@@ -47,8 +47,11 @@ CLASS_PALETTE = {
     "plagioclase": "#f58231",
     "bland": "#aaaaaa",
     "alteration": "#cc8899",
+    "junk": "#808080",
 }
 MINERALS = ["olivine", "lcp", "hcp", "plagioclase", "alteration"]
+# Reference clouds (loadable but off by default in the class filter).
+REFERENCE_CLASSES = ["bland", "junk"]
 
 # Categorical palette for the "source" colour mode.
 SOURCE_PALETTE = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
@@ -196,7 +199,8 @@ def main():
     # ---- sidebar: filters ------------------------------------------------- #
     st.sidebar.header("Filters")
     all_classes = [c for c in CLASS_PALETTE if c in set(df_all["class"])]
-    default_classes = [c for c in MINERALS if c in all_classes]
+    # Minerals on by default; reference clouds (bland, junk) off by default.
+    default_classes = [c for c in all_classes if c not in REFERENCE_CLASSES]
     sel_classes = st.sidebar.multiselect(
         "classes", all_classes, default=default_classes, key="f_classes")
 
