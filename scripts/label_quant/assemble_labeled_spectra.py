@@ -52,8 +52,10 @@ OUTPUT_COLS = ["class", "source", "tile_id", "polygon_id",
                "confidence_weight", "multi", "pixel_row", "pixel_col"] \
     + BAND_COLS
 
-# Source precedence for dedupe (lower rank wins).
-_SOURCE_RANK = {"reassigned": 0, "tag": 1, "confirmed": 2, "hand": 3}
+# Source precedence for dedupe (lower rank wins). ndviz (interactive relabel
+# session) is authoritative and outranks everything.
+_SOURCE_RANK = {"ndviz": 0, "reassigned": 1, "tag": 2, "confirmed": 3,
+                "hand": 4}
 
 # Columns we ever need to read from a source frame (bands + labels + meta).
 _READ_META = ["tile_id", "polygon_id", "pixel_row", "pixel_col",
@@ -73,6 +75,7 @@ def _default_paths():
         "reassigned": [os.path.join(data, "mc13_review", "hard_negatives"),
                        os.path.join(data, "mc13_review_7cls_v3",
                                     "hard_negatives")],
+        "ndviz": os.path.join(data, "ndviz_relabels", "hard_negatives"),
         "out": os.path.join(data, "labeled_spectra.parquet"),
         "viz_out": os.path.join(data, "labeled_spectra_viz.parquet"),
     }
@@ -250,6 +253,59 @@ def _read_tag_rows(dirs, tag):
     return pd.concat(parts, ignore_index=True)
 
 
+def _read_ndviz(ndviz_dir):
+    """Read the interactive-relabel session (all rows, every decision type).
+
+    Absent dir or a dir with no parquet files -> empty frame (no-op). Coords
+    downcast to int32 to match the corpus for the suppression anti-join."""
+    if not ndviz_dir or not os.path.exists(ndviz_dir):
+        return pd.DataFrame()
+    avail = set(_first_parquet_schema(ndviz_dir))
+    if not avail:
+        return pd.DataFrame()
+    want = _READ_META + BAND_COLS + _MINERAL_COLS + ["negative_of"]
+    want = [c for c in want if c in avail]
+    if "alteration" in avail:
+        want.append("alteration")
+    df = pq.read_table(ndviz_dir, columns=want).to_pandas()
+    if df.empty:
+        return df
+    return _downcast_bands(_ensure_labels(df))
+
+
+def _build_ndviz_positives(df):
+    """Turn ndviz decisions into positive corpus rows (source='ndviz').
+
+    negative_of semantics written by the app:
+      '' (empty)   -> reassignment: mineral collapse, else other>0.5 & no
+                      mineral -> bland_reject.
+      'alteration' -> alteration tag.
+      'ambiguous'  -> junk tag.
+      anything else (original class name) -> discard: NO positive row (the
+                     pixel is still suppressed elsewhere via the key set).
+    Returns a list of explode/fixed-shaped frames."""
+    if df is None or df.empty:
+        return []
+    neg = df["negative_of"].fillna("").astype(str) if "negative_of" \
+        in df.columns else pd.Series([""] * len(df), index=df.index)
+    frames = []
+    reassign = df.loc[neg == ""]
+    if len(reassign):
+        mineral_hit = np.zeros(len(reassign), dtype=bool)
+        for c in _MINERAL_COLS:
+            mineral_hit |= reassign[c].to_numpy() > 0.5
+        frames.append(_explode_classes(reassign.loc[mineral_hit], "ndviz"))
+        other = (reassign["other"].to_numpy() if "other" in reassign.columns
+                 else np.zeros(len(reassign)))
+        bland = reassign.loc[(~mineral_hit) & (other > 0.5)]
+        frames.append(_fixed_class_rows(bland, "bland_reject", "ndviz"))
+    frames.append(_fixed_class_rows(df.loc[neg == "alteration"],
+                                    "alteration", "ndviz"))
+    frames.append(_fixed_class_rows(df.loc[neg == "ambiguous"],
+                                    "junk", "ndviz"))
+    return [f for f in frames if not f.empty]
+
+
 def _class_flags(df):
     """Boolean DataFrame of the five collapsed classes."""
     return pd.DataFrame({
@@ -386,9 +442,31 @@ def _build_viz(full_df, seed, viz_per_class, viz_polygon_cap):
     return pd.concat(parts, ignore_index=True)[OUTPUT_COLS]
 
 
+def _suppress_index(ndviz_raw):
+    """MultiIndex of (tile_id, pixel_row, pixel_col) for every ndviz row
+    (any decision type), used to anti-join lower-precedence sources. int32
+    coords to match the corpus frames."""
+    keys = ndviz_raw[["tile_id", "pixel_row", "pixel_col"]].copy()
+    keys["pixel_row"] = keys["pixel_row"].astype(np.int32)
+    keys["pixel_col"] = keys["pixel_col"].astype(np.int32)
+    return pd.MultiIndex.from_frame(keys).unique()
+
+
+def _anti_join(combined, suppress_idx):
+    """Drop rows of ``combined`` whose pixel is in the ndviz suppression set."""
+    if combined.empty:
+        return combined
+    key = pd.MultiIndex.from_arrays([
+        combined["tile_id"].to_numpy(),
+        combined["pixel_row"].to_numpy(),
+        combined["pixel_col"].to_numpy(),
+    ])
+    return combined.loc[~key.isin(suppress_idx)]
+
+
 def assemble(hand_path, confirmed_dirs, reassigned_dirs,
              out_path=None, viz_out_path=None, bland_path="__hand__",
-             tag_dirs="__reassigned__",
+             tag_dirs="__reassigned__", ndviz_dir="__default__",
              seed=42, viz_per_class=5000, viz_polygon_cap=200, write=True):
     """Assemble the labeled-spectra corpus and viz subsample.
 
@@ -397,10 +475,23 @@ def assemble(hand_path, confirmed_dirs, reassigned_dirs,
     (which skips only the base-bland source; reject->bland reassignments from
     ``reassigned_dirs`` are always included). The tag sources (alteration,
     junk) read from ``tag_dirs``, which defaults to ``reassigned_dirs``.
+
+    ``ndviz_dir`` is the interactive-relabel session (review-format rows). Its
+    decisions supersede at PIXEL level: every ndviz pixel is removed from all
+    other sources (anti-join) before the precedence dedupe, then ndviz's own
+    positive rows (reassignments + alteration/ambiguous tags; discards add
+    nothing) are ingested with source='ndviz'. Absent dir -> no-op.
     """
     if tag_dirs == "__reassigned__":
         tag_dirs = reassigned_dirs
+    if ndviz_dir == "__default__":
+        ndviz_dir = _default_paths()["ndviz"]
     include_base_bland = bland_path is not None
+
+    # ndviz session first: it drives pixel-level suppression of other sources.
+    ndviz_raw = _read_ndviz(ndviz_dir)
+    suppress_idx = (_suppress_index(ndviz_raw) if not ndviz_raw.empty
+                    else None)
 
     # Build each source's output-shaped frame, freeing raw reads immediately;
     # the reject->bland source alone is ~8.6M rows on a 15GB box.
@@ -431,6 +522,18 @@ def assemble(hand_path, confirmed_dirs, reassigned_dirs,
         combined = pd.DataFrame(columns=OUTPUT_COLS)
     del frames
     gc.collect()
+
+    if suppress_idx is not None:
+        # Remove every superseded pixel from the other sources, then ingest
+        # ndviz's positive rows (discards deliberately add none).
+        combined = _anti_join(combined, suppress_idx)
+        ndviz_frames = _build_ndviz_positives(ndviz_raw)
+        if ndviz_frames:
+            combined = pd.concat([combined] + ndviz_frames, ignore_index=True)
+        gc.collect()
+    del ndviz_raw
+    gc.collect()
+
     full_df = _dedupe(combined)
     del combined
     gc.collect()
@@ -472,6 +575,8 @@ def main(argv=None):
     ap.add_argument("--viz_out_path", default=d["viz_out"])
     ap.add_argument("--bland_path", default=None,
                     help="bland reference source (defaults to hand_path)")
+    ap.add_argument("--ndviz_dir", default=d["ndviz"],
+                    help="interactive-relabel session dir (absent -> no-op)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--viz_per_class", type=int, default=5000)
     ap.add_argument("--viz_polygon_cap", type=int, default=200)
@@ -485,6 +590,7 @@ def main(argv=None):
         out_path=args.out_path,
         viz_out_path=args.viz_out_path,
         bland_path=bland,
+        ndviz_dir=args.ndviz_dir,
         seed=args.seed,
         viz_per_class=args.viz_per_class,
         viz_polygon_cap=args.viz_polygon_cap,

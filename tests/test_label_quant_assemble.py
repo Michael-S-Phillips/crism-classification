@@ -281,3 +281,83 @@ def test_alteration_nan_when_column_absent(tmp_path):
     assert "alteration" not in set(full["class"])       # no bogus alt rows
     assert not full["class"].isna().any()                # no NaN class rows
     assert full["multi"].dtype == bool
+
+
+def test_ndviz_relabel_supersedes_pixel(tmp_path):
+    # hand-lcp at 3 pixels; ndviz relabels 2 of them lcp->hcp. Those 2 pixels
+    # must become hcp/ndviz with NO lcp row; the 3rd lcp pixel is untouched.
+    hand = _write_hand(tmp_path, [
+        {"tile_id": "T1", "pixel_row": 1, "pixel_col": 0, "lcp": 1.0},
+        {"tile_id": "T1", "pixel_row": 2, "pixel_col": 0, "lcp": 1.0},
+        {"tile_id": "T1", "pixel_row": 3, "pixel_col": 0, "lcp": 1.0},
+    ])
+    ndviz = _write_dir(tmp_path, "ndviz_relabels/hard_negatives", [
+        {"tile_id": "T1", "pixel_row": 1, "pixel_col": 0, "hcp": 1.0,
+         "negative_of": ""},
+        {"tile_id": "T1", "pixel_row": 2, "pixel_col": 0, "hcp": 1.0,
+         "negative_of": ""},
+    ], with_negative_of=True)
+    full, _ = assemble(hand_path=hand, confirmed_dirs=[], reassigned_dirs=[],
+                       bland_path=None, ndviz_dir=ndviz, write=False)
+    # pixels 1,2 -> hcp/ndviz, no lcp there
+    p12 = full[(full["pixel_row"].isin([1, 2]))]
+    assert set(p12["class"]) == {"hcp"}
+    assert set(p12["source"]) == {"ndviz"}
+    assert (full["class"] == "lcp").sum() == 1            # only pixel 3 lcp
+    assert full[full["class"] == "lcp"]["pixel_row"].iloc[0] == 3
+    assert (full["class"] == "hcp").sum() == 2
+
+
+def test_ndviz_discard_removes_pixel(tmp_path):
+    # hand-lcp at 2 pixels; ndviz discards pixel 1 (negative_of=<orig class>).
+    hand = _write_hand(tmp_path, [
+        {"tile_id": "T1", "pixel_row": 1, "pixel_col": 0, "lcp": 1.0},
+        {"tile_id": "T1", "pixel_row": 2, "pixel_col": 0, "lcp": 1.0},
+    ])
+    ndviz = _write_dir(tmp_path, "ndviz_relabels/hard_negatives", [
+        {"tile_id": "T1", "pixel_row": 1, "pixel_col": 0, "lcp": 1.0,
+         "negative_of": "lcp"},               # discard: reject back to lcp
+    ], with_negative_of=True)
+    full, _ = assemble(hand_path=hand, confirmed_dirs=[], reassigned_dirs=[],
+                       bland_path=None, ndviz_dir=ndviz, write=False)
+    # pixel 1 gone entirely; pixel 2 lcp survives
+    assert (full["pixel_row"] == 1).sum() == 0
+    assert (full["class"] == "lcp").sum() == 1
+    assert full[full["class"] == "lcp"]["pixel_row"].iloc[0] == 2
+
+
+def test_ndviz_ambiguous_tag_to_junk(tmp_path):
+    ndviz = _write_dir(tmp_path, "ndviz_relabels/hard_negatives", [
+        {"tile_id": "T1", "pixel_row": 5, "pixel_col": 0,
+         "negative_of": "ambiguous", "confidence_weight": 0.5},
+        {"tile_id": "T1", "pixel_row": 6, "pixel_col": 0,
+         "negative_of": "alteration", "confidence_weight": 0.75},
+    ], with_negative_of=True)
+    full, _ = assemble(hand_path=None, confirmed_dirs=[], reassigned_dirs=[],
+                       bland_path=None, ndviz_dir=ndviz, write=False)
+    junk = full[full["class"] == "junk"]
+    assert len(junk) == 1
+    assert junk["source"].iloc[0] == "ndviz"
+    alt = full[full["class"] == "alteration"]
+    assert len(alt) == 1
+    assert alt["source"].iloc[0] == "ndviz"
+
+
+def test_ndviz_missing_dir_is_noop(tmp_path):
+    hand = _write_hand(tmp_path, [
+        {"tile_id": "T1", "pixel_row": 1, "pixel_col": 0, "lcp": 1.0},
+        {"tile_id": "T1", "pixel_row": 2, "pixel_col": 0, "hcp": 1.0},
+    ])
+    # absent ndviz dir must yield output identical to passing no ndviz at all
+    missing = str(tmp_path / "does_not_exist" / "hard_negatives")
+    base, _ = assemble(hand_path=hand, confirmed_dirs=[], reassigned_dirs=[],
+                       bland_path=None, write=False)
+    with_missing, _ = assemble(hand_path=hand, confirmed_dirs=[],
+                               reassigned_dirs=[], bland_path=None,
+                               ndviz_dir=missing, write=False)
+    assert len(base) == len(with_missing)
+    assert base.sort_values(["pixel_row", "class"]).reset_index(
+        drop=True).equals(
+        with_missing.sort_values(["pixel_row", "class"]).reset_index(
+            drop=True))
+    assert "ndviz" not in set(with_missing["source"])
