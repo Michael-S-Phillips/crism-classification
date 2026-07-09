@@ -174,9 +174,12 @@ def main():
                              'Default 0.0 = strict, any non-improvement counts.')
     parser.add_argument('--stop_metric', type=str, default='val_mAP',
                         help='Metric watched for early stopping and best-checkpoint '
-                             'selection. Default val_mAP. Example: val_AP_plagioclase '
-                             'lets a run keep going even when overall mAP plateaus, '
-                             'so long as the plag class is still improving.')
+                             'selection. The default val_mAP is auto-promoted to '
+                             'val_mAP_core (mAP excluding the noisy junk class in '
+                             '7-class mode; identical to val_mAP for 5/6-class runs) '
+                             '— both are still logged. Per-class keys still work, '
+                             'e.g. val_AP_plagioclase lets a run keep going even when '
+                             'overall mAP plateaus, so long as plag is still improving.')
     parser.add_argument('--decomp_lambda_recon', type=float, default=1.0,
                         help='Weight on reconstruction MSE for DecompSpVit.')
     parser.add_argument('--decomp_lambda_eps', type=float, default=0.1,

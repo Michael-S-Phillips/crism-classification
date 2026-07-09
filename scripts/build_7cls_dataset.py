@@ -2,20 +2,38 @@
 Build the 7-class training parquet for the v3-bland 7-class run.
 
 Design decisions:
-  - Plagioclase: restored from Argyre/Hellas gpkg (splits from base parquet).
+  - Splits: EVERY labeled source is split by the unit-aware, pixel-balanced
+    splitter (scripts/split_units.py). Polygons within 0.25 deg (cos-lat
+    scaled, 360-wraparound) are clustered into geographic units, and whole
+    units are assigned to a single split (70/15/15 targets on per-class
+    *pixel* fractions, with a >=5% val/test min-holdout guard). This kills the
+    adjacent-tile leakage the old inherited/tile-level/polygon-level splits
+    carried (same mapped unit's pixels landing in both train and val). The
+    base parquet's inherited splits are OVERRIDDEN by this splitter; each
+    source is split independently with its own seed offset.
+  - Plagioclase: restored from Argyre/Hellas gpkg (base-parquet mineral rows,
+    plag preserved via zero_plag=False) then re-split by the unit splitter.
     MTRDR synth rows injected additionally at train/val time via
     --synth_train_cache/parquet and --synth_val_cache/parquet.
-  - Alteration: MC11 review only (65 polygons, 103.9k pixels). No Argyre/
-    Hellas/Nili gpkg alteration. Polygon-level 70/15/15 holdout so
-    val_AP_alteration is measured on clean, same-distribution held-out pixels.
-  - Bland (was "other"): three sources, each capped at N_BLAND_PER_SOURCE rows,
-    each assigned independent 70/15/15 splits:
-      1. Bland tiles (8 tiles, ~900k → subsampled)
+  - Alteration: review tags (negative_of='alteration') + alteration confirms /
+    co-occurring alteration on mineral rows. Unit-balanced holdout on the
+    'alteration' column so val_AP_alteration is measured on clean,
+    same-distribution held-out pixels.
+  - Bland (was "other"): four sources, each capped/subsampled then unit-split
+    on the 'other' column:
+      1. Bland tiles (subsampled to N_BLAND_PER_SOURCE)
       2. MC13 review blands (rejected polygons from MC13 review session)
       3. MC11 review blands (rejected polygons from MC11 review session)
-  - Junk (new class): ambiguous hard_negatives (negative_of='ambiguous', 34k).
-    Per-polygon reviewer confidence weight preserved, 70/15/15 tile-level split.
-  - MC13 confirmed mineral positives: tile-level 70/15/15 splits (20 tiles).
+  - Junk (new class): ambiguous hard_negatives (negative_of='ambiguous'). Now
+    per-polygon capped (MAX_PX_PER_POLYGON) like every other review loader,
+    then unit-split on the 'junk' column. Per-polygon reviewer confidence
+    weight preserved.
+  - Confirmed mineral positives + reject->mineral reassignments: per-polygon
+    capped, then unit-split on the mineral balance columns. Per-polygon
+    confidence weights preserved.
+  - Review sessions are ADDITIVE: original MC13 session + confidence-graded v3
+    session (MC13 + MC11), concatenated across confirmed_pixels / hard_negatives
+    dirs.
 
 Classes (7):  olivine | lcp | hcp | plagioclase | bland | alteration | junk
 

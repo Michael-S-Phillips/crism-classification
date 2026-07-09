@@ -12,15 +12,21 @@
 # Build the 7-class training parquet + patch cache.
 #
 # Data design (see scripts/build_7cls_dataset.py for full rationale):
+#   - Splits: ALL labeled sources use the unit-aware, pixel-balanced splitter
+#     (scripts/split_units.py). Polygons within 0.25 deg cluster into geographic
+#     units; whole units go to one split (70/15/15 on per-class pixels, >=5%
+#     val/test guard). Kills adjacent-tile unit leakage; base-parquet inherited
+#     splits are OVERRIDDEN. Each source split independently (own seed offset).
 #   - Review sessions are ADDITIVE: original MC13 session (weight 1.0) + the
 #     confidence-graded v3 session (MC13+MC11, per-polygon 0.5/0.75/1.0)
-#   - Plagioclase: Argyre/Hellas gpkg (base-parquet splits) + MTRDR synth
+#   - Plagioclase: Argyre/Hellas gpkg (unit-re-split) + MTRDR synth
 #   - Alteration: review tags (negative_of='alteration') + alteration confirms,
-#     per-polygon confidence weights preserved
-#   - Bland (was "other"): 3 sources × 300k rows, each 70/15/15 independently:
+#     per-polygon confidence weights preserved, unit-balanced holdout
+#   - Bland (was "other"): sources subsampled to 300k, each unit-split on 'other':
 #       1. Bland tiles  2. MC13 review blands  3. MC11 review blands (tile-id range)
 #   - Reassigned minerals (reject→mineral, incl. multi-label): weighted positives
-#   - Junk: ambiguous hard_negatives, 70/15/15 tile split, per-polygon weights
+#   - Junk: ambiguous hard_negatives, now PER-POLYGON CAPPED (was uncapped),
+#     unit-split on 'junk', per-polygon weights preserved
 #
 # Outputs:
 #   data/mrral_pixels_7cls.parquet
