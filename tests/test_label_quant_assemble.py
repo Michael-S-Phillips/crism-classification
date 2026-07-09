@@ -73,12 +73,18 @@ def test_schema_and_band_window(tmp_path):
     full, viz = assemble(hand_path=hand, confirmed_dirs=[], reassigned_dirs=[],
                          bland_path=None, write=False)
     assert list(full.columns) == OUTPUT_COLS
+    assert list(viz.columns) == OUTPUT_COLS
     # band cols are exactly m2..m58 (no m0/m1)
     assert BAND_COLS == [f"m{i}" for i in range(2, 59)]
     assert "m0" not in full.columns and "m1" not in full.columns
     assert "m2" in full.columns and "m58" in full.columns
     band_cols = [c for c in full.columns if c[0] == "m" and c[1:].isdigit()]
     assert len(band_cols) == 57
+    # real pixel coordinates are carried through both outputs (int dtype)
+    for df in (full, viz):
+        assert "pixel_row" in df.columns and "pixel_col" in df.columns
+        assert np.issubdtype(df["pixel_row"].dtype, np.integer)
+        assert np.issubdtype(df["pixel_col"].dtype, np.integer)
 
 
 def test_class_collapse_and_multi(tmp_path):

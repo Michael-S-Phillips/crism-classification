@@ -44,12 +44,13 @@ CLASSES = ["olivine", "lcp", "hcp", "plagioclase", "alteration"]
 # Raw mineral columns present in the source parquets.
 _MINERAL_COLS = ["olivine_t1", "olivine_t2", "lcp", "hcp", "plagioclase"]
 
-# Final output schema (pixel_row/pixel_col are internal, dropped before write).
+# Final output schema. pixel_row/pixel_col are the true tile coordinates,
+# carried through to both outputs (the visualizer's relabel path and the
+# patch-cache builder cut 7x7 patches at these coords; m0/m1 back-fill from
+# tiles needs them too).
 OUTPUT_COLS = ["class", "source", "tile_id", "polygon_id",
-               "confidence_weight", "multi"] + BAND_COLS
-
-# Internal columns carried through explode/dedupe then dropped.
-_KEY_COLS = ["tile_id", "pixel_row", "pixel_col"]
+               "confidence_weight", "multi", "pixel_row", "pixel_col"] \
+    + BAND_COLS
 
 # Source precedence for dedupe (lower rank wins).
 _SOURCE_RANK = {"reassigned": 0, "tag": 1, "confirmed": 2, "hand": 3}
@@ -107,12 +108,17 @@ def _ensure_labels(df):
 
 
 def _downcast_bands(df):
-    """Cast band columns to float32. Reflectance angle math is insensitive to
-    the fidelity loss and it halves the corpus footprint (the bland-tile rows
-    alone add ~877k rows)."""
+    """Cast band columns to float32 and pixel coords to int32. Reflectance
+    angle math is insensitive to the band fidelity loss and it halves the
+    corpus footprint (the bland-tile rows alone add ~877k rows); tile pixel
+    coordinates are far below the int32 range, so carrying them as int32 (not
+    int64) keeps the two new coord columns from tipping the 15GB budget."""
     for c in BAND_COLS:
         if c in df.columns:
             df[c] = df[c].astype(np.float32)
+    for c in ("pixel_row", "pixel_col"):
+        if c in df.columns and len(df):
+            df[c] = df[c].astype(np.int32)
     return df
 
 
@@ -259,7 +265,7 @@ def _class_flags(df):
 def _explode_classes(df, source):
     """One row per (pixel, positive class); multi flags k>1 co-occurrence."""
     if df.empty:
-        return pd.DataFrame(columns=OUTPUT_COLS + _KEY_COLS[1:])
+        return pd.DataFrame(columns=OUTPUT_COLS)
     df = _ensure_labels(df.copy())
     if "confidence_weight" not in df.columns:
         df["confidence_weight"] = 1.0
@@ -282,7 +288,7 @@ def _explode_classes(df, source):
         sub["multi"] = multi[mask]
         parts.append(sub)
     if not parts:
-        return pd.DataFrame(columns=OUTPUT_COLS + ["pixel_row", "pixel_col"])
+        return pd.DataFrame(columns=OUTPUT_COLS)
     return _downcast_bands(pd.concat(parts, ignore_index=True))
 
 
@@ -291,7 +297,7 @@ def _fixed_class_rows(df, class_name, source, force_weight=None):
     one row per pixel, multi=False. Produces the same explode-shaped columns so
     it concatenates with _explode_classes output before dedupe."""
     if df is None or df.empty:
-        return pd.DataFrame(columns=OUTPUT_COLS + ["pixel_row", "pixel_col"])
+        return pd.DataFrame(columns=OUTPUT_COLS)
     # Copy only the columns we keep (band data can be millions of rows).
     keep = ["tile_id", "pixel_row", "pixel_col"] + [
         c for c in BAND_COLS if c in df.columns]
@@ -312,8 +318,9 @@ def _fixed_class_rows(df, class_name, source, force_weight=None):
 
 
 def _dedupe(df):
-    """Precedence dedupe on (tile_id, pixel_row, pixel_col, class); drop the
-    internal pixel key columns and return OUTPUT_COLS order.
+    """Precedence dedupe on (tile_id, pixel_row, pixel_col, class), returning
+    OUTPUT_COLS order. pixel_row/pixel_col are kept in the output (real tile
+    coordinates needed downstream), not dropped.
 
     Deduping is done on lightweight key/rank arrays (never a copy of the full
     wide frame) so the ~4M-row corpus does not blow the memory budget: stable
@@ -331,9 +338,13 @@ def _dedupe(df):
     keep_positions = order[~keys.duplicated(keep="first")]
     del keys, order, rank
     gc.collect()
-    out = df.iloc[keep_positions].drop(columns=["pixel_row", "pixel_col"])
+    # Materialise deduped rows AND final column order in a single iloc copy
+    # (no extra reorder/.copy() passes) to keep peak RAM under the 15GB budget
+    # for the 12.7M-row corpus.
+    col_idx = [df.columns.get_loc(c) for c in OUTPUT_COLS]
+    out = df.iloc[keep_positions, col_idx].reset_index(drop=True)
     out["multi"] = out["multi"].astype(bool)
-    return out[OUTPUT_COLS].reset_index(drop=True)
+    return out
 
 
 def _per_polygon_cap(df, max_per, seed):
@@ -417,8 +428,7 @@ def assemble(hand_path, confirmed_dirs, reassigned_dirs,
     if frames:
         combined = pd.concat(frames, ignore_index=True)
     else:
-        combined = pd.DataFrame(columns=OUTPUT_COLS + ["pixel_row",
-                                                       "pixel_col"])
+        combined = pd.DataFrame(columns=OUTPUT_COLS)
     del frames
     gc.collect()
     full_df = _dedupe(combined)
