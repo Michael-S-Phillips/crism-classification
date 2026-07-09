@@ -27,6 +27,9 @@
 #   - Reassigned minerals (reject→mineral, incl. multi-label): weighted positives
 #   - Junk: ambiguous hard_negatives, now PER-POLYGON CAPPED (was uncapped),
 #     unit-split on 'junk', per-polygon weights preserved
+#   - ndviz relabel session (--ndviz_dir): interactive N-D visualizer relabels
+#     ingested with pixel-level supersede (every ndviz pixel replaces lower
+#     sources, then ndviz positives appended); absent dir = no-op
 #
 # Outputs:
 #   data/mrral_pixels_7cls.parquet
@@ -60,7 +63,10 @@ python -u scripts/build_7cls_dataset.py \
                     data/mc13_review_7cls_v3/confirmed_pixels \
     --hn_dir        data/mc13_review/hard_negatives \
                     data/mc13_review_7cls_v3/hard_negatives \
+    --ndviz_dir     data/ndviz_relabels/hard_negatives \
     --out           "$PARQUET" || exit 1
+    # ^ ndviz relabel session: absent dir = no-op (HPC won't have it until
+    #   data/ndviz_relabels is rsynced from the workstation)
 
 echo "=== step 2: build patch cache ==="
 python -u scripts/cache_mrral_patches.py \

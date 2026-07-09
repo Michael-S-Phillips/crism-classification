@@ -40,6 +40,11 @@ Design decisions:
   - Review sessions are ADDITIVE: original MC13 session + confidence-graded v3
     session (MC13 + MC11), concatenated across confirmed_pixels / hard_negatives
     dirs.
+  - ndviz relabel session (--ndviz_dir, data/ndviz_relabels/hard_negatives):
+    interactive N-D visualizer relabels ingested with a PIXEL-LEVEL supersede —
+    every ndviz pixel is anti-joined out of the combined frame (all decision
+    types), then ndviz's own positives (mineral/bland reassignments, alteration,
+    junk) are appended before the joint re-split. Absent dir = clean no-op.
 
 Classes (7):  olivine | lcp | hcp | plagioclase | bland | alteration | junk
 
@@ -80,6 +85,11 @@ DEFAULT_HN_DIRS = [
     os.path.join(PROJ, 'data', 'mc13_review', 'hard_negatives'),
     os.path.join(PROJ, 'data', 'mc13_review_7cls_v3', 'hard_negatives'),
 ]
+# The N-D visualizer relabel session (review-format rows: full 59-band spectra,
+# real pixel coords, confidence_weight/tier, negative_of stamp). Handled
+# SEPARATELY from DEFAULT_HN_DIRS so its pixel-level supersede (anti-join) can
+# exclude it from the other sources. Absent dir -> clean no-op.
+DEFAULT_NDVIZ_DIR     = os.path.join(PROJ, 'data', 'ndviz_relabels', 'hard_negatives')
 DEFAULT_OUT           = os.path.join(PROJ, 'data', 'mrral_pixels_7cls.parquet')
 
 N_BLAND_PER_SOURCE = 300_000   # rows per bland source (bland tiles, mc13, mc11)
@@ -415,6 +425,115 @@ def load_alteration_mc11(hn_dir: str) -> pd.DataFrame:
     return df
 
 
+def load_ndviz_relabels(ndviz_dir: str):
+    """Load the N-D visualizer relabel session (review-format rows).
+
+    Returns (positives_fragment, suppression_keys). Mirrors the assembler's
+    ndviz handling (scripts/label_quant/assemble_labeled_spectra.py): every
+    ndviz pixel supersedes lower-precedence sources at the PIXEL level.
+
+    - Absent / empty dir -> (empty DataFrame, empty MultiIndex) — clean no-op.
+    - suppression_keys: unique (tile_id, pixel_row, pixel_col) over ALL rows,
+      regardless of decision type (int32 coords to match the corpus frames for
+      the anti-join). Discards contribute suppression only.
+    - positives (negative_of semantics written by the app):
+        '' + any mineral>0.5      -> mineral reassignment
+                                     (_stamp_7cls_cols zero_plag=False so a
+                                     reject->plagioclase stays plag; alteration
+                                     preserved via alteration=None).
+        '' + other>0.5, no mineral -> bland stamp.
+        'alteration'               -> alteration stamp.
+        'ambiguous'                -> junk stamp.
+        anything else (orig class) -> discard: suppression only, NO positive.
+      Per-polygon capped like every other review loader; confidence weight/tier
+      preserved. No split assignment here — main's joint re-split covers it.
+    """
+    empty_keys = pd.MultiIndex.from_arrays([[], [], []])
+    if not ndviz_dir or not os.path.exists(ndviz_dir):
+        return pd.DataFrame(), empty_keys
+    files = [f for f in os.listdir(ndviz_dir) if f.endswith('.parquet')]
+    if not files:
+        return pd.DataFrame(), empty_keys
+    raw = pd.read_parquet(ndviz_dir)
+    if raw.empty:
+        return pd.DataFrame(), empty_keys
+
+    # suppression keys over EVERY row (all decision types), int32 coords.
+    keys = raw[['tile_id', 'pixel_row', 'pixel_col']].copy()
+    keys['pixel_row'] = keys['pixel_row'].astype(np.int32)
+    keys['pixel_col'] = keys['pixel_col'].astype(np.int32)
+    suppression_keys = pd.MultiIndex.from_frame(keys).unique()
+
+    neg = (raw['negative_of'].fillna('').astype(str) if 'negative_of' in raw.columns
+           else pd.Series([''] * len(raw), index=raw.index))
+    mineral_hit = (raw[_REASSIGN_MINERAL_COLS] > 0.5).any(axis=1)
+    other = (raw['other'] if 'other' in raw.columns
+             else pd.Series(0.0, index=raw.index))
+
+    parts = []
+    reassign_min = raw.loc[(neg == '') & mineral_hit]
+    if len(reassign_min):
+        parts.append(_stamp_7cls_cols(reassign_min, bland=0.0, junk=0.0,
+                                      alteration=None, zero_plag=False))
+    reassign_bland = raw.loc[(neg == '') & (~mineral_hit) & (other > 0.5)]
+    if len(reassign_bland):
+        parts.append(_stamp_7cls_cols(reassign_bland, bland=1.0, junk=0.0,
+                                      alteration=0.0))
+    alt = raw.loc[neg == 'alteration']
+    if len(alt):
+        parts.append(_stamp_7cls_cols(alt, bland=0.0, junk=0.0, alteration=1.0))
+    amb = raw.loc[neg == 'ambiguous']
+    if len(amb):
+        parts.append(_stamp_7cls_cols(amb, bland=0.0, junk=1.0, alteration=0.0))
+    # discards (neg not in {'', 'alteration', 'ambiguous'}) add no positive row.
+
+    if not parts:
+        return pd.DataFrame(), suppression_keys
+    positives = pd.concat(parts, ignore_index=True)
+    positives = _fill_confidence_defaults(positives)
+    positives = _per_polygon_cap(positives, MAX_PX_PER_POLYGON, SEED + 500)
+    return positives, suppression_keys
+
+
+def _apply_ndviz(out: pd.DataFrame, ndviz_dir: str) -> pd.DataFrame:
+    """Apply the ndviz relabel session's pixel-level supersede to the combined
+    frame: anti-join every ndviz pixel out of ``out`` (all decision types), then
+    append ndviz's own positive rows. Absent dir -> ``out`` unchanged (no-op).
+
+    Must run AFTER the fragments concat and BEFORE the joint re-split so the
+    ndviz positives get their split assigned in the joint pass. The append
+    happens after the anti-join, so ndviz positives are never suppressed by
+    their own keys. MTRDR synth rows are injected at train time (not in this
+    parquet), so the anti-join cannot touch them.
+    """
+    positives, suppression_keys = load_ndviz_relabels(ndviz_dir)
+    if len(suppression_keys) == 0 and (positives is None or positives.empty):
+        print('  ndviz: no relabel session (no-op)')
+        return out
+
+    if len(suppression_keys) > 0:
+        n_before = len(out)
+        key = pd.MultiIndex.from_arrays([
+            out['tile_id'].to_numpy(),
+            out['pixel_row'].to_numpy().astype(np.int32),
+            out['pixel_col'].to_numpy().astype(np.int32),
+        ])
+        out = out.loc[~key.isin(suppression_keys)].reset_index(drop=True)
+        print(f'  ndviz suppression: dropped {n_before - len(out):,} rows '
+              f'({len(suppression_keys):,} superseded pixels)')
+
+    if positives is not None and not positives.empty:
+        for c in out.columns:
+            if c not in positives.columns:
+                positives = positives.copy()
+                positives[c] = np.float32(0.0) if c not in (
+                    'tile_id', 'split', 'confidence_tier', 'negative_of') else ''
+        out = pd.concat([out, positives[out.columns.tolist()]],
+                        ignore_index=True)
+        print(f'  ndviz positives added: {len(positives):,} rows')
+    return out
+
+
 def _joint_resplit(out: pd.DataFrame, seed: int = SEED) -> pd.DataFrame:
     """Jointly re-split the concatenated (all-sources) frame, in place.
 
@@ -441,6 +560,11 @@ def main():
                          'are additive)')
     ap.add_argument('--hn_dir',        nargs='+', default=DEFAULT_HN_DIRS,
                     help='One or more hard_negatives dirs')
+    ap.add_argument('--ndviz_dir',     default=DEFAULT_NDVIZ_DIR,
+                    help='N-D visualizer relabel session (review-format rows). '
+                         'Pixel-level supersede: every ndviz pixel replaces the '
+                         'lower-precedence sources, then ndviz positives are '
+                         'appended. Absent dir = no-op.')
     ap.add_argument('--out',           default=DEFAULT_OUT)
     ap.add_argument('--n_bland',       type=int, default=N_BLAND_PER_SOURCE,
                     help=f'Rows per bland source (default {N_BLAND_PER_SOURCE:,})')
@@ -506,6 +630,14 @@ def main():
         print(f'  {label}: {len(frag):,} rows added')
 
     out = pd.concat(fragments, ignore_index=True)
+
+    # ── 6a. ndviz relabel session: pixel-level supersede ─────────────────────
+    # Anti-join every ndviz pixel out of the combined frame (all decision
+    # types), then append ndviz's own positive rows. Runs BEFORE the joint
+    # re-split so the appended positives get a split in that pass. Absent dir =
+    # no-op. (Loaded here — right before use — so its counts print in context.)
+    print('\nApplying ndviz relabel session (pixel-level supersede) …')
+    out = _apply_ndviz(out, args.ndviz_dir)
 
     # ── 6b. Joint re-split across sources ────────────────────────────────────
     # The per-source split assignments above are provisional diagnostics only

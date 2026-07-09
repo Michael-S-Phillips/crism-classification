@@ -509,3 +509,188 @@ def test_joint_resplit_balance_cols_cover_all_8_classes():
     from scripts.build_7cls_dataset import JOINT_BALANCE_COLS
     assert JOINT_BALANCE_COLS == ['olivine_t1', 'olivine_t2', 'lcp', 'hcp',
                                   'plagioclase', 'bland', 'alteration', 'junk']
+
+
+# ── Task N: ndviz relabel session ingestion (pixel-level supersede) ──────────
+
+_NDVIZ_OUT_LABEL_COLS = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp',
+                         'plagioclase', 'other', 'alteration', 'bland', 'junk']
+
+
+def _out_frame_row(tile_id, polygon_id, label_col, pixel_rows, pixel_cols,
+                   split='train', weight=1.0, tier='High'):
+    """A combined-frame ('out') fragment: pixels of one class on one tile,
+    carrying the full 7-class label schema + confidence + split."""
+    n = len(pixel_rows)
+    d = {
+        'tile_id': [tile_id] * n,
+        'polygon_id': np.full(n, polygon_id, dtype=np.int64),
+        'pixel_row': np.array(pixel_rows, dtype=np.int64),
+        'pixel_col': np.array(pixel_cols, dtype=np.int64),
+    }
+    for i in range(59):
+        d[f'm{i}'] = np.zeros(n)
+    for c in _NDVIZ_OUT_LABEL_COLS:
+        d[c] = np.zeros(n)
+    d[label_col] = np.ones(n)
+    if label_col == 'bland':
+        d['other'] = np.ones(n)
+    d['confidence_weight'] = np.full(n, weight, dtype=np.float32)
+    d['confidence_tier'] = [tier] * n
+    d['split'] = [split] * n
+    return pd.DataFrame(d)
+
+
+def _ndviz_relabel_row(tile_id, polygon_id, negative_of, label_col,
+                       pixel_rows, pixel_cols, weight=1.0,
+                       tier='Reviewed-Moderate'):
+    """A review-format ndviz relabel row (full 59-band spectra, real coords,
+    confidence_weight/tier, negative_of stamp). label_col=None for pure
+    discards / ambiguous where no positive mineral label is written."""
+    n = len(pixel_rows)
+    d = {
+        'tile_id': [tile_id] * n,
+        'polygon_id': np.full(n, polygon_id, dtype=np.int64),
+        'pixel_row': np.array(pixel_rows, dtype=np.int64),
+        'pixel_col': np.array(pixel_cols, dtype=np.int64),
+    }
+    for i in range(59):
+        d[f'm{i}'] = np.zeros(n)
+    for c in ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase',
+              'other', 'alteration']:
+        d[c] = np.zeros(n)
+    if label_col is not None:
+        d[label_col] = np.ones(n)
+    d['confidence_weight'] = np.full(n, weight, dtype=np.float32)
+    d['confidence_tier'] = [tier] * n
+    d['negative_of'] = [negative_of] * n
+    return pd.DataFrame(d)
+
+
+def test_apply_ndviz_relabels_lcp_to_hcp(tmp_path):
+    """Relabel hand-lcp pixels to hcp: those pixels become hcp with the ndviz
+    weight/tier, no lcp rows remain at them, other lcp pixels stay intact, and
+    the joint re-split runs after (every row gets a split)."""
+    from scripts.build_7cls_dataset import _apply_ndviz, _joint_resplit
+    t = _spread_tiles(1)[0]
+    # 10 base lcp pixels on tile t, rows 0..9 at col 5
+    out = _out_frame_row(t, 1, 'lcp', list(range(10)), [5] * 10, split='train')
+    ndviz = tmp_path / 'ndviz'
+    ndviz.mkdir()
+    # relabel the first 5 pixels -> hcp (mineral reassignment, negative_of='')
+    _ndviz_relabel_row(t, 1, '', 'hcp', list(range(5)), [5] * 5,
+                       weight=0.6, tier='Reviewed-Moderate').to_parquet(
+        ndviz / 'r.parquet', index=False)
+
+    out2 = _apply_ndviz(out, str(ndviz))
+
+    relabeled = out2[out2['pixel_row'] < 5]
+    assert len(relabeled) == 5
+    assert (relabeled['hcp'] > 0.5).all()
+    assert (relabeled['lcp'] < 0.5).all()
+    assert (relabeled['confidence_weight'] == np.float32(0.6)).all()
+    assert (relabeled['confidence_tier'] == 'Reviewed-Moderate').all()
+    # no lcp rows survive at the relabeled pixels
+    assert len(out2[(out2['pixel_row'] < 5) & (out2['lcp'] > 0.5)]) == 0
+    # untouched lcp pixels (rows 5..9) intact
+    intact = out2[out2['pixel_row'] >= 5]
+    assert len(intact) == 5
+    assert (intact['lcp'] > 0.5).all()
+    # joint re-split runs after -> every row assigned a valid split
+    out3 = _joint_resplit(out2)
+    assert out3['split'].isin(['train', 'val', 'test']).all()
+
+
+def test_apply_ndviz_discard_removes_pixels(tmp_path):
+    """A discard (negative_of='<orig class>') suppresses the pixel and adds no
+    positive row."""
+    from scripts.build_7cls_dataset import _apply_ndviz
+    t = _spread_tiles(1)[0]
+    out = _out_frame_row(t, 1, 'lcp', list(range(10)), [5] * 10)
+    ndviz = tmp_path / 'ndviz'
+    ndviz.mkdir()
+    # discard rows 0..2: negative_of is the original class name
+    _ndviz_relabel_row(t, 1, 'lcp', 'lcp', [0, 1, 2], [5, 5, 5]).to_parquet(
+        ndviz / 'd.parquet', index=False)
+    out2 = _apply_ndviz(out, str(ndviz))
+    assert len(out2) == 7
+    assert len(out2[out2['pixel_row'] < 3]) == 0
+
+
+def test_apply_ndviz_ambiguous_becomes_junk(tmp_path):
+    """An ambiguous relabel supersedes the base pixel and adds a junk=1 row."""
+    from scripts.build_7cls_dataset import _apply_ndviz
+    t = _spread_tiles(1)[0]
+    out = _out_frame_row(t, 1, 'lcp', list(range(10)), [5] * 10)
+    ndviz = tmp_path / 'ndviz'
+    ndviz.mkdir()
+    _ndviz_relabel_row(t, 2, 'ambiguous', None, [0, 1, 2], [5, 5, 5],
+                       weight=0.75, tier='Reviewed-Moderate').to_parquet(
+        ndviz / 'a.parquet', index=False)
+    out2 = _apply_ndviz(out, str(ndviz))
+    junk = out2[out2['junk'] > 0.5]
+    assert len(junk) == 3
+    assert (junk['confidence_weight'] == np.float32(0.75)).all()
+    assert (junk['confidence_tier'] == 'Reviewed-Moderate').all()
+    # base lcp pixels at 0..2 superseded (removed)
+    assert len(out2[(out2['pixel_row'] < 3) & (out2['lcp'] > 0.5)]) == 0
+
+
+def test_apply_ndviz_absent_dir_is_noop(tmp_path):
+    """Absent ndviz dir -> output identical to a run without the feature."""
+    from scripts.build_7cls_dataset import _apply_ndviz
+    t = _spread_tiles(1)[0]
+    out = _out_frame_row(t, 1, 'lcp', list(range(10)), [5] * 10)
+    out_ref = out.copy()
+    out2 = _apply_ndviz(out, str(tmp_path / 'does_not_exist'))
+    assert len(out2) == len(out_ref)
+    pd.testing.assert_frame_equal(
+        out2.reset_index(drop=True), out_ref.reset_index(drop=True))
+
+
+def test_load_ndviz_relabels_absent_is_empty(tmp_path):
+    from scripts.build_7cls_dataset import load_ndviz_relabels
+    pos, keys = load_ndviz_relabels(str(tmp_path / 'nope'))
+    assert pos.empty
+    assert len(keys) == 0
+
+
+def test_load_ndviz_relabels_suppression_covers_all_decisions(tmp_path):
+    """suppression_keys covers EVERY decision type (reassign, alteration,
+    ambiguous, AND discard) — every ndviz pixel supersedes lower sources."""
+    from scripts.build_7cls_dataset import load_ndviz_relabels
+    t = _spread_tiles(1)[0]
+    ndviz = tmp_path / 'ndviz'
+    ndviz.mkdir()
+    _ndviz_relabel_row(t, 1, '', 'hcp', [0], [0]).to_parquet(
+        ndviz / 'p1.parquet', index=False)          # reassign
+    _ndviz_relabel_row(t, 2, 'alteration', None, [1], [1]).to_parquet(
+        ndviz / 'p2.parquet', index=False)           # alteration
+    _ndviz_relabel_row(t, 3, 'ambiguous', None, [2], [2]).to_parquet(
+        ndviz / 'p3.parquet', index=False)           # junk
+    _ndviz_relabel_row(t, 4, 'lcp', 'lcp', [3], [3]).to_parquet(
+        ndviz / 'p4.parquet', index=False)           # discard
+    pos, keys = load_ndviz_relabels(str(ndviz))
+    # 4 pixels suppressed regardless of decision type
+    assert len(keys) == 4
+    # positives: hcp (reassign) + alteration + junk = 3 rows; discard adds none
+    assert len(pos) == 3
+    assert (pos['hcp'] > 0.5).sum() == 1
+    assert (pos['alteration'] > 0.5).sum() == 1
+    assert (pos['junk'] > 0.5).sum() == 1
+
+
+def test_apply_ndviz_bland_reassignment(tmp_path):
+    """negative_of='' with other>0.5 and no mineral -> bland stamp."""
+    from scripts.build_7cls_dataset import _apply_ndviz
+    t = _spread_tiles(1)[0]
+    out = _out_frame_row(t, 1, 'lcp', list(range(4)), [5] * 4)
+    ndviz = tmp_path / 'ndviz'
+    ndviz.mkdir()
+    row = _ndviz_relabel_row(t, 1, '', 'other', [0, 1], [5, 5])
+    row.to_parquet(ndviz / 'b.parquet', index=False)
+    out2 = _apply_ndviz(out, str(ndviz))
+    bland = out2[out2['bland'] > 0.5]
+    assert len(bland) == 2
+    assert (bland['other'] == bland['bland']).all()
+    assert len(out2[(out2['pixel_row'] < 2) & (out2['lcp'] > 0.5)]) == 0
