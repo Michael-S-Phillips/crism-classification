@@ -95,6 +95,39 @@ def _l2_normalize(M: np.ndarray) -> np.ndarray:
     return M / norms
 
 
+def resolve_clicked_points(event, df: pd.DataFrame) -> pd.DataFrame:
+    """Resolve a plotly selection event to rows of ``df``.
+
+    Each scatter point carries ``customdata`` whose first element is the
+    positional row-id into ``df`` (the displayed frame). Using that row-id is
+    unambiguous across multiple traces/classes, unlike per-trace point_number.
+    ``event`` may be the Streamlit ``on_select`` return (dict-like with a
+    ``selection.points`` list) or None. Returns the matching rows of ``df``
+    (empty frame if nothing resolvable).
+    """
+    if event is None:
+        return df.iloc[0:0]
+    sel = event.get("selection") if isinstance(event, dict) else getattr(
+        event, "selection", None)
+    if sel is None:
+        return df.iloc[0:0]
+    points = sel.get("points", []) if isinstance(sel, dict) else getattr(
+        sel, "points", [])
+    row_ids = []
+    for p in points or []:
+        cd = p.get("customdata") if isinstance(p, dict) else getattr(
+            p, "customdata", None)
+        if not cd:
+            continue
+        try:
+            rid = int(cd[0])
+        except (TypeError, ValueError):
+            continue
+        if 0 <= rid < len(df) and rid not in row_ids:
+            row_ids.append(rid)
+    return df.iloc[row_ids]
+
+
 def stratified_subsample(df: pd.DataFrame, budget: int, seed: int = 0) -> pd.DataFrame:
     """Cap total rows at ``budget`` via a seeded per-class subsample."""
     if len(df) <= budget:
@@ -185,9 +218,20 @@ def main():
         st.stop()
         return
 
-    shown = stratified_subsample(filt, budget, seed=0)
+    shown = stratified_subsample(filt, budget, seed=0).reset_index(drop=True)
     M = shown[BAND_COLS].to_numpy(dtype=float)
     Mn = _l2_normalize(M)
+
+    # customdata carrying row identity for click resolution (first col = row-id)
+    row_id = np.arange(len(shown))
+    cd_all = np.column_stack([
+        row_id.astype(object),
+        shown["tile_id"].to_numpy(dtype=object),
+        shown["polygon_id"].to_numpy(dtype=object),
+        shown["class"].to_numpy(dtype=object),
+        shown["source"].to_numpy(dtype=object),
+        shown["confidence_weight"].to_numpy(dtype=object),
+    ])
 
     # ---- sidebar: projection --------------------------------------------- #
     st.sidebar.header("Projection")
@@ -271,15 +315,18 @@ def main():
     c3.metric("sources", str(shown["source"].nunique()))
 
     # ---- build 3-D scatter ----------------------------------------------- #
+    st.caption("Tip: click a point in the scatter to plot that pixel's "
+               "spectrum in the panel below.")
     fig = go.Figure()
     marker_base = dict(size=3, opacity=0.7)
+    active_em_label, active_em_vec = None, None
 
     if color_mode == "class":
         for cls in shown["class"].unique():
             m = (shown["class"] == cls).to_numpy()
             fig.add_trace(go.Scatter3d(
                 x=coords[m, 0], y=coords[m, 1], z=coords[m, 2],
-                mode="markers", name=str(cls),
+                mode="markers", name=str(cls), customdata=cd_all[m],
                 marker=dict(color=CLASS_PALETTE.get(cls, "#000000"), **marker_base)))
     elif color_mode == "source":
         srcs = list(shown["source"].unique())
@@ -287,13 +334,13 @@ def main():
             m = (shown["source"] == src).to_numpy()
             fig.add_trace(go.Scatter3d(
                 x=coords[m, 0], y=coords[m, 1], z=coords[m, 2],
-                mode="markers", name=str(src),
+                mode="markers", name=str(src), customdata=cd_all[m],
                 marker=dict(color=SOURCE_PALETTE[i % len(SOURCE_PALETTE)],
                             **marker_base)))
     elif color_mode == "confidence_weight":
         fig.add_trace(go.Scatter3d(
             x=coords[:, 0], y=coords[:, 1], z=coords[:, 2], mode="markers",
-            name="confidence",
+            name="confidence", customdata=cd_all,
             marker=dict(color=shown["confidence_weight"].to_numpy(),
                         colorscale="Cividis", colorbar=dict(title="conf"),
                         cmin=0.0, cmax=1.0, **marker_base)))
@@ -302,9 +349,11 @@ def main():
             st.info("No endmembers.csv found — angle colouring unavailable.")
             fig.add_trace(go.Scatter3d(
                 x=coords[:, 0], y=coords[:, 1], z=coords[:, 2], mode="markers",
+                customdata=cd_all,
                 marker=dict(color="#4363d8", **marker_base)))
         else:
             em_sel = st.sidebar.selectbox("endmember", em_labels, key="em_color")
+            active_em_label, active_em_vec = em_sel, em_lookup[em_sel]
             angles = spectral_angles_deg(M, em_lookup[em_sel])
             amax = float(np.nanmax(angles)) if np.isfinite(angles).any() else 90.0
             thresh = st.sidebar.slider("grey-out angle >= (deg)", 0.0,
@@ -316,6 +365,7 @@ def main():
                 fig.add_trace(go.Scatter3d(
                     x=coords[keep, 0], y=coords[keep, 1], z=coords[keep, 2],
                     mode="markers", name=f"angle to {em_sel}",
+                    customdata=cd_all[keep],
                     marker=dict(color=angles[keep], colorscale="Viridis",
                                 colorbar=dict(title="angle (deg)"),
                                 cmin=0.0, cmax=thresh, **marker_base)))
@@ -323,6 +373,7 @@ def main():
                 fig.add_trace(go.Scatter3d(
                     x=coords[~keep, 0], y=coords[~keep, 1], z=coords[~keep, 2],
                     mode="markers", name="above threshold",
+                    customdata=cd_all[~keep],
                     marker=dict(color=GREY, **marker_base)))
 
     fig.update_layout(
@@ -331,7 +382,30 @@ def main():
         scene=dict(xaxis_title=axis_titles[0], yaxis_title=axis_titles[1],
                    zaxis_title=axis_titles[2]),
         legend=dict(itemsizing="constant"))
-    st.plotly_chart(fig, use_container_width=True)
+    event = st.plotly_chart(fig, use_container_width=True, on_select="rerun",
+                            selection_mode="points", key="scatter3d")
+
+    # ---- resolve + accumulate clicked pixels ----------------------------- #
+    if "clicked" not in st.session_state:
+        st.session_state["clicked"] = []  # list of row-dict records
+    clicked_now = resolve_clicked_points(event, shown)
+    if not clicked_now.empty:
+        for _, r in clicked_now.iterrows():
+            st.session_state["clicked"].append(r.to_dict())
+        # dedupe by identity keeping last occurrence, cap at last 5
+        seen, deduped = set(), []
+        for rec in reversed(st.session_state["clicked"]):
+            key = (rec.get("tile_id"), rec.get("polygon_id"),
+                   rec.get("class"), rec.get("source"))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(rec)
+        st.session_state["clicked"] = list(reversed(deduped))[-5:]
+    clicked_recs = st.session_state["clicked"]
+    if clicked_recs and st.button("Clear selection"):
+        st.session_state["clicked"] = []
+        clicked_recs = []
 
     # ---- spectra panel ---------------------------------------------------- #
     st.subheader("Spectra (mean +/-1 sigma of current filter)")
@@ -361,11 +435,29 @@ def main():
             x=wl, y=em_lookup[lbl], mode="lines", name=lbl,
             line=dict(dash="dash", width=2)))
 
+    # clicked-pixel spectra (solid, on top)
+    caption_lines = []
+    for rec in clicked_recs:
+        spec = np.array([rec[c] for c in BAND_COLS], dtype=float)
+        cls = rec.get("class")
+        lbl = f"{rec.get('tile_id')}/p{rec.get('polygon_id')} {cls} ({rec.get('source')})"
+        sfig.add_trace(go.Scatter(
+            x=wl, y=spec, mode="lines", name=lbl,
+            line=dict(color=CLASS_PALETTE.get(cls, "#000000"), width=2.5)))
+        meta = (f"**{lbl}** — weight {float(rec.get('confidence_weight', 0)):.2f}")
+        if active_em_vec is not None:
+            ang = spectral_angles_deg(spec[None, :], active_em_vec)[0]
+            meta += f", angle to {active_em_label} = {ang:.1f} deg"
+        caption_lines.append(meta)
+
     sfig.update_layout(
         height=380, xaxis_title="wavelength (nm)", yaxis_title="reflectance",
         xaxis=dict(range=[450, 2500]), legend=dict(itemsizing="constant"),
         margin=dict(l=0, r=0, t=10, b=0))
     st.plotly_chart(sfig, use_container_width=True)
+
+    if caption_lines:
+        st.markdown("**Clicked pixels:**  \n" + "  \n".join(caption_lines))
 
 
 def _rgba(hex_color: str, alpha: float) -> str:

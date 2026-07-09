@@ -119,6 +119,43 @@ def test_angle_math_finite(tmp_path, monkeypatch):
     assert np.all(angles >= 0) and np.all(angles <= 180)
 
 
+def _load_module():
+    mod = importlib.import_module("scripts.label_quant.nd_visualizer_app")
+    importlib.reload(mod)
+    return mod
+
+
+def test_resolve_clicked_points(tmp_path, monkeypatch):
+    viz_path, _ = _make_corpus(tmp_path)
+    monkeypatch.setenv("NDVIZ_PARQUET", viz_path)
+    mod = _load_module()
+    df = pd.read_parquet(viz_path).reset_index(drop=True)
+    # customdata first element is the positional row-id into df
+    event = {"selection": {"points": [
+        {"customdata": [5, "t02", 3, "hcp", "hand", 1.0]},
+        {"customdata": [12, "t04", 1, "alteration", "tag", 0.75]},
+    ]}}
+    out = mod.resolve_clicked_points(event, df)
+    assert list(out.index) == [5, 12]
+    assert set(BAND_COLS).issubset(out.columns)
+
+
+def test_resolve_clicked_points_empty_and_dedupe(tmp_path, monkeypatch):
+    viz_path, _ = _make_corpus(tmp_path)
+    monkeypatch.setenv("NDVIZ_PARQUET", viz_path)
+    mod = _load_module()
+    df = pd.read_parquet(viz_path).reset_index(drop=True)
+    assert mod.resolve_clicked_points(None, df).empty
+    assert mod.resolve_clicked_points({}, df).empty
+    # out-of-range and duplicate row-ids are dropped
+    event = {"selection": {"points": [
+        {"customdata": [3]}, {"customdata": [3]},
+        {"customdata": [10 ** 9]},
+    ]}}
+    out = mod.resolve_clicked_points(event, df)
+    assert list(out.index) == [3]
+
+
 def test_py_compile():
     r = subprocess.run([sys.executable, "-m", "py_compile", APP_PATH],
                        capture_output=True, text=True)
