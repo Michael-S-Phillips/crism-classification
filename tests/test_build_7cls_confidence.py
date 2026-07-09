@@ -694,3 +694,96 @@ def test_apply_ndviz_bland_reassignment(tmp_path):
     assert len(bland) == 2
     assert (bland['other'] == bland['bland']).all()
     assert len(out2[(out2['pixel_row'] < 2) & (out2['lcp'] > 0.5)]) == 0
+
+
+# ── hand-label policy flag (--hand_minerals) ─────────────────────────────────
+
+_MAFIC_COLS = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp']
+
+
+def _base_poly(tile_id, polygon_id, labels, n=200, mean_row=750, mean_col=750):
+    """A base-parquet gpkg/bland fragment: n pixels on one tile with the given
+    label columns set to 1.0 (dict {col: value}). Carries the base-parquet
+    schema (no bland/junk columns — those are stamped by _build_base)."""
+    d = {
+        'tile_id': [tile_id] * n,
+        'polygon_id': np.full(n, polygon_id, dtype=np.int64),
+        'pixel_row': np.full(n, mean_row, dtype=np.int64),
+        'pixel_col': np.full(n, mean_col, dtype=np.int64),
+        'other': np.zeros(n),
+        'olivine_t1': np.zeros(n), 'olivine_t2': np.zeros(n),
+        'lcp': np.zeros(n), 'hcp': np.zeros(n),
+        'plagioclase': np.zeros(n), 'alteration': np.zeros(n),
+        'split': ['train'] * n,
+    }
+    for c, v in labels.items():
+        d[c] = np.full(n, float(v))
+    return pd.DataFrame(d)
+
+
+def _write_policy_base(tmp_path):
+    """Synthetic base parquet with spread units: a pure-plag polygon, a
+    multi-label plag+olivine polygon, one each of olivine/lcp/hcp mafic
+    polygons, and two bland tiles. Returns (path, ids) where ids maps a
+    descriptive name to polygon_id."""
+    tiles = _spread_tiles(7)
+    frames = [
+        _base_poly(tiles[0], 1, {'plagioclase': 1.0}),                 # pure plag
+        _base_poly(tiles[1], 2, {'plagioclase': 1.0, 'olivine_t1': 1.0}),  # multi
+        _base_poly(tiles[2], 3, {'olivine_t1': 1.0}),                  # mafic
+        _base_poly(tiles[3], 4, {'lcp': 1.0}),                         # mafic
+        _base_poly(tiles[4], 5, {'hcp': 1.0}),                         # mafic
+        _base_poly(tiles[5], 10, {'other': 1.0}),                      # bland
+        _base_poly(tiles[6], 11, {'other': 1.0}),                      # bland
+    ]
+    base_df = pd.concat(frames, ignore_index=True)
+    path = tmp_path / 'base.parquet'
+    base_df.to_parquet(path, index=False)
+    ids = {'plag': 1, 'multi': 2, 'olivine': 3, 'lcp': 4, 'hcp': 5,
+           'bland_a': 10, 'bland_b': 11}
+    return str(path), ids
+
+
+def test_hand_minerals_all_is_byte_identical_default(tmp_path):
+    """Default (no arg) == explicit hand_minerals='all', frame-for-frame."""
+    path, _ = _write_policy_base(tmp_path)
+    default = _build_base(path, n_bland_target=10_000)
+    explicit = _build_base(path, n_bland_target=10_000, hand_minerals='all')
+    pd.testing.assert_frame_equal(
+        default.reset_index(drop=True), explicit.reset_index(drop=True))
+    # every source polygon survives with its labels intact
+    for pid in (1, 2, 3, 4, 5, 10, 11):
+        assert (default['polygon_id'] == pid).any(), f'polygon {pid} dropped'
+    assert (default['plagioclase'] > 0.5).any()
+    assert ((default[_MAFIC_COLS] > 0.5).any(axis=1)).any()
+
+
+def test_hand_minerals_plag_only_keeps_plag_zeroes_mafic(tmp_path):
+    """plag_only: keep plag>0.5 non-bland rows (mafic cols zeroed), drop
+    olivine/lcp/hcp hand rows, bland tiles untouched."""
+    path, ids = _write_policy_base(tmp_path)
+    out = _build_base(path, n_bland_target=10_000, hand_minerals='plag_only')
+
+    non_bland = out[out['bland'] < 0.5]
+    # plag polygons kept (pure + multi-label)
+    assert set(non_bland['polygon_id']) == {ids['plag'], ids['multi']}
+    # kept rows all carry plag
+    assert (non_bland['plagioclase'] > 0.5).all()
+    # NO mafic label leaks through any non-bland row (multi-label row zeroed)
+    assert (non_bland[_MAFIC_COLS] <= 0.5).all().all()
+    # the pure-mafic polygons are entirely gone
+    for pid in (ids['olivine'], ids['lcp'], ids['hcp']):
+        assert not (out['polygon_id'] == pid).any()
+    # bland tiles intact
+    bland = out[out['bland'] > 0.5]
+    assert set(bland['polygon_id']) == {ids['bland_a'], ids['bland_b']}
+
+
+def test_hand_minerals_none_drops_all_nonbland(tmp_path):
+    """none: every non-bland gpkg row dropped; only bland tiles remain."""
+    path, ids = _write_policy_base(tmp_path)
+    out = _build_base(path, n_bland_target=10_000, hand_minerals='none')
+    assert (out['bland'] > 0.5).all()
+    assert (out['plagioclase'] <= 0.5).all()
+    assert (out[_MAFIC_COLS] <= 0.5).all().all()
+    assert set(out['polygon_id']) == {ids['bland_a'], ids['bland_b']}

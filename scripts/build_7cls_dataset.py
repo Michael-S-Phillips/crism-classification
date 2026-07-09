@@ -237,7 +237,52 @@ def _stamp_7cls_cols(df: pd.DataFrame,
 
 # ── Source loaders ────────────────────────────────────────────────────────────
 
-def _build_base(path: str, n_bland_target: int) -> pd.DataFrame:
+_HAND_MAFIC_COLS = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp']
+
+
+def _apply_hand_mineral_policy(non_bland: pd.DataFrame,
+                               hand_minerals: str) -> pd.DataFrame:
+    """Apply the hand-label policy to the non-bland (gpkg) rows.
+
+    The user's hand-drawn mineral labels are the noisier population; this flag
+    lets a build train on review-derived mineral labels only. Plagioclase is
+    100% hand-labeled (review found no plag), so it is the sole hand mineral
+    that survives the restrictive policies.
+
+      'all'       -> unchanged (default; byte-identical to prior behavior).
+      'plag_only' -> keep only rows with plagioclase>0.5; on those rows zero the
+                     mafic columns (olivine_t1/t2, lcp, hcp) so no hand mafic
+                     label leaks via a multi-label gpkg row; drop everything
+                     else.
+      'none'      -> drop ALL non-bland gpkg rows.
+
+    Only operates on the non-bland frame; bland tiles are handled by the caller
+    and are never touched here.
+    """
+    if hand_minerals == 'all':
+        return non_bland
+    if hand_minerals == 'none':
+        print(f'  hand_minerals=none: dropping all {len(non_bland):,} non-bland '
+              f'gpkg rows')
+        return non_bland.iloc[:0].copy()
+    if hand_minerals == 'plag_only':
+        plag_mask = non_bland['plagioclase'] > 0.5
+        kept = non_bland[plag_mask].copy()
+        n_dropped = len(non_bland) - len(kept)
+        # Zero the mafic columns on kept rows so multi-label (plag+mafic) gpkg
+        # rows cannot leak a hand mafic label.
+        mafic_leaks = int((kept[_HAND_MAFIC_COLS] > 0.5).any(axis=1).sum())
+        for c in _HAND_MAFIC_COLS:
+            kept[c] = np.float32(0.0)
+        print(f'  hand_minerals=plag_only: kept {len(kept):,} plag rows '
+              f'(zeroed mafic on {mafic_leaks:,} multi-label rows), '
+              f'dropped {n_dropped:,} non-plag non-bland rows')
+        return kept
+    raise ValueError(f'unknown hand_minerals policy: {hand_minerals!r}')
+
+
+def _build_base(path: str, n_bland_target: int,
+                hand_minerals: str = 'all') -> pd.DataFrame:
     print(f'Loading base parquet: {path}')
     df = pd.read_parquet(path)
     print(f'  {len(df):,} rows, columns: {list(df.columns)[:8]} …')
@@ -249,13 +294,17 @@ def _build_base(path: str, n_bland_target: int) -> pd.DataFrame:
     non_bland = df[~bland_mask].copy()
     non_bland = _stamp_7cls_cols(non_bland, bland=0.0, junk=0.0, alteration=None,
                                   zero_plag=False)
+    # Hand-label policy: 'all' is a no-op; 'plag_only'/'none' restrict which
+    # hand mineral labels survive (see _apply_hand_mineral_policy).
+    non_bland = _apply_hand_mineral_policy(non_bland, hand_minerals)
     # OVERRIDE the inherited (base-parquet) splits with the unit-aware splitter:
     # adjacent-tile polygons mapping the same unit are clustered and held out
     # together, killing the interleave leakage the inherited splits carried.
-    non_bland['split'] = assign_unit_balanced_splits(non_bland, BALANCE_COLS, SEED)
-    print('  non-bland gpkg rows: unit-balanced achieved val/test fractions:')
-    print(achieved_fractions(non_bland, non_bland['split'], BALANCE_COLS)
-          .to_string())
+    if len(non_bland):
+        non_bland['split'] = assign_unit_balanced_splits(non_bland, BALANCE_COLS, SEED)
+        print('  non-bland gpkg rows: unit-balanced achieved val/test fractions:')
+        print(achieved_fractions(non_bland, non_bland['split'], BALANCE_COLS)
+              .to_string())
 
     # ── bland tile rows: subsample to n_bland_target ──
     bland_df = df[bland_mask].copy()
@@ -566,6 +615,14 @@ def main():
                          'lower-precedence sources, then ndviz positives are '
                          'appended. Absent dir = no-op.')
     ap.add_argument('--out',           default=DEFAULT_OUT)
+    ap.add_argument('--hand_minerals', choices=['all', 'plag_only', 'none'],
+                    default='all',
+                    help="Hand-drawn (gpkg) mineral label policy. 'all' "
+                         "(default): keep every hand mineral label. 'plag_only': "
+                         "keep only hand plagioclase (mafic cols zeroed on kept "
+                         "rows), drop hand olivine/lcp/hcp. 'none': drop all "
+                         "non-bland gpkg rows. Bland tiles unaffected in all "
+                         "cases.")
     ap.add_argument('--n_bland',       type=int, default=N_BLAND_PER_SOURCE,
                     help=f'Rows per bland source (default {N_BLAND_PER_SOURCE:,})')
     ap.add_argument('--dry_run',       action='store_true',
@@ -582,7 +639,7 @@ def main():
     n_bland = args.n_bland
 
     # ── 1. Base parquet (gpkgs + bland tiles, gpkg plag restored) ────────────
-    base = _build_base(args.base_parquet, n_bland)
+    base = _build_base(args.base_parquet, n_bland, hand_minerals=args.hand_minerals)
 
     # ── 2. MC13 confirmed mineral positives ───────────────────────────────────
     print('\nLoading confirmed mineral positives …')
