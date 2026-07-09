@@ -1,19 +1,19 @@
 """Real-data verification of the unit-balanced split rollout.
 
 Runs every labeled-source loader from ``build_7cls_dataset`` against the real
-local parquet + review dirs, then reports, for each source AND for the
-concatenated union:
+local parquet + review dirs, concatenates the union and applies the SAME
+joint re-split main() applies (``b7._joint_resplit``) — the per-source splits
+are provisional diagnostics only. Reports, for each source AND for the
+jointly re-split union:
   - per-class positive-pixel counts per split
   - per-class achieved split fractions
 
-Assertions (union):
-  - every class with >0 pixels holds >=5% of its pixels in val AND in test.
-
-Cross-source leakage check (reported, non-fatal):
-  - sources are split independently, so a same-class polygon can straddle
-    splits across sources. Over the UNION, for each class, count val-polygon /
+Assertions (union, after joint re-split):
+  - every class with >0 pixels holds >=5% of its pixels in val AND in test;
+  - zero cross-source leakage: over the UNION, for each class, no val-polygon /
     train-polygon centroid pairs within LINK_DEG (cos-lat scaled, 360-wrap).
-    Reported per class (NOT asserted — a known design question).
+    The joint re-split clusters cross-source polygons into shared units, so
+    this is now asserted (it was report-only when sources split independently).
 
 Writes reports/split_rebalance_check.md. Rerun after future builds.
 
@@ -96,13 +96,19 @@ def _md_table(df: pd.DataFrame, float_fmt: bool = False) -> str:
     return '\n'.join(rows)
 
 
-def _polygon_centroids_split(df: pd.DataFrame) -> pd.DataFrame:
+def _polygon_centroids_split(df: pd.DataFrame,
+                             by: list[str] | None = None) -> pd.DataFrame:
     """One row per polygon: centroid lat/lon + its split.
 
-    Assumes a polygon (tile_id, polygon_id) is a single split within one
-    source frame (true by construction — whole units go to one split).
+    Assumes a polygon (grouped by ``by``, default (tile_id, polygon_id)) is a
+    single split (true by construction — whole units go to one split; after
+    the joint re-split this also holds across sources, since same-(tile,
+    polygon) rows share a unit). Pass by=['__source', 'tile_id', 'polygon_id']
+    on the union so identically-numbered polygons from different sources stay
+    distinct in the leakage scan.
     """
-    g = (df.groupby(['tile_id', 'polygon_id'], sort=False)
+    by = by or ['tile_id', 'polygon_id']
+    g = (df.groupby(by, sort=False)
            .agg(mean_row=('pixel_row', 'mean'),
                 mean_col=('pixel_col', 'mean'),
                 split=('split', 'first'))
@@ -219,6 +225,11 @@ def main() -> int:
         aligned.append(f[all_cols + ['__source']])
     union = pd.concat(aligned, ignore_index=True)
 
+    # Mirror the real build: build_7cls_dataset.main() jointly re-splits the
+    # concatenated frame (per-source splits above are provisional diagnostics).
+    print('\n=== joint re-split over the union (mirrors main) ===')
+    union = b7._joint_resplit(union)
+
     # ── assertions on the union ───────────────────────────────────────────────
     union_frac = _frac_table(union)
     union_counts = _count_table(union)
@@ -231,29 +242,20 @@ def main() -> int:
             if fr < MIN_HOLDOUT_FRAC:
                 failures.append(f'{c} {hold} fraction {fr:.3f} < {MIN_HOLDOUT_FRAC}')
 
-    # ── cross-source leakage over the union ───────────────────────────────────
+    # ── cross-source leakage over the union (post joint re-split) ────────────
     print('\n=== cross-source leakage check ===')
     leakage: dict[str, int] = {}
     leak_detail: dict[str, tuple[int, int]] = {}
     for c in _present(union):
-        # tag each polygon by source so cross-source polygons stay distinct
+        # union splits (post joint re-split); tag each polygon by source so
+        # identically-numbered cross-source polygons stay distinct in the scan
         pos = union[union[c] > POS_THRESH]
         if pos.empty:
             leakage[c] = 0
             leak_detail[c] = (0, 0)
             continue
-        cents = []
-        for name, frag in sources:
-            fsub = frag[frag[c] > POS_THRESH] if c in frag.columns else frag.iloc[:0]
-            if fsub.empty:
-                continue
-            g = _polygon_centroids_split(fsub)
-            cents.append(g)
-        if not cents:
-            leakage[c] = 0
-            leak_detail[c] = (0, 0)
-            continue
-        allc = pd.concat(cents, ignore_index=True)
+        allc = _polygon_centroids_split(
+            pos, by=['__source', 'tile_id', 'polygon_id'])
         val = allc[allc['split'] == 'val']
         tr = allc[allc['split'] == 'train']
         leakage[c] = _leakage_pairs(val['lat'].to_numpy(), val['lon'].to_numpy(),
@@ -261,6 +263,9 @@ def main() -> int:
         leak_detail[c] = (len(val), len(tr))
         print(f'  {c:>14}: {leakage[c]:>6} val/train pairs within {LINK_DEG} '
               f'({len(val)} val polys, {len(tr)} train polys)')
+        if leakage[c] > 0:
+            failures.append(f'{c} cross-source leakage: {leakage[c]} '
+                            f'val/train pairs within {LINK_DEG} deg')
 
     # ── write report ──────────────────────────────────────────────────────────
     ts = _dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -277,21 +282,26 @@ def main() -> int:
     lines.append('')
 
     status = 'PASS' if not failures else 'FAIL'
-    lines.append(f'## Union min-holdout assertion: **{status}**')
+    lines.append(f'## Union assertions (min-holdout + zero leakage): **{status}**')
     lines.append('')
     if failures:
         for f in failures:
             lines.append(f'- FAIL: {f}')
     else:
         lines.append('Every class with >0 pixels holds >=5% of its pixels in '
-                     'both val and test.')
+                     'both val and test, and no class has a val/train '
+                     f'same-class polygon pair within {LINK_DEG} deg.')
     lines.append('')
 
-    lines.append('## Union — positive-pixel counts per split')
+    lines.append('The union below is JOINTLY RE-SPLIT (`b7._joint_resplit`), '
+                 'mirroring `build_7cls_dataset.main()`; the per-source splits '
+                 'in the detail section are provisional diagnostics.')
+    lines.append('')
+    lines.append('## Union (joint re-split) — positive-pixel counts per split')
     lines.append('')
     lines.append(_md_table(union_counts))
     lines.append('')
-    lines.append('## Union — achieved split fractions')
+    lines.append('## Union (joint re-split) — achieved split fractions')
     lines.append('')
     lines.append(_md_table(union_frac, float_fmt=True))
     lines.append('')
@@ -299,9 +309,9 @@ def main() -> int:
     lines.append('## Cross-source leakage (val/train same-class polygon pairs '
                  f'within {LINK_DEG} deg)')
     lines.append('')
-    lines.append('Sources are split independently, so a same-class polygon in '
-                 'one source can land in val while a nearby same-class polygon '
-                 'in another source lands in train. Reported, not asserted.')
+    lines.append('Computed on the jointly re-split union: polygons from '
+                 'different sources within LINK_DEG of each other share a '
+                 'geographic unit, hence a split. Asserted zero.')
     lines.append('')
     leak_df = pd.DataFrame(
         {'leaking_pairs': [leakage[c] for c in _present(union)],
@@ -314,7 +324,8 @@ def main() -> int:
     lines.append(f'**Total leaking val/train pairs across all classes: {total_leak}**')
     lines.append('')
 
-    lines.append('## Per-source detail')
+    lines.append('## Per-source detail (provisional per-source splits, '
+                 'overridden by the joint re-split)')
     lines.append('')
     for name, frag in sources:
         lines.append(f'### {name} ({len(frag):,} rows)')
@@ -334,7 +345,7 @@ def main() -> int:
         fh.write('\n'.join(lines) + '\n')
     print(f'\nWrote {report_path}')
 
-    print(f'\nUnion min-holdout assertion: {status}')
+    print(f'\nUnion assertions (min-holdout + zero leakage): {status}')
     if failures:
         for f in failures:
             print(f'  {f}')

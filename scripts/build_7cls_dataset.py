@@ -9,8 +9,14 @@ Design decisions:
     *pixel* fractions, with a >=5% val/test min-holdout guard). This kills the
     adjacent-tile leakage the old inherited/tile-level/polygon-level splits
     carried (same mapped unit's pixels landing in both train and val). The
-    base parquet's inherited splits are OVERRIDDEN by this splitter; each
-    source is split independently with its own seed offset.
+    base parquet's inherited splits are OVERRIDDEN by this splitter. Each
+    source loader still splits independently with its own seed offset, but
+    those per-source splits are PROVISIONAL diagnostics only: at concat time
+    main() jointly re-splits the combined frame with one
+    assign_unit_balanced_splits pass over all 8 classes (_joint_resplit),
+    so nearby same-class polygons from DIFFERENT sources (e.g. the three
+    alteration sources) land in the same split instead of straddling
+    train/val.
   - Plagioclase: restored from Argyre/Hellas gpkg (base-parquet mineral rows,
     plag preserved via zero_plag=False) then re-split by the unit splitter.
     MTRDR synth rows injected additionally at train/val time via
@@ -85,6 +91,14 @@ SEED = 42
 # and 'junk' are volume classes balanced on their own single-class column.
 BALANCE_COLS = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase',
                 'alteration']
+
+# All 8 classes, for the JOINT re-split main() applies over the concatenated
+# frame. The union frame carries every label column, so the volume classes
+# (bland, junk) join the mineral balance columns; multi-label rows (e.g.
+# mineral + co-occurring alteration) are handled naturally by the greedy
+# scorer — each positive class contributes to its unit's class-pixel vector.
+JOINT_BALANCE_COLS = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase',
+                      'bland', 'alteration', 'junk']
 
 # MC13 tiles: t1028..t1396 (rows where tile_id matches this range)
 _MC13_TILE_NUMS = set(range(1028, 1397))
@@ -401,6 +415,22 @@ def load_alteration_mc11(hn_dir: str) -> pd.DataFrame:
     return df
 
 
+def _joint_resplit(out: pd.DataFrame, seed: int = SEED) -> pd.DataFrame:
+    """Jointly re-split the concatenated (all-sources) frame, in place.
+
+    Each source loader assigns splits independently, so nearby same-class
+    polygons from different sources (e.g. base-gpkg alteration vs confirmed
+    co-occurring alteration vs dedicated mc11 review tags) can straddle
+    train/val — cross-source leakage the per-source splitters cannot see.
+    One unit-balanced pass over the union clusters polygons across sources
+    into shared geographic units and overrides 'split' for every row. Only
+    'split' is touched; label columns (incl. 'other' mirroring 'bland') are
+    left as-is. Returns the same frame for convenience.
+    """
+    out['split'] = assign_unit_balanced_splits(out, JOINT_BALANCE_COLS, seed)
+    return out
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -476,6 +506,15 @@ def main():
         print(f'  {label}: {len(frag):,} rows added')
 
     out = pd.concat(fragments, ignore_index=True)
+
+    # ── 6b. Joint re-split across sources ────────────────────────────────────
+    # The per-source split assignments above are provisional diagnostics only
+    # (their per-source fraction prints remain useful); this single
+    # unit-balanced pass over the combined frame overrides 'split' so nearby
+    # same-class polygons from different sources share one unit and one split
+    # (fixes cross-source alteration leakage).
+    out = _joint_resplit(out)
+    print(f'\nJoint re-split over combined frame ({len(out):,} rows) applied.')
 
     # ── 7. Summary ────────────────────────────────────────────────────────────
     print('\n=== 7-class dataset summary ===')

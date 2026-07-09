@@ -407,3 +407,105 @@ def test_build_base_overrides_inherited_split_no_leakage(tmp_path):
             d = _geo_dist(cents[p], cents[q])
             assert d > su.LINK_DEG, (
                 f'val plag poly {p} within {d:.3f}deg of train plag poly {q}')
+
+
+# ── Task F: joint re-split across sources at concat time ────────────────────
+
+_JOINT_CLASSES = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase',
+                  'bland', 'alteration', 'junk']
+
+
+def _union_poly(tile_id, polygon_id, label_col, split, n=1000,
+                mean_row=750, mean_col=750):
+    """A concat-time union-frame fragment: n pixels of one class on one tile,
+    with a pre-assigned (per-source, provisional) split."""
+    d = {
+        'tile_id': [tile_id] * n,
+        'polygon_id': np.full(n, polygon_id, dtype=np.int64),
+        'pixel_row': np.full(n, mean_row, dtype=np.int64),
+        'pixel_col': np.full(n, mean_col, dtype=np.int64),
+    }
+    for c in _JOINT_CLASSES + ['other']:
+        d[c] = np.zeros(n)
+    d[label_col] = np.ones(n)
+    if label_col == 'bland':
+        d['other'] = np.ones(n)  # 'other' mirrors bland in the union frame
+    d['split'] = [split] * n
+    return pd.DataFrame(d)
+
+
+def _count_leak_pairs(df, cls):
+    """Independent centroid math: same-class val/train polygon pairs within
+    LINK_DEG (cos-lat scaled, 360-wrap) over the union frame."""
+    pos = df[df[cls] > 0.5]
+    g = (pos.groupby(['tile_id', 'polygon_id'])
+            .agg(mr=('pixel_row', 'mean'), mc=('pixel_col', 'mean'),
+                 split=('split', 'first'))
+            .reset_index())
+    cents = [(_centroid(r.tile_id, r.mr, r.mc), r.split)
+             for r in g.itertuples()]
+    n = 0
+    for ca, sa in cents:
+        if sa != 'val':
+            continue
+        for cb, sb in cents:
+            if sb == 'train' and _geo_dist(ca, cb) <= su.LINK_DEG:
+                n += 1
+    return n
+
+
+def test_joint_resplit_kills_cross_source_leakage_and_keeps_holdout():
+    """Sources split independently leak: a same-class (alteration) polygon
+    pair straddling adjacent tiles lands train in one source, val in the
+    other. main's joint re-split over the concatenated frame must (a) zero
+    out same-class val/train pairs within LINK_DEG across the union and
+    (b) keep >=5% val AND test pixels for every class present.
+    """
+    from scripts.build_7cls_dataset import _joint_resplit
+
+    # Straddling pair: t0433 right edge and t0434 left edge share lon 318.0
+    # (<0.25 deg apart => one geologic unit), but come from two different
+    # sources whose independent splitters disagreed: train vs val.
+    src_a = [_union_poly('t0433', 101, 'alteration', 'train', mean_col=1500)]
+    src_b = [_union_poly('t0434', 201, 'alteration', 'val', mean_col=0)]
+
+    # 3 spread units per class (pairwise >0.25 deg apart at tile centers) so
+    # the min-holdout guard has donor units for every class.
+    tiles = _spread_tiles(3 * len(_JOINT_CLASSES))
+    pid, ti = 1000, 0
+    for cls in _JOINT_CLASSES:
+        for k in range(3):
+            dst = src_a if k % 2 == 0 else src_b
+            dst.append(_union_poly(tiles[ti], pid, cls, 'train'))
+            pid += 1
+            ti += 1
+
+    union = pd.concat(src_a + src_b, ignore_index=True)
+
+    # sanity: the constructed union DOES straddle before the joint re-split
+    assert _count_leak_pairs(union, 'alteration') >= 1
+
+    labels_before = union[_JOINT_CLASSES + ['other']].copy()
+    out = _joint_resplit(union)
+
+    # (a) zero same-class val/train pairs within LINK_DEG across the union
+    for cls in _JOINT_CLASSES:
+        assert _count_leak_pairs(out, cls) == 0, f'{cls} still leaks'
+
+    # (b) every class present holds >=5% of its pixels in val AND test
+    frac = su.achieved_fractions(out, out['split'], _JOINT_CLASSES)
+    for cls in _JOINT_CLASSES:
+        assert frac.loc[cls, 'val'] >= su.MIN_HOLDOUT_FRAC, (
+            cls, frac.loc[cls].to_dict())
+        assert frac.loc[cls, 'test'] >= su.MIN_HOLDOUT_FRAC, (
+            cls, frac.loc[cls].to_dict())
+
+    # only 'split' is overridden — labels untouched, 'other' still mirrors bland
+    assert labels_before.equals(out[_JOINT_CLASSES + ['other']])
+    assert (out['other'] == out['bland']).all()
+
+
+def test_joint_resplit_balance_cols_cover_all_8_classes():
+    from scripts.build_7cls_dataset import JOINT_BALANCE_COLS
+    assert JOINT_BALANCE_COLS == ['olivine_t1', 'olivine_t2', 'lcp', 'hcp',
+                                  'plagioclase', 'bland', 'alteration', 'junk']
