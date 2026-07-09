@@ -121,7 +121,7 @@ def _read_mrral_pixels(path, include_bland=True):
 
     - hand minerals: other<=0.5 & any mineral>0.5 (alteration NOT read; per the
       design table hand contributes the 5 mineral classes only).
-    - base bland:    other>0.5 (class='bland' later).
+    - base bland:    other>0.5 (class='bland_dust' later).
 
     Both carry full confidence (weight 1.0); the tier-derived confidence_weight
     the training pipeline stamped in is discarded. Returns (hand_df, bland_df).
@@ -363,7 +363,7 @@ def _build_viz(full_df, seed, viz_per_class, viz_polygon_cap):
     """Per-class viz subsample: per-polygon cap then class cap. Applied
     uniformly to every class present, including bland and junk."""
     parts = []
-    for cls in CLASSES + ["bland", "junk"]:
+    for cls in CLASSES + ["bland_dust", "bland_reject", "junk"]:
         sub = full_df[full_df["class"] == cls]
         if sub.empty:
             continue
@@ -398,7 +398,7 @@ def assemble(hand_path, confirmed_dirs, reassigned_dirs,
         hand_path, include_bland=include_base_bland)
     frames.append(_explode_classes(hand_df, "hand"))
     del hand_df
-    frames.append(_fixed_class_rows(base_bland_df, "bland", "hand",
+    frames.append(_fixed_class_rows(base_bland_df, "bland_dust", "hand",
                                     force_weight=1.0))
     del base_bland_df
     frames.append(_explode_classes(_read_confirmed(confirmed_dirs),
@@ -410,7 +410,7 @@ def assemble(hand_path, confirmed_dirs, reassigned_dirs,
     frames.append(_fixed_class_rows(_read_tag_rows(tag_dirs, "ambiguous"),
                                     "junk", "tag"))
     frames.append(_fixed_class_rows(_read_reject_bland(reassigned_dirs),
-                                    "bland", "reassigned"))
+                                    "bland_reject", "reassigned"))
     frames = [f for f in frames if not f.empty]
     gc.collect()
 

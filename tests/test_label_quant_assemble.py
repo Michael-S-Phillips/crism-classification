@@ -165,45 +165,62 @@ def test_alteration_and_junk_tag_sources(tmp_path):
     assert len(full) == 2
 
 
-def test_base_bland_in_full_parquet(tmp_path):
-    # mrral_pixels rows with other>0.5 become class='bland', source='hand',
-    # in the FULL corpus (not just viz), weight forced 1.0.
+def test_base_bland_dust_in_full_parquet(tmp_path):
+    # mrral_pixels rows with other>0.5 become class='bland_dust',
+    # source='hand', in the FULL corpus (not just viz), weight forced 1.0.
     hand = _write_hand(tmp_path, [
         {"pixel_row": 0, "lcp": 1.0},                       # mineral
-        {"pixel_row": 1, "other": 1.0, "confidence_weight": 0.25},  # bland
-        {"pixel_row": 2, "other": 1.0, "confidence_weight": 0.5},   # bland
+        {"pixel_row": 1, "other": 1.0, "confidence_weight": 0.25},  # dust
+        {"pixel_row": 2, "other": 1.0, "confidence_weight": 0.5},   # dust
     ])
     full, viz = assemble(hand_path=hand, confirmed_dirs=[], reassigned_dirs=[],
                          write=False)
-    bland = full[full["class"] == "bland"]
-    assert len(bland) == 2
-    assert set(bland["source"]) == {"hand"}
-    assert (bland["confidence_weight"] == 1.0).all()   # forced
-    assert not bland["multi"].any()
+    dust = full[full["class"] == "bland_dust"]
+    assert len(dust) == 2
+    assert set(dust["source"]) == {"hand"}
+    assert (dust["confidence_weight"] == 1.0).all()   # forced
+    assert not dust["multi"].any()
     assert (full["class"] == "lcp").sum() == 1
-    # bland reaches the viz subsample too
-    assert (viz["class"] == "bland").sum() == 2
+    # bland_dust reaches the viz subsample too
+    assert (viz["class"] == "bland_dust").sum() == 2
 
 
-def test_review_bland_reassigned_not_collapsed(tmp_path):
-    # negative_of='' rows with other>0.5 and NO mineral -> class='bland',
+def test_review_bland_reject_not_collapsed(tmp_path):
+    # negative_of='' rows with other>0.5 and NO mineral -> class='bland_reject',
     # source='reassigned' (reject->bland). Must NOT be collapsed into a mineral.
     hn = _write_dir(tmp_path, "hard_negatives", [
         {"tile_id": "T1", "pixel_row": 1, "other": 1.0, "negative_of": "",
-         "confidence_weight": 0.75},          # review-bland
+         "confidence_weight": 0.75},          # review-bland (reject)
         {"tile_id": "T1", "pixel_row": 2, "olivine_t1": 1.0,
          "negative_of": ""},                  # mineral reassign
     ], with_negative_of=True)
     full, _ = assemble(hand_path=None, confirmed_dirs=[],
                        reassigned_dirs=[hn], bland_path=None, write=False)
-    bland = full[full["class"] == "bland"]
-    assert len(bland) == 1
-    assert bland["source"].iloc[0] == "reassigned"
-    assert bland["confidence_weight"].iloc[0] == 0.75
-    # the bland pixel did NOT leak into any mineral class
+    rej = full[full["class"] == "bland_reject"]
+    assert len(rej) == 1
+    assert rej["source"].iloc[0] == "reassigned"
+    assert rej["confidence_weight"].iloc[0] == 0.75
+    # the reject-bland pixel did NOT leak into any mineral class
     assert (full["class"].isin(["olivine", "lcp", "hcp", "plagioclase",
                                 "alteration"])).sum() == 1
     assert (full["class"] == "olivine").sum() == 1
+
+
+def test_no_plain_bland_class_remains(tmp_path):
+    # After the dust/reject split, no row may carry class='bland' anywhere.
+    hand = _write_hand(tmp_path, [
+        {"pixel_row": 0, "lcp": 1.0},
+        {"pixel_row": 1, "other": 1.0},       # -> bland_dust
+    ])
+    hn = _write_dir(tmp_path, "hard_negatives", [
+        {"tile_id": "T1", "pixel_row": 2, "other": 1.0, "negative_of": ""},
+    ], with_negative_of=True)
+    full, viz = assemble(hand_path=hand, confirmed_dirs=[],
+                         reassigned_dirs=[hn], write=False)
+    assert "bland" not in set(full["class"])
+    assert "bland" not in set(viz["class"])
+    assert "bland_dust" in set(full["class"])
+    assert "bland_reject" in set(full["class"])
 
 
 def test_band_dtype_is_float32(tmp_path):
