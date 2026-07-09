@@ -140,6 +140,10 @@ def _link_components(lat: np.ndarray, lon: np.ndarray, link_deg: float) -> np.nd
         # cos at the worst-case (highest-|lat|) edge of the row.
         edge_lat = min(abs(lat[i]) + cell, 89.0)
         K = int(np.ceil(1.0 / np.cos(np.radians(edge_lat))))
+        # Clamped to 8: under-covers above |lat|~=83deg (cos(lat) < 1/8), which
+        # would need K>8 lon-cells to guarantee the scan catches same-unit
+        # pairs. Dormant for the current archive (tiles span -62.5..67.5deg),
+        # but polar tiles would need a larger clamp or scaled-space bucketing.
         K = max(1, min(K, 8))
         for dla in (-1, 0, 1):
             for dlo in range(-K, K + 1):
@@ -179,6 +183,11 @@ def polygon_units(df: pd.DataFrame, link_deg: float = LINK_DEG) -> pd.Series:
 
 def _positive_counts(df: pd.DataFrame, label_cols: list[str]) -> np.ndarray:
     """Boolean positive matrix (n_rows x n_classes)."""
+    missing = set(label_cols) - set(df.columns)
+    if missing:
+        raise KeyError(
+            f'label columns not in df: {sorted(missing)}. '
+            f'df has columns: {list(df.columns)}')
     return (df[label_cols].to_numpy(dtype=float) > POS_THRESH)
 
 
@@ -191,6 +200,11 @@ def assign_unit_balanced_splits(df: pd.DataFrame, label_cols, seed: int,
     tie-break by split order. Then a min-holdout guard forces the smallest train
     donor unit into val/test while a class's val/test fraction < MIN_HOLDOUT_FRAC.
 
+    Caveat: with too few units per class, the balance targets can be
+    unreachable and the min-holdout guard can produce degenerate splits (e.g.
+    a class backed by a single unit ends up 100% in one split). Callers should
+    check `achieved_fractions` rather than assume SPLIT_FRACS was hit.
+
     Returns a pd.Series of 'train'/'val'/'test' indexed like df.
     """
     label_cols = list(label_cols)
@@ -198,16 +212,17 @@ def assign_unit_balanced_splits(df: pd.DataFrame, label_cols, seed: int,
     pos = _positive_counts(df, label_cols)  # (n, C)
     n_classes = len(label_cols)
 
-    uniq_units = np.unique(units)
+    # Single grouped pass to get row positions per unit (O(rows) instead of
+    # O(rows x units) from re-scanning `units == u` for every unit id).
+    unit_row_indices = pd.Series(np.arange(len(df))).groupby(units).indices
+    uniq_units = np.fromiter(unit_row_indices.keys(), dtype=units.dtype)
     # per-unit total pixels and per-class positive pixel counts
     unit_total: dict[int, int] = {}
     unit_class: dict[int, np.ndarray] = {}
-    unit_rows: dict[int, np.ndarray] = {}
     for u in uniq_units:
-        mask = units == u
-        unit_rows[u] = mask
-        unit_total[u] = int(mask.sum())
-        unit_class[u] = pos[mask].sum(axis=0).astype(float)
+        idx = unit_row_indices[u]
+        unit_total[u] = int(len(idx))
+        unit_class[u] = pos[idx].sum(axis=0).astype(float)
 
     # class totals & per-split targets
     class_total = pos.sum(axis=0).astype(float)  # (C,)
@@ -222,13 +237,17 @@ def assign_unit_balanced_splits(df: pd.DataFrame, label_cols, seed: int,
     assign: dict[int, str] = {}
 
     eps = 1e-9
+    # Loop-invariant: targets[s] doesn't change per-unit, so precompute the
+    # "safe" (non-zero) denominator and its validity mask once instead of
+    # rebuilding them on every (unit, split) pair inside the greedy loop.
+    tgt_valid = {s: targets[s] > eps for s in SPLIT_ORDER}
+    safe_tgt = {s: np.where(tgt_valid[s], targets[s], 1.0) for s in SPLIT_ORDER}
     for u in order:
         uc = unit_class[u]  # (C,)
         best_split = None
         best_score = None
         for s in SPLIT_ORDER:
-            tgt = targets[s]
-            deficit = np.where(tgt > eps, (tgt - current[s]) / np.where(tgt > eps, tgt, 1.0), 0.0)
+            deficit = np.where(tgt_valid[s], (targets[s] - current[s]) / safe_tgt[s], 0.0)
             # only classes present in this unit contribute, weighted by its px of c
             score = float(np.sum(deficit * uc))
             if best_score is None or score > best_score + eps:
@@ -264,14 +283,14 @@ def assign_unit_balanced_splits(df: pd.DataFrame, label_cols, seed: int,
     # ── materialize per-row split ────────────────────────────────────────────
     split_arr = np.empty(len(df), dtype=object)
     for u in uniq_units:
-        split_arr[unit_rows[u]] = assign[u]
+        split_arr[unit_row_indices[u]] = assign[u]
     return pd.Series(split_arr, index=df.index, name='split')
 
 
 def achieved_fractions(df: pd.DataFrame, splits, label_cols) -> pd.DataFrame:
     """Per-class fraction of positive pixels in each split.
 
-    Rows = label_cols, columns = train/val/test. NaN class total -> 0 fractions.
+    Rows = label_cols, columns = train/val/test. Zero class total -> 0 fractions.
     """
     label_cols = list(label_cols)
     if not isinstance(splits, pd.Series):
