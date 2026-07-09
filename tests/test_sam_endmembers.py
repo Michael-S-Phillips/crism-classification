@@ -252,3 +252,24 @@ def test_dynamic_class_discovery():
         assert cls in set(res["intra_spread"]["class"])
     # matrix is square over all discovered classes
     assert res["angle_matrix"].shape == (len(dirs), len(dirs))
+
+
+# --------------------------------------------------------------------------- #
+# 7. Canonical ordering of the 8 corpus classes (minerals, then blands, junk)
+# --------------------------------------------------------------------------- #
+def test_canonical_class_ordering():
+    rng = np.random.default_rng(51)
+    # present in a scrambled input order; expect canonical order in the matrix
+    order_in = ["junk", "bland_reject", "lcp", "bland_dust", "olivine",
+                "hcp", "plagioclase", "alteration"]
+    dirs = {c: np.zeros(NB) for c in order_in}
+    for i, c in enumerate(order_in):
+        dirs[c][i] = 1.0
+    rls = []
+    for cls in order_in:  # feed in scrambled order
+        for j, px in enumerate(_cluster(dirs[cls], 6, 40, 0.01, rng)):
+            rls.append(_rows(cls, "hand", "T1", f"{cls}_{j}", px))
+    res = analyze(_frame(rls), min_px=10)
+    expected = ["olivine", "lcp", "hcp", "plagioclase", "alteration",
+                "bland_dust", "bland_reject", "junk"]
+    assert list(res["angle_matrix"].index) == expected

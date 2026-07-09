@@ -53,7 +53,8 @@ BAND_COLS = [f"m{i}" for i in range(2, 59)]
 # Canonical display order for known classes. Any class present in the corpus
 # but absent here is still analysed (appended, sorted) — classes are derived
 # from the corpus, not restricted to this list.
-CLASSES = ["olivine", "lcp", "hcp", "plagioclase", "alteration", "bland", "junk"]
+CLASSES = ["olivine", "lcp", "hcp", "plagioclase", "alteration",
+           "bland_dust", "bland_reject", "junk"]
 
 # Polygon identity key.
 KEY_COLS = ["class", "source", "tile_id", "polygon_id"]
@@ -416,18 +417,20 @@ def write_reports(res: dict, out_dir: str, min_px: int, runtime_s: float | None 
     lines.append(_md_table(res["intra_spread"]))
 
     # ----- bland & junk diagnostics ---------------------------------------- #
+    diag_classes = [c for c in ("junk", "bland_dust", "bland_reject", "bland")
+                    if not pur.empty and c in set(pur["class"])]
     lines.append("\n## Bland & junk (diagnostic classes)\n")
     lines.append(
-        "`bland` and `junk` are catch-all classes, not mineral endmembers, so\n"
-        "their purity is DIAGNOSTIC rather than a quality gate. The interesting\n"
-        "signal is which mineral class each hugs spectrally (the\n"
+        "`bland_dust`, `bland_reject` and `junk` are catch-all classes, not\n"
+        "mineral endmembers, so their purity is DIAGNOSTIC rather than a quality\n"
+        "gate. The interesting signal is which class each hugs spectrally (the\n"
         "nearest-other-class column below). `junk` is single-source (`tag`), so\n"
-        "cross-source coherence is n/a for it. Note also that base (`hand`)\n"
-        "`bland` uses a constant polygon_id (0): with the (class, source,\n"
-        "tile_id, polygon_id) key this collapses to one huge tile-mean polygon\n"
-        "per tile — expected, and it does not affect the medoid math.\n\n")
+        "cross-source coherence is n/a for it. Note also that `bland_dust`\n"
+        "(hand dust-tiles) uses a constant polygon_id (0): with the (class,\n"
+        "source, tile_id, polygon_id) key this collapses to one huge tile-mean\n"
+        "polygon per tile — expected, and it does not affect the medoid math.\n\n")
     if not pur.empty:
-        for diag in ("junk", "bland"):
+        for diag in diag_classes:
             sub = pur[pur["class"] == diag]
             if sub.empty:
                 continue
