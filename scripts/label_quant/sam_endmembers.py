@@ -50,7 +50,10 @@ import pyarrow.parquet as pq
 # --- Analysis window: m2..m58 (57 bands, 534-2457 nm). --------------------- #
 BAND_COLS = [f"m{i}" for i in range(2, 59)]
 
-CLASSES = ["olivine", "lcp", "hcp", "plagioclase", "alteration"]
+# Canonical display order for known classes. Any class present in the corpus
+# but absent here is still analysed (appended, sorted) — classes are derived
+# from the corpus, not restricted to this list.
+CLASSES = ["olivine", "lcp", "hcp", "plagioclase", "alteration", "bland", "junk"]
 
 # Polygon identity key.
 KEY_COLS = ["class", "source", "tile_id", "polygon_id"]
@@ -143,11 +146,11 @@ def analyze(df: pd.DataFrame, min_px: int = 10, band_cols=BAND_COLS) -> dict:
     pm_class = pm["class"].to_numpy()
     pm_npx = pm["n_px"].to_numpy()
 
-    classes = [c for c in CLASSES if c in set(pm_class)]
-    # keep any unexpected class labels too, appended after the canonical order
-    for c in pd.unique(pm_class):
-        if c not in classes:
-            classes.append(c)
+    # Classes are DERIVED from the corpus: canonical order first, then any
+    # other present class appended sorted (deterministic).
+    present = set(pm_class)
+    classes = [c for c in CLASSES if c in present]
+    classes += sorted(c for c in present if c not in CLASSES)
 
     medoids: dict[str, np.ndarray] = {}
     medoid_pm_idx: dict[str, int] = {}
@@ -411,6 +414,30 @@ def write_reports(res: dict, out_dir: str, min_px: int, runtime_s: float | None 
 
     lines.append("\n## Per-class intra-class spread (angle to own medoid, deg)\n\n")
     lines.append(_md_table(res["intra_spread"]))
+
+    # ----- bland & junk diagnostics ---------------------------------------- #
+    lines.append("\n## Bland & junk (diagnostic classes)\n")
+    lines.append(
+        "`bland` and `junk` are catch-all classes, not mineral endmembers, so\n"
+        "their purity is DIAGNOSTIC rather than a quality gate. The interesting\n"
+        "signal is which mineral class each hugs spectrally (the\n"
+        "nearest-other-class column below). `junk` is single-source (`tag`), so\n"
+        "cross-source coherence is n/a for it. Note also that base (`hand`)\n"
+        "`bland` uses a constant polygon_id (0): with the (class, source,\n"
+        "tile_id, polygon_id) key this collapses to one huge tile-mean polygon\n"
+        "per tile — expected, and it does not affect the medoid math.\n\n")
+    if not pur.empty:
+        for diag in ("junk", "bland"):
+            sub = pur[pur["class"] == diag]
+            if sub.empty:
+                continue
+            vc = (sub["nearest_other_class"].value_counts(dropna=False)
+                  .rename_axis("nearest_other_class").reset_index(name="n_polygons"))
+            vc["pct"] = 100.0 * vc["n_polygons"] / len(sub)
+            lines.append(f"### `{diag}` nearest-other-class distribution "
+                         f"({len(sub)} polygons)\n\n")
+            lines.append(_md_table(vc))
+            lines.append("")
 
     if not pur.empty:
         lines.append("\n## Suspect polygons (negative margin)\n")

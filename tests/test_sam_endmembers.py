@@ -224,3 +224,31 @@ def test_cross_source_coherence():
     assert len(row) == 1
     assert row.iloc[0]["angle_deg"] == pytest.approx(planted, abs=3.0)
     assert row.iloc[0]["angle_deg"] > 20.0
+
+
+# --------------------------------------------------------------------------- #
+# 6. Dynamic class discovery (classes derived from the corpus, not hardcoded)
+# --------------------------------------------------------------------------- #
+def test_dynamic_class_discovery():
+    rng = np.random.default_rng(41)
+    # two canonical mineral classes plus two novel diagnostic classes not in
+    # any hardcoded 5-class list (bland + a totally new label)
+    dirs = {}
+    for k, band in [("lcp", 0), ("hcp", 1), ("bland", 2), ("weirdclass", 3)]:
+        v = np.zeros(NB); v[band] = 1.0
+        dirs[k] = v
+    rls = []
+    for cls, direction in dirs.items():
+        for i, px in enumerate(_cluster(direction, 6, 40, 0.01, rng)):
+            rls.append(_rows(cls, "hand", "T1", f"{cls}_{i}", px))
+    res = analyze(_frame(rls), min_px=10)
+
+    # every present class appears in medoids, angle matrix, purity, spread
+    for cls in dirs:
+        assert cls in res["medoids"]
+        assert cls in res["angle_matrix"].index
+        assert cls in res["angle_matrix"].columns
+        assert cls in set(res["purity"]["class"])
+        assert cls in set(res["intra_spread"]["class"])
+    # matrix is square over all discovered classes
+    assert res["angle_matrix"].shape == (len(dirs), len(dirs))
