@@ -384,6 +384,14 @@ def write_reports(res: dict, out_dir: str, min_px: int, runtime_s: float | None 
     if runtime_s is not None:
         lines.append(f"Runtime: {runtime_s:.1f} s.\n")
 
+    lines.append("\n## Interpretation caveat\n")
+    lines.append(
+        "Raw-reflectance spectral angles are continuum/albedo-dominated (all\n"
+        "inter-class medoid angles come out <3 deg), so absolute suspect counts\n"
+        "are structurally inflated. Read margins as a RELATIVE worst-offenders\n"
+        "ranking, not a mislabel census. Continuum removal is the planned v2\n"
+        "that would make these angles mineralogical.\n")
+
     lines.append("\n## Per-source purity (headline)\n")
     lines.append("Count of polygons, median angle to own-class medoid, and "
                  "% with negative margin (closer to another class).\n\n")

@@ -4,7 +4,16 @@ Analysis window: 57 bands (m2..m58, 534-2457 nm), raw reflectance.
 
 min_px = 10. Angles in DEGREES. Class-level math on polygon mean spectra, single-label only.
 
-Runtime: 4.7 s.
+Runtime: 5.1 s.
+
+
+## Interpretation caveat
+
+Raw-reflectance spectral angles are continuum/albedo-dominated (all
+inter-class medoid angles come out <3 deg), so absolute suspect counts
+are structurally inflated. Read margins as a RELATIVE worst-offenders
+ranking, not a mislabel census. Continuum removal is the planned v2
+that would make these angles mineralogical.
 
 
 ## Per-source purity (headline)
