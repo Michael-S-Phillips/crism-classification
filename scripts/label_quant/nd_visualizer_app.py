@@ -187,6 +187,11 @@ def main():
     wl, wl_fallback = _load_wl(DEFAULT_WAVELENGTHS)
     if wl_fallback:
         st.sidebar.warning("Wavelength JSON missing — using linspace fallback.")
+    if len(wl) != len(BAND_COLS):
+        st.error(f"Wavelength/band length mismatch: {len(wl)} wavelengths vs "
+                 f"{len(BAND_COLS)} bands — spectra x/y would be misaligned.")
+        st.stop()
+        return
 
     # ---- sidebar: filters ------------------------------------------------- #
     st.sidebar.header("Filters")
@@ -237,6 +242,10 @@ def main():
     st.sidebar.header("Projection")
     proj_mode = st.sidebar.radio(
         "mode", ["PCA", "Raw bands", "Random projection"], key="proj_mode")
+    # 3-D plotly has NO selection support (on_select never fires for scatter3d),
+    # so clicking/lassoing points requires a 2-D chart of the first two axes.
+    pick2d = st.sidebar.checkbox(
+        "2-D projection (click/lasso enabled)", value=False, key="pick2d")
 
     axis_titles = ["x", "y", "z"]
     if proj_mode == "PCA":
@@ -314,43 +323,57 @@ def main():
     c2.metric("classes", str(shown["class"].nunique()))
     c3.metric("sources", str(shown["source"].nunique()))
 
-    # ---- build 3-D scatter ----------------------------------------------- #
-    st.caption("Tip: click a point in the scatter to plot that pixel's "
-               "spectrum in the panel below.")
-    fig = go.Figure()
-    marker_base = dict(size=3, opacity=0.7)
-    active_em_label, active_em_vec = None, None
+    # ---- build scatter (2-D pick mode, or 3-D exploration) --------------- #
+    if pick2d:
+        st.caption("2-D pick mode: click a point, or drag a box / lasso, to "
+                   "plot those pixels' spectra in the panel below.")
+    else:
+        st.caption("3-D exploration view — plotly has no 3-D click support, so "
+                   "switch to 2-D pick mode (sidebar) to click/lasso points. "
+                   "Hover shows each point's identity.")
 
+    fig = go.Figure()
+    marker_base = dict(size=5 if pick2d else 3, opacity=0.7)
+    active_em_label, active_em_vec = None, None
+    hovertemplate = ("tile %{customdata[1]} / poly %{customdata[2]}<br>"
+                     "%{customdata[3]} (%{customdata[4]})<br>"
+                     "conf %{customdata[5]:.2f}<extra></extra>")
+
+    def add_pts(sel, name, marker, cd, showlegend=True):
+        """Append a trace (2-D Scattergl or 3-D Scatter3d) for a point subset."""
+        x, y = coords[sel, 0], coords[sel, 1]
+        if pick2d:
+            fig.add_trace(go.Scattergl(
+                x=x, y=y, mode="markers", name=name, customdata=cd,
+                marker=marker, hovertemplate=hovertemplate,
+                showlegend=showlegend))
+        else:
+            fig.add_trace(go.Scatter3d(
+                x=x, y=y, z=coords[sel, 2], mode="markers", name=name,
+                customdata=cd, marker=marker, hovertemplate=hovertemplate,
+                showlegend=showlegend))
+
+    all_sel = np.ones(len(shown), dtype=bool)
     if color_mode == "class":
         for cls in shown["class"].unique():
             m = (shown["class"] == cls).to_numpy()
-            fig.add_trace(go.Scatter3d(
-                x=coords[m, 0], y=coords[m, 1], z=coords[m, 2],
-                mode="markers", name=str(cls), customdata=cd_all[m],
-                marker=dict(color=CLASS_PALETTE.get(cls, "#000000"), **marker_base)))
+            add_pts(m, str(cls), dict(color=CLASS_PALETTE.get(cls, "#000000"),
+                                      **marker_base), cd_all[m])
     elif color_mode == "source":
         srcs = list(shown["source"].unique())
         for i, src in enumerate(srcs):
             m = (shown["source"] == src).to_numpy()
-            fig.add_trace(go.Scatter3d(
-                x=coords[m, 0], y=coords[m, 1], z=coords[m, 2],
-                mode="markers", name=str(src), customdata=cd_all[m],
-                marker=dict(color=SOURCE_PALETTE[i % len(SOURCE_PALETTE)],
-                            **marker_base)))
+            add_pts(m, str(src), dict(color=SOURCE_PALETTE[i % len(SOURCE_PALETTE)],
+                                      **marker_base), cd_all[m])
     elif color_mode == "confidence_weight":
-        fig.add_trace(go.Scatter3d(
-            x=coords[:, 0], y=coords[:, 1], z=coords[:, 2], mode="markers",
-            name="confidence", customdata=cd_all,
-            marker=dict(color=shown["confidence_weight"].to_numpy(),
-                        colorscale="Cividis", colorbar=dict(title="conf"),
-                        cmin=0.0, cmax=1.0, **marker_base)))
+        add_pts(all_sel, "confidence",
+                dict(color=shown["confidence_weight"].to_numpy(),
+                     colorscale="Cividis", colorbar=dict(title="conf"),
+                     cmin=0.0, cmax=1.0, **marker_base), cd_all)
     else:  # angle to endmember
         if not em_labels:
             st.info("No endmembers.csv found — angle colouring unavailable.")
-            fig.add_trace(go.Scatter3d(
-                x=coords[:, 0], y=coords[:, 1], z=coords[:, 2], mode="markers",
-                customdata=cd_all,
-                marker=dict(color="#4363d8", **marker_base)))
+            add_pts(all_sel, "points", dict(color="#4363d8", **marker_base), cd_all)
         else:
             em_sel = st.sidebar.selectbox("endmember", em_labels, key="em_color")
             active_em_label, active_em_vec = em_sel, em_lookup[em_sel]
@@ -362,28 +385,30 @@ def main():
                                        key="em_thresh")
             keep = angles < thresh
             if keep.any():
-                fig.add_trace(go.Scatter3d(
-                    x=coords[keep, 0], y=coords[keep, 1], z=coords[keep, 2],
-                    mode="markers", name=f"angle to {em_sel}",
-                    customdata=cd_all[keep],
-                    marker=dict(color=angles[keep], colorscale="Viridis",
-                                colorbar=dict(title="angle (deg)"),
-                                cmin=0.0, cmax=thresh, **marker_base)))
+                add_pts(keep, f"angle to {em_sel}",
+                        dict(color=angles[keep], colorscale="Viridis",
+                             colorbar=dict(title="angle (deg)"),
+                             cmin=0.0, cmax=thresh, **marker_base), cd_all[keep])
             if (~keep).any():
-                fig.add_trace(go.Scatter3d(
-                    x=coords[~keep, 0], y=coords[~keep, 1], z=coords[~keep, 2],
-                    mode="markers", name="above threshold",
-                    customdata=cd_all[~keep],
-                    marker=dict(color=GREY, **marker_base)))
+                add_pts(~keep, "above threshold",
+                        dict(color=GREY, **marker_base), cd_all[~keep])
 
-    fig.update_layout(
-        height=650, showlegend=True,
-        margin=dict(l=0, r=0, t=0, b=0),
-        scene=dict(xaxis_title=axis_titles[0], yaxis_title=axis_titles[1],
-                   zaxis_title=axis_titles[2]),
-        legend=dict(itemsizing="constant"))
-    event = st.plotly_chart(fig, use_container_width=True, on_select="rerun",
-                            selection_mode="points", key="scatter3d")
+    if pick2d:
+        fig.update_layout(
+            height=650, showlegend=True, margin=dict(l=0, r=0, t=0, b=0),
+            xaxis_title=axis_titles[0], yaxis_title=axis_titles[1],
+            legend=dict(itemsizing="constant"), dragmode="lasso")
+        event = st.plotly_chart(
+            fig, use_container_width=True, on_select="rerun",
+            selection_mode=("points", "box", "lasso"), key="scatter2d")
+    else:
+        fig.update_layout(
+            height=650, showlegend=True, margin=dict(l=0, r=0, t=0, b=0),
+            scene=dict(xaxis_title=axis_titles[0], yaxis_title=axis_titles[1],
+                       zaxis_title=axis_titles[2]),
+            legend=dict(itemsizing="constant"))
+        st.plotly_chart(fig, use_container_width=True, key="scatter3d")
+        event = None
 
     # ---- resolve + accumulate clicked pixels ----------------------------- #
     if "clicked" not in st.session_state:
@@ -392,7 +417,8 @@ def main():
     if not clicked_now.empty:
         for _, r in clicked_now.iterrows():
             st.session_state["clicked"].append(r.to_dict())
-        # dedupe by identity keeping last occurrence, cap at last 5
+        # dedupe by identity keeping last occurrence, cap at last 8
+        # (a lasso can contribute many points at once).
         seen, deduped = set(), []
         for rec in reversed(st.session_state["clicked"]):
             key = (rec.get("tile_id"), rec.get("polygon_id"),
@@ -401,7 +427,7 @@ def main():
                 continue
             seen.add(key)
             deduped.append(rec)
-        st.session_state["clicked"] = list(reversed(deduped))[-5:]
+        st.session_state["clicked"] = list(reversed(deduped))[-8:]
     clicked_recs = st.session_state["clicked"]
     if clicked_recs and st.button("Clear selection"):
         st.session_state["clicked"] = []

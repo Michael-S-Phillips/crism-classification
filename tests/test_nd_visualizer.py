@@ -82,6 +82,50 @@ def test_projection_modes(app):
         assert not app.exception, f"exception in projection mode {mode}"
 
 
+def test_2d_pick_mode(app):
+    app.run()
+    assert not app.exception
+    # 3-D default renders a chart
+    assert len(app.get("plotly_chart")) >= 2
+    # toggle 2-D pick mode: chart still renders, app stays clean, selection key present
+    app.checkbox(key="pick2d").set_value(True).run()
+    assert not app.exception
+    charts = app.get("plotly_chart")
+    assert len(charts) >= 2
+    # the selectable chart is keyed "scatter2d" (AppTest embeds key in id suffix)
+    assert any(str(getattr(c, "id", "")).endswith("-scatter2d") for c in charts)
+
+
+def _decode_y(y):
+    if isinstance(y, dict) and "bdata" in y:
+        dt = {"f8": "<f8", "f4": "<f4", "i8": "<i8"}[y["dtype"]]
+        return np.frombuffer(_b64(y["bdata"]), dtype=dt)
+    return np.array(y, dtype=float)
+
+
+def _b64(s):
+    import base64
+    return base64.b64decode(s)
+
+
+def test_spectra_panel_renders_traces(app):
+    import json
+    app.run()
+    assert not app.exception
+    charts = app.get("plotly_chart")
+    # spectra panel is the last plotly chart
+    spec = json.loads(charts[-1].spec)
+    scat = [t for t in spec["data"] if t.get("type") == "scatter"]
+    assert len(scat) > 0, "spectra panel rendered no line traces"
+    finite = 0
+    for t in scat:
+        if t.get("y") is not None:
+            arr = _decode_y(t["y"])
+            if arr.size and np.all(np.isfinite(arr)):
+                finite += 1
+    assert finite > 0, "spectra panel has no finite-y traces"
+
+
 def test_pca_component_selection(app):
     app.run()
     assert not app.exception
