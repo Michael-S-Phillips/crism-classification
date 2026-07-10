@@ -85,6 +85,12 @@ python -u scripts/build_7cls_dataset.py \
     # ^ ndviz relabel session: absent dir = no-op (HPC won't have it until
     #   data/ndviz_relabels is rsynced from the workstation)
 
+# A rebuild regenerates the parquet, so any existing cache is stale by
+# definition — clear it (the cache builder refuses to overwrite mismatched
+# caches, which correctly failed the 2026-07-09 run).
+rm -rf "$CACHE_DIR"
+mkdir -p "$CACHE_DIR"
+
 echo "=== step 2: build patch cache ==="
 python -u scripts/cache_mrral_patches.py \
     --parquets "$PARQUET" \
