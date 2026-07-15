@@ -81,6 +81,9 @@ def train_torch_model(
     synth_val_parquet: Optional[str] = None,
     mrrsu_aux_dir: Optional[str] = None,
     is_aux_model: bool = False,
+    continuum_removed: bool = False,
+    brightness_aux: bool = False,
+    cache_is_cr: bool = False,
     min_delta: float = 0.0,
     stop_metric: str = 'val_mAP_core',
     decomp_lambda_recon: float = 1.0,
@@ -148,8 +151,12 @@ def train_torch_model(
         from data.dataset import MRRAL_BAND_COLS, BAND_COLS, CRISMSpectralDataset, CRISMCombinedDataset
         if mrral_map is not None:
             from data.dataset import CRISMSpectralPatchDataset
-            return CRISMSpectralPatchDataset(sub_df, mrral_map, patch_size=patch_size,
-                                             cache_dir=cache_dir, split=split_name)
+            return CRISMSpectralPatchDataset(
+                sub_df, mrral_map, patch_size=patch_size,
+                cache_dir=cache_dir, split=split_name,
+                continuum_removed=continuum_removed,
+                return_brightness=brightness_aux,
+                cache_is_cr=cache_is_cr)
         if use_patches:
             return CRISMPatchDataset(sub_df, mrrsu_map, patch_size=patch_size,
                                      cache_dir=cache_dir, split=split_name)

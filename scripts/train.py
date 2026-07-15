@@ -168,6 +168,24 @@ def main():
     parser.add_argument('--mrrsu_aux_dir', type=str, default=None,
                         help='Dir with mrrsu_aux_{split}.npy + mrrsu_aux_stats.json '
                              '(enables the spatial_vit_aux model).')
+    parser.add_argument('--continuum_removed', action='store_true',
+                        help='Continuum-remove each mrral patch (upper-hull CR over '
+                             'the 59-band good-band window) before the encoder sees '
+                             'it. Applies to spatial_vit / spatial_vit_aux. CR is '
+                             'computed on-read from the raw patch cache unless '
+                             '--cache_is_cr says the cache is already CR.')
+    parser.add_argument('--brightness_aux', action='store_true',
+                        help='Feed the retained per-pixel brightness scalar (mean '
+                             'good-band reflectance, pre-CR) as a 1-D late-fusion '
+                             'aux to spatial_vit_aux (aux_dim=1). Requires '
+                             '--continuum_removed and --model spatial_vit_aux; '
+                             'replaces the mrrsu aux (no --mrrsu_aux_dir needed).')
+    parser.add_argument('--cache_is_cr', action='store_true',
+                        help='The patch cache pointed at by --patch_cache_dir already '
+                             'holds CR patches (built with build_global_patch_cache.py '
+                             '--continuum_removed or the labeled equivalent); read '
+                             'brightness from the *_brightness.npy sidecar rather than '
+                             'CR-ing on read.')
     parser.add_argument('--min_delta', type=float, default=0.0,
                         help='Early-stopping tolerance: val_mAP drops up to this '
                              'much below the running best do not tick patience. '
@@ -203,6 +221,12 @@ def main():
                      'loads only the encoder).')
     if args.seven_class and args.with_alteration:
         parser.error('--seven_class and --with_alteration are mutually exclusive.')
+    if args.brightness_aux and not args.continuum_removed:
+        parser.error('--brightness_aux requires --continuum_removed.')
+    if args.brightness_aux and args.model != 'spatial_vit_aux':
+        parser.error('--brightness_aux requires --model spatial_vit_aux.')
+    if args.cache_is_cr and not args.continuum_removed:
+        parser.error('--cache_is_cr requires --continuum_removed.')
 
     # Class-count / LABEL_COLS swap — must happen BEFORE any dataset code reads it.
     if args.seven_class:
@@ -616,11 +640,23 @@ def main():
                 stop_metric=args.stop_metric,
                 min_delta=args.min_delta,
                 freeze_encoder=args.freeze_encoder,
+                continuum_removed=args.continuum_removed,
+                cache_is_cr=args.cache_is_cr,
             )
 
         elif args.model == 'spatial_vit_aux':
-            if not args.mrrsu_aux_dir:
-                parser.error('--model spatial_vit_aux requires --mrrsu_aux_dir')
+            # Two aux sources: the mrrsu-param aux (--mrrsu_aux_dir, aux_dim=2) or
+            # the CR brightness scalar (--brightness_aux, aux_dim=1). Exactly one.
+            if args.brightness_aux:
+                if args.mrrsu_aux_dir:
+                    parser.error('--brightness_aux and --mrrsu_aux_dir are mutually '
+                                 'exclusive (both feed the aux head).')
+                aux_dim = 1
+            else:
+                if not args.mrrsu_aux_dir:
+                    parser.error('--model spatial_vit_aux requires --mrrsu_aux_dir '
+                                 'or --brightness_aux')
+                aux_dim = 2
             import glob as _glob
             data_root = cfg.get('data_root', '/mnt/mrdr')
             mrral_hdrs = sorted(set(
@@ -635,7 +671,7 @@ def main():
             model = SpatialSpectralClassifierAux(
                 n_bands=59, patch_size=args.patch_size, n_classes=args.n_classes,
                 embed_dim=args.embed_dim, n_heads=args.n_heads,
-                n_layers=args.n_layers, dropout=dropout,
+                n_layers=args.n_layers, dropout=dropout, aux_dim=aux_dim,
             )
             if args.pretrain_ckpt:
                 ckpt = torch.load(args.pretrain_ckpt, map_location='cpu', weights_only=False)
@@ -659,7 +695,13 @@ def main():
                 class_weights=class_weights_tensor,
                 min_delta=args.min_delta,
                 stop_metric=args.stop_metric,
-                mrrsu_aux_dir=args.mrrsu_aux_dir,
+                # brightness-aux path: CR patches + brightness scalar via
+                # CRISMSpectralPatchDataset (no mrrsu_aux_dir). Otherwise the
+                # mrrsu-param aux dataset.
+                mrrsu_aux_dir=None if args.brightness_aux else args.mrrsu_aux_dir,
+                continuum_removed=args.continuum_removed,
+                brightness_aux=args.brightness_aux,
+                cache_is_cr=args.cache_is_cr,
                 is_aux_model=True,
             )
 

@@ -181,6 +181,45 @@ class _FakeEncoderModel(torch.nn.Module):
         ]
 
 
+def test_cr_brightness_aux_smoke(tmp_path):
+    """CR + brightness-aux path trains a step without shape error.
+
+    Builds raw mrral caches, then drives train_torch_model with
+    continuum_removed + brightness_aux + is_aux_model so CRISMSpectralPatchDataset
+    yields (patch, brightness(1,), label, weight) and SpatialSpectralClassifierAux
+    (aux_dim=1) consumes it.
+    """
+    from models.spatial_spectral_classifier_aux import SpatialSpectralClassifierAux
+    n, P = 120, 7
+    df = make_fake_mrral_df_spatial(n)
+    df['tile_id'] = 't0001'
+    df['pixel_row'] = 0
+    df['pixel_col'] = 0
+    rng = np.random.default_rng(0)
+    for split in ('train', 'val', 'test'):
+        sub = df[df['split'] == split]
+        if len(sub) == 0:
+            continue
+        fp = np.memmap(str(tmp_path / f'mrral_{split}_patches_p{P}.npy'),
+                       dtype='float32', mode='w+', shape=(len(sub), P, P, 59))
+        fp[:] = (rng.uniform(0.0, 0.5, size=(len(sub), P, P, 59))).astype(np.float32)
+        fp.flush(); del fp
+
+    model = SpatialSpectralClassifierAux(
+        n_bands=59, patch_size=P, n_classes=5,
+        embed_dim=32, n_heads=2, n_layers=2, aux_dim=1)
+
+    metrics = train_torch_model(
+        model=model, df=df, model_name='cr_aux_smoke',
+        max_epochs=1, batch_size=32, lr=1e-3,
+        use_wandb=False, checkpoint_dir=None,
+        mrral_map={}, patch_size=P, cache_dir=str(tmp_path),
+        continuum_removed=True, brightness_aux=True, is_aux_model=True,
+    )
+    assert 'val_mAP' in metrics
+    assert 0.0 <= metrics['val_mAP'] <= 1.0
+
+
 def test_freeze_encoder_optimizer_only_has_head_params():
     """When encoder is frozen, optimizer must not contain encoder params."""
     import unittest.mock as mock
