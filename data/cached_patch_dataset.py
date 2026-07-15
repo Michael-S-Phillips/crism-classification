@@ -73,17 +73,22 @@ class CRISMCachedPatchDataset(IterableDataset):
         continuum_removed: bool = False,
     ):
         self.shard_dir = shard_dir
-        self.normalize = normalize
         self.shuffle = shuffle
         self.seed = seed
-        # Continuum-remove each raw patch on read, BEFORE the per-patch
-        # normalization, so a CR-native denoising MAE reconstructs in CR space
-        # (the space the classifier consumes). Off → raw behaviour unchanged.
-        # Applied to raw-reflectance shards; a shard already CR (built with
-        # build_global_patch_cache.py --continuum_removed) should be read with
-        # this off (CR is idempotent up to clipping but the raw shard is the
-        # intended input).
+        # Continuum-remove each raw patch on read, so a CR-native denoising MAE
+        # reconstructs in CR space (the space the classifier consumes). Off → raw
+        # behaviour unchanged. Applied to raw-reflectance shards; a shard already
+        # CR (built with build_global_patch_cache.py --continuum_removed) should be
+        # read with this off (the raw shard is the intended input).
         self.continuum_removed = continuum_removed
+        # CR is INCOMPATIBLE with per-patch z-score normalization: z-scoring
+        # divides by the patch std, which rescales away *absolute band depth* —
+        # the strong-vs-weak absorption magnitude that CR exists to expose (e.g.
+        # the confirmed-vs-hand LCP band-strength difference). So CR forces
+        # normalize off, keeping pretrain/fine-tune/inference all on un-z-scored
+        # CR (fine-tune + inference already do not z-score). Brightness/albedo is
+        # carried separately as the classifier aux scalar, not via normalization.
+        self.normalize = normalize and not continuum_removed
         self.shards = sorted(glob.glob(os.path.join(shard_dir, 'global_patches_*.npy')))
         if not self.shards:
             raise FileNotFoundError(f"No shards in {shard_dir}")
@@ -113,7 +118,7 @@ class CRISMCachedPatchDataset(IterableDataset):
                 patch = np.asarray(arr[i], dtype=np.float32).copy()  # detach from mmap
                 if self.continuum_removed:
                     from data.continuum_removal import continuum_removed
-                    patch = continuum_removed(patch)  # (P, P, 59) → CR, pre-norm
+                    patch = continuum_removed(patch)  # (P, P, 59) → CR (no z-score)
                 if self.normalize:
                     mean = float(patch.mean())
                     std = float(patch.std()) + 1e-8
