@@ -214,6 +214,26 @@ def extract_patches_batched(tile, batch_size=4096):
         yield batch.astype(np.float32), np.arange(start, end)
 
 
+def cr_transform_batch(patches):
+    """Continuum-remove a (B, P, P, 59) patch batch for inference.
+
+    Applies data.continuum_removal.cr_patch to each patch — identical to the
+    CR fine-tuning path (CRISMSpectralPatchDataset with continuum_removed=True),
+    which CRs the [0, CLIP_MAX]-clipped patch and does NOT z-score it. Returns
+    (cr (B, P, P, 59) float32, brightness (B, 1) float32) where brightness is the
+    center-pixel mean good-band reflectance (pre-CR), the 1-D aux input.
+    """
+    from data.continuum_removal import cr_patch
+    B = patches.shape[0]
+    cr = np.empty_like(patches, dtype=np.float32)
+    bright = np.empty((B, 1), dtype=np.float32)
+    for j in range(B):
+        c, b = cr_patch(patches[j])
+        cr[j] = c
+        bright[j, 0] = b[PAD, PAD]
+    return cr, bright
+
+
 def normalize_patches(patches):
     B = patches.shape[0]
     flat = patches.reshape(B, -1)
@@ -239,12 +259,20 @@ def load_classifier(ckpt_path, device):
     return model
 
 
-def run_supervised(tile, model, device, batch_size=4096, aux_rasters=None):
+def run_supervised(tile, model, device, batch_size=4096, aux_rasters=None,
+                   continuum_removed=False, brightness_aux=False):
     """Returns prob_maps: (H*W, N_CLASSES) float32 in [0,1].
 
     If aux_rasters is provided (H, W, 2) float32, feeds per-pixel aux features
     to SpatialSpectralClassifierAux using the same row-major pixel ordering as
     extract_patches_batched (which yields idx = np.arange(start, end)).
+
+    continuum_removed: continuum-remove each patch (data.continuum_removal.cr_patch)
+      before the encoder — identical to CR fine-tuning, which feeds UNnormalized CR
+      patches (so the raw-path z-score normalize is skipped in CR mode).
+    brightness_aux: pass the center-pixel brightness scalar as the 1-D aux to the
+      aux model (aux_dim=1). Requires continuum_removed and mutually exclusive with
+      aux_rasters.
     """
     H, W, _ = tile.shape
     n_pixels = H * W
@@ -258,14 +286,21 @@ def run_supervised(tile, model, device, batch_size=4096, aux_rasters=None):
     with torch.no_grad():
         for patches, idx in tqdm(extract_patches_batched(tile, batch_size),
                                   total=n_batches, desc='Classifying'):
-            patches = normalize_patches(patches)
-            x = torch.from_numpy(patches).to(device)
-            if aux_flat is not None:
-                aux_batch = torch.from_numpy(aux_flat[idx]).to(device)
-                logits = model(x, aux_batch)              # (B, 5) aux path
+            bright = None
+            if continuum_removed:
+                patches, bright = cr_transform_batch(patches)  # CR, no z-score
             else:
-                logits = model(x)                         # (B, 5)
-            p = torch.sigmoid(logits).cpu().numpy()       # (B, 5)
+                patches = normalize_patches(patches)
+            x = torch.from_numpy(patches).to(device)
+            if brightness_aux:
+                aux_batch = torch.from_numpy(bright).to(device)     # (B, 1)
+                logits = model(x, aux_batch)              # aux path (aux_dim=1)
+            elif aux_flat is not None:
+                aux_batch = torch.from_numpy(aux_flat[idx]).to(device)
+                logits = model(x, aux_batch)              # aux path (aux_dim=2)
+            else:
+                logits = model(x)                         # (B, N)
+            p = torch.sigmoid(logits).cpu().numpy()       # (B, N)
             probs[idx] = p
 
     return probs
@@ -421,7 +456,25 @@ def main():
     parser.add_argument('--mrrsu_aux_stats', type=str,
                         default='data/patch_cache/mrrsu_aux_stats.json',
                         help='z-score stats json from build_mrrsu_aux.py.')
+    parser.add_argument('--continuum_removed', action='store_true',
+                        help='Continuum-remove each pixel patch (upper-hull CR over '
+                             'the 59-band good-band window) before the encoder, '
+                             'identically to CR fine-tuning. Skips the raw-path '
+                             'z-score (CR patches are fed unnormalized, matching '
+                             'CRISMSpectralPatchDataset).')
+    parser.add_argument('--brightness_aux', action='store_true',
+                        help='Feed the per-pixel brightness scalar (mean good-band '
+                             'reflectance, pre-CR) as a 1-D aux to '
+                             'SpatialSpectralClassifierAux (aux_dim=1). Requires '
+                             '--continuum_removed; mutually exclusive with '
+                             '--mrrsu_aux.')
     args = parser.parse_args()
+
+    if args.brightness_aux and not args.continuum_removed:
+        parser.error('--brightness_aux requires --continuum_removed.')
+    if args.brightness_aux and args.mrrsu_aux:
+        parser.error('--brightness_aux and --mrrsu_aux are mutually exclusive '
+                     '(both feed the aux head).')
 
     tile_name = os.path.splitext(os.path.basename(args.tile))[0]
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -433,7 +486,7 @@ def main():
     print(f'Tile: {H}×{W}, {valid_mask.sum():,} valid pixels')
 
     print(f'Loading classifier: {args.ckpt}')
-    if args.mrrsu_aux:
+    if args.mrrsu_aux or args.brightness_aux:
         from models.spatial_spectral_classifier_aux import SpatialSpectralClassifierAux
         state = torch.load(args.ckpt, map_location=device, weights_only=False)
         if isinstance(state, dict) and 'model_state' in state:
@@ -441,22 +494,31 @@ def main():
             state = state['model_state']
             print(f'  val_mAP from checkpoint: {val_map:.4f}' if val_map else '')
         _set_n_classes(state)
+        # brightness aux is a single 1-D scalar (aux_dim=1); mrrsu aux is 2-D.
+        aux_dim = 1 if args.brightness_aux else 2
         model = SpatialSpectralClassifierAux(
             n_bands=N_BANDS, patch_size=PATCH_SIZE, n_classes=N_CLASSES,
-            embed_dim=128, n_heads=4, n_layers=6,
+            embed_dim=128, n_heads=4, n_layers=6, aux_dim=aux_dim,
         ).to(device)
         model.load_state_dict(state)
         model.eval()
-        mrrsu_path = args.mrrsu_tile or derive_mrrsu_path(args.tile)
-        print(f'Loading mrrsu aux tile: {mrrsu_path}')
-        aux_rasters = load_mrrsu_aux_rasters(mrrsu_path, args.mrrsu_aux_stats)
+        if args.brightness_aux:
+            aux_rasters = None  # brightness is computed per-patch from CR
+        else:
+            mrrsu_path = args.mrrsu_tile or derive_mrrsu_path(args.tile)
+            print(f'Loading mrrsu aux tile: {mrrsu_path}')
+            aux_rasters = load_mrrsu_aux_rasters(mrrsu_path, args.mrrsu_aux_stats)
     else:
         model = load_classifier(args.ckpt, device)
         aux_rasters = None
 
     print('Running supervised inference...')
+    if args.continuum_removed:
+        print('  continuum removal ON (patches CR before encoder, unnormalized)')
     probs_flat = run_supervised(tile, model, device, args.batch_size,
-                                aux_rasters=aux_rasters)  # (H*W, 5)
+                                aux_rasters=aux_rasters,
+                                continuum_removed=args.continuum_removed,
+                                brightness_aux=args.brightness_aux)  # (H*W, N)
     probs = probs_flat.reshape(H, W, N_CLASSES)  # (H, W, 5)
 
     if args.save_probs:
