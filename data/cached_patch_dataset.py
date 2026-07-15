@@ -70,11 +70,20 @@ class CRISMCachedPatchDataset(IterableDataset):
         normalize: bool = True,
         shuffle: bool = True,
         seed: Optional[int] = None,
+        continuum_removed: bool = False,
     ):
         self.shard_dir = shard_dir
         self.normalize = normalize
         self.shuffle = shuffle
         self.seed = seed
+        # Continuum-remove each raw patch on read, BEFORE the per-patch
+        # normalization, so a CR-native denoising MAE reconstructs in CR space
+        # (the space the classifier consumes). Off → raw behaviour unchanged.
+        # Applied to raw-reflectance shards; a shard already CR (built with
+        # build_global_patch_cache.py --continuum_removed) should be read with
+        # this off (CR is idempotent up to clipping but the raw shard is the
+        # intended input).
+        self.continuum_removed = continuum_removed
         self.shards = sorted(glob.glob(os.path.join(shard_dir, 'global_patches_*.npy')))
         if not self.shards:
             raise FileNotFoundError(f"No shards in {shard_dir}")
@@ -102,6 +111,9 @@ class CRISMCachedPatchDataset(IterableDataset):
                 rng.shuffle(indices)
             for i in indices:
                 patch = np.asarray(arr[i], dtype=np.float32).copy()  # detach from mmap
+                if self.continuum_removed:
+                    from data.continuum_removal import continuum_removed
+                    patch = continuum_removed(patch)  # (P, P, 59) → CR, pre-norm
                 if self.normalize:
                     mean = float(patch.mean())
                     std = float(patch.std()) + 1e-8

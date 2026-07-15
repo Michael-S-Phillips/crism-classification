@@ -46,6 +46,12 @@ def main():
     parser.add_argument('--sigma_column', type=float, default=0.0049)
     parser.add_argument('--spike_center_band', type=int, default=15)
     parser.add_argument('--spike_fwhm_bands',  type=float, default=3.0)
+    # Representation
+    parser.add_argument('--continuum_removed', action='store_true',
+                        help='Continuum-remove each patch (upper-hull CR over the '
+                             '59-band good-band window) on read, BEFORE the '
+                             'denoising corruption, so the MAE reconstructs in CR '
+                             'space. Off → raw-reflectance pretrain unchanged.')
     # Run management
     parser.add_argument('--run_name', type=str, default='spatial_mae_denoising_128d_6l')
     parser.add_argument('--config',   type=str, default='config.yaml')
@@ -70,8 +76,12 @@ def main():
         raise KeyError("config.local.yaml must define global_patch_cache_dir")
     log.info(f"Global patch cache: {shard_dir}")
 
+    if args.continuum_removed:
+        log.info("Continuum removal ON: patches are CR before corruption "
+                 "(reconstruction target in CR space)")
     from data.cached_patch_dataset import CRISMCachedPatchDataset
-    ds = CRISMCachedPatchDataset(shard_dir=shard_dir, normalize=True, shuffle=True)
+    ds = CRISMCachedPatchDataset(shard_dir=shard_dir, normalize=True, shuffle=True,
+                                 continuum_removed=args.continuum_removed)
     loader = DataLoader(
         ds,
         batch_size=args.batch_size,
