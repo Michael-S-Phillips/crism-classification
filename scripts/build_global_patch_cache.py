@@ -30,6 +30,7 @@ import rasterio.windows
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.cached_patch_dataset import compute_valid_centers
+from data.continuum_removal import cr_patch
 
 
 N_BANDS = 59          # mrral bands 1–59 (matches data/global_patch_dataset.py)
@@ -50,12 +51,23 @@ def extract_patches_from_tile(
     clip_max: float = CLIP_MAX,
     nodata_value: float = NODATA_VALUE,
     seed: int = 0,
-) -> Tuple[np.ndarray, int]:
+    continuum_removed: bool = False,
+):
     """Sample up to n_target valid patches from one mrral tile.
 
-    Returns:
+    Returns (continuum_removed=False):
         patches: (n, patch_size, patch_size, n_bands) float32 where n ≤ n_target
         n_skipped_short: max(0, n_target - n) — how many fewer than requested
+
+    Returns (continuum_removed=True):
+        patches:    (n, patch_size, patch_size, n_bands) float32, continuum-removed
+        brightness: (n, patch_size, patch_size) float32, mean good-band reflectance
+                    (pre-CR) per pixel
+        n_skipped_short
+
+    CR is applied per patch AFTER the [0, clip_max] clip (i.e. on the same raw
+    reflectance the raw cache would store), so a CR cache is a drop-in CR
+    transform of the raw cache. CR-off returns bytes identical to before.
     """
     img_path = hdr_path.replace('.hdr', '.img')
 
@@ -71,7 +83,12 @@ def extract_patches_from_tile(
         n_valid = len(valid_rs)
         rng = np.random.default_rng(seed)
         if n_valid == 0:
-            return np.zeros((0, patch_size, patch_size, N_BANDS), dtype=np.float32), n_target
+            empty = np.zeros((0, patch_size, patch_size, N_BANDS), dtype=np.float32)
+            if continuum_removed:
+                return (empty,
+                        np.zeros((0, patch_size, patch_size), dtype=np.float32),
+                        n_target)
+            return empty, n_target
         n_take = min(n_target, n_valid)
         choice = rng.choice(n_valid, size=n_take, replace=False)
         sampled_rs = valid_rs[choice]
@@ -79,6 +96,8 @@ def extract_patches_from_tile(
 
         half = patch_size // 2
         out = np.zeros((n_take, patch_size, patch_size, N_BANDS), dtype=np.float32)
+        bright = (np.zeros((n_take, patch_size, patch_size), dtype=np.float32)
+                  if continuum_removed else None)
         for i in range(n_take):
             r, c = int(sampled_rs[i]), int(sampled_cs[i])
             window = rasterio.windows.Window(c - half, r - half, patch_size, patch_size)
@@ -89,9 +108,17 @@ def extract_patches_from_tile(
             mask = (patch == nodata_value) | ~np.isfinite(patch)
             patch[mask] = 0.0
             np.clip(patch, 0.0, clip_max, out=patch)
-            out[i] = patch
+            if continuum_removed:
+                # CR the clipped raw patch; keep the pre-CR brightness scalar.
+                cr, b = cr_patch(patch)
+                out[i] = cr
+                bright[i] = b
+            else:
+                out[i] = patch
 
     n_skipped_short = max(0, n_target - n_take)
+    if continuum_removed:
+        return out, bright, n_skipped_short
     return out, n_skipped_short
 
 
@@ -114,9 +141,10 @@ def _worker(args_tuple):
 
     Defined at module level (not nested) so it's picklable by mp.Pool.
     """
-    (hdr_path, n_target, patch_size, min_valid_frac, clip_max, nodata_value, seed) = args_tuple
+    (hdr_path, n_target, patch_size, min_valid_frac, clip_max, nodata_value,
+     seed, continuum_removed) = args_tuple
     try:
-        patches, n_skipped_short = extract_patches_from_tile(
+        result = extract_patches_from_tile(
             hdr_path=hdr_path,
             n_target=n_target,
             patch_size=patch_size,
@@ -124,10 +152,16 @@ def _worker(args_tuple):
             clip_max=clip_max,
             nodata_value=nodata_value,
             seed=seed,
+            continuum_removed=continuum_removed,
         )
-        return (hdr_path, patches, n_skipped_short, None)
+        if continuum_removed:
+            patches, brightness, n_skipped_short = result
+        else:
+            patches, n_skipped_short = result
+            brightness = None
+        return (hdr_path, patches, brightness, n_skipped_short, None)
     except Exception as e:
-        return (hdr_path, None, 0, str(e))
+        return (hdr_path, None, None, 0, str(e))
 
 
 def main():
@@ -141,6 +175,12 @@ def main():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--patches_per_tile_target', type=int, default=2834)
     parser.add_argument('--patches_per_shard', type=int, default=100_000)
+    parser.add_argument('--continuum_removed', action='store_true',
+                        help='Continuum-remove each patch (upper-hull CR over the '
+                             '59-band good-band window) before writing, and save a '
+                             'parallel global_patches_NNN_brightness.npy (mean '
+                             'good-band reflectance, pre-CR) per shard. The CR cache '
+                             'is a drop-in CR transform of the raw cache.')
     args = parser.parse_args()
 
     # Resolve data_root from --data_root or config.
@@ -167,13 +207,14 @@ def main():
         (
             hdrs[i], args.patches_per_tile_target, PATCH_SIZE,
             MIN_VALID_FRAC, CLIP_MAX, NODATA_VALUE,
-            args.seed * 1000003 + i,
+            args.seed * 1000003 + i, args.continuum_removed,
         )
         for i in range(len(hdrs))
     ]
 
     # Run via Pool.imap_unordered. Buffer results into the main process.
     buffer: list = []
+    bright_buffer: list = []   # parallel to `buffer` when --continuum_removed
     shard_id = 0
     tiles_used = 0
     tiles_skipped: list = []
@@ -181,12 +222,21 @@ def main():
     total_skipped_short = 0
     t_start = time.time()
 
-    def flush_shard(buf_arrays: list, shard_id: int) -> dict:
-        """Write up to patches_per_shard items from buf_arrays to one shard file."""
+    def flush_shard(buf_arrays: list, bright_arrays: list, shard_id: int) -> dict:
+        """Write up to patches_per_shard items from buf_arrays to one shard file.
+
+        When --continuum_removed, ``bright_arrays`` is a parallel buffer of
+        (n, P, P) brightness maps; it is consumed in lockstep with ``buf_arrays``
+        and written to a matching *_brightness.npy under the same within-shard
+        permutation, so row i of the shard and its brightness sidecar align.
+        """
+        cr = args.continuum_removed
         n_total = sum(len(a) for a in buf_arrays)
         take = min(args.patches_per_shard, n_total)
         # Concatenate enough arrays to cover `take`.
         out = np.zeros((take, PATCH_SIZE, PATCH_SIZE, N_BANDS), dtype=np.float32)
+        out_b = (np.zeros((take, PATCH_SIZE, PATCH_SIZE), dtype=np.float32)
+                 if cr else None)
         idx = 0
         consumed = 0
         for i, a in enumerate(buf_arrays):
@@ -196,18 +246,25 @@ def main():
             need = take - idx
             if n_a <= need:
                 out[idx:idx + n_a] = a
+                if cr:
+                    out_b[idx:idx + n_a] = bright_arrays[i]
                 idx += n_a
                 consumed = i + 1
             else:
                 out[idx:idx + need] = a[:need]
                 # Leave the rest of `a` in the buffer for the next shard.
                 buf_arrays[i] = a[need:]
+                if cr:
+                    out_b[idx:idx + need] = bright_arrays[i][:need]
+                    bright_arrays[i] = bright_arrays[i][need:]
                 idx += need
                 consumed = i
                 break
 
-        # Drop the fully-consumed arrays from the buffer.
+        # Drop the fully-consumed arrays from the buffer(s).
         del buf_arrays[:consumed]
+        if cr:
+            del bright_arrays[:consumed]
 
         # Optional: shuffle within-shard to interleave tile sources.
         # Use a shard-local RNG seeded from the global seed for reproducibility.
@@ -218,10 +275,16 @@ def main():
         path = os.path.join(args.output, f'global_patches_{shard_id:03d}.npy')
         np.save(path, out)
         log.info(f"Wrote {path} ({len(out)} patches)")
+        if cr:
+            out_b = out_b[perm]
+            bpath = os.path.join(
+                args.output, f'global_patches_{shard_id:03d}_brightness.npy')
+            np.save(bpath, out_b)
+            log.info(f"Wrote {bpath} ({len(out_b)} brightness maps)")
         return {'id': shard_id, 'n_patches': len(out), 'path': path}
 
     with mp.Pool(args.workers) as pool:
-        for hdr_path, patches, n_skipped_short, err in pool.imap_unordered(_worker, work):
+        for hdr_path, patches, brightness, n_skipped_short, err in pool.imap_unordered(_worker, work):
             if err is not None:
                 log.warning(f"Tile {hdr_path} failed: {err}")
                 tiles_skipped.append(os.path.basename(hdr_path))
@@ -233,14 +296,16 @@ def main():
                 tiles_skipped.append(os.path.basename(hdr_path))
                 continue
             buffer.append(patches)
+            if args.continuum_removed:
+                bright_buffer.append(brightness)
             # Flush full shards as buffer accumulates.
             while sum(len(a) for a in buffer) >= args.patches_per_shard:
-                shard_records.append(flush_shard(buffer, shard_id))
+                shard_records.append(flush_shard(buffer, bright_buffer, shard_id))
                 shard_id += 1
 
     # Flush any remainder as the final (possibly partial) shard.
     if any(len(a) > 0 for a in buffer):
-        shard_records.append(flush_shard(buffer, shard_id))
+        shard_records.append(flush_shard(buffer, bright_buffer, shard_id))
         shard_id += 1
 
     total_build_time = time.time() - t_start
@@ -255,6 +320,7 @@ def main():
         'clip_max': CLIP_MAX,
         'nodata_value': NODATA_VALUE,
         'seed': args.seed,
+        'continuum_removed': args.continuum_removed,
         'patches_per_tile_target': args.patches_per_tile_target,
         'tiles_used': tiles_used,
         'tiles_skipped': tiles_skipped,
