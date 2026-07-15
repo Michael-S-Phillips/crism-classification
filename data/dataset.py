@@ -382,12 +382,37 @@ class CRISMSpectralPatchDataset(Dataset):
         patch_size: int = 7,
         cache_dir: Optional[str] = None,
         split: Optional[str] = None,
+        continuum_removed: bool = False,
+        return_brightness: bool = False,
+        cache_is_cr: bool = False,
     ):
+        """Read 7x7x59 mrral patches around labeled centers.
+
+        Continuum-removal options (all off by default → unchanged raw behaviour):
+          continuum_removed: apply upper-hull CR (data.continuum_removal.cr_patch)
+              to each patch. On the on-the-fly and CR-on-read cache paths CR is
+              applied after the [0, CLIP_MAX] clip, identical to the Task-2 global
+              cache builder. When cache_is_cr=True the cache is already CR and is
+              returned as-is.
+          return_brightness: also return the center-pixel brightness scalar (mean
+              good-band reflectance, pre-CR) as a (1,) aux tensor, so __getitem__
+              yields (patch, brightness, label, weight) — matching the aux-model
+              batch contract. Requires continuum_removed=True.
+          cache_is_cr: the memmap cache already holds CR patches (built by
+              scripts/build_global_patch_cache.py --continuum_removed or the
+              labeled equivalent). Brightness is then read from the parallel
+              mrral_{split}_patches_p{P}_brightness.npy sidecar.
+        """
         assert patch_size % 2 == 1, "patch_size must be odd"
+        if return_brightness and not continuum_removed:
+            raise ValueError('return_brightness requires continuum_removed=True')
         df = _collapse_labels(df).reset_index(drop=True)
         self.mrral_map = mrral_map
         self.patch_size = patch_size
         self.half = patch_size // 2
+        self.continuum_removed = continuum_removed
+        self.return_brightness = return_brightness
+        self.cache_is_cr = cache_is_cr
         self.labels = torch.tensor(df[LABEL_COLS].values, dtype=torch.float32)
         self.weights = torch.tensor(df['confidence_weight'].values, dtype=torch.float32)
         self._tile_ids = df['tile_id'].values
@@ -398,6 +423,7 @@ class CRISMSpectralPatchDataset(Dataset):
         self._pid = os.getpid()
         # Load memmap cache if available — bypasses rasterio reads at item time
         self._cache = None
+        self._bright_cache = None
         if cache_dir and split:
             cache_file = os.path.join(cache_dir, f'mrral_{split}_patches_p{patch_size}.npy')
             if os.path.exists(cache_file):
@@ -419,14 +445,46 @@ class CRISMSpectralPatchDataset(Dataset):
                     cache_file, dtype='float32', mode='r',
                     shape=(self._n, patch_size, patch_size, 59)
                 )
+                # A CR cache (cache_is_cr) has already discarded albedo, so the
+                # brightness aux must come from the parallel sidecar written
+                # alongside it. On-read CR (cache_is_cr=False) computes brightness
+                # from the raw cache directly and needs no sidecar.
+                if self.cache_is_cr and self.return_brightness:
+                    bfile = os.path.join(
+                        cache_dir, f'mrral_{split}_patches_p{patch_size}_brightness.npy')
+                    if not os.path.exists(bfile):
+                        raise FileNotFoundError(
+                            f'cache_is_cr with return_brightness needs the '
+                            f'brightness sidecar {bfile}; rebuild the CR cache so '
+                            f'it is written alongside the patches.')
+                    self._bright_cache = np.load(bfile, mmap_mode='r')
 
     def __len__(self):
         return self._n
 
+    def _finish(self, patch: np.ndarray, idx: int, brightness=None):
+        """Apply CR (if requested) and pack the return tuple for a raw patch.
+
+        patch: (P, P, 59) raw (or already-CR when cache_is_cr) float32.
+        brightness: optional precomputed (P, P) brightness map (cache_is_cr path).
+        """
+        if self.continuum_removed and not self.cache_is_cr:
+            from data.continuum_removal import cr_patch
+            patch, brightness = cr_patch(patch)
+        patch_t = torch.from_numpy(np.ascontiguousarray(patch, dtype=np.float32))
+        if self.return_brightness:
+            b = float(brightness[self.half, self.half])
+            bright_t = torch.tensor([b], dtype=torch.float32)
+            return patch_t, bright_t, self.labels[idx], self.weights[idx]
+        return patch_t, self.labels[idx], self.weights[idx]
+
     def __getitem__(self, idx):
         if self._cache is not None:
-            patch = torch.from_numpy(self._cache[idx].copy())
-            return patch, self.labels[idx], self.weights[idx]
+            patch = self._cache[idx].copy()
+            brightness = None
+            if self.cache_is_cr and self._bright_cache is not None:
+                brightness = np.asarray(self._bright_cache[idx])
+            return self._finish(patch, idx, brightness)
 
         current_pid = os.getpid()
         if current_pid != self._pid:
@@ -475,7 +533,7 @@ class CRISMSpectralPatchDataset(Dataset):
         # (59, 7, 7) → (7, 7, 59)
         patch = patch.transpose(1, 2, 0)
 
-        return torch.from_numpy(patch.copy()), self.labels[idx], self.weights[idx]
+        return self._finish(patch.copy(), idx)
 
     def close(self):
         for src in self._handles.values():
