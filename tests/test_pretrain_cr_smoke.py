@@ -82,7 +82,7 @@ def test_pretrain_cr_one_step_finite_loss(tmp_path):
         sys.executable, os.path.join(_ROOT, 'scripts',
                                      'pretrain_spatial_mae_denoising.py'),
         '--config', str(cfg_path),
-        '--continuum_removed',
+        '--continuum_removed', '--cr_on_read',  # raw synthetic shard → CR on read
         '--epochs', '1', '--warmup', '1',
         '--batch_size', '8', '--patches_per_epoch', '16',
         '--num_workers', '0',

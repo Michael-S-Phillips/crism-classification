@@ -48,10 +48,17 @@ def main():
     parser.add_argument('--spike_fwhm_bands',  type=float, default=3.0)
     # Representation
     parser.add_argument('--continuum_removed', action='store_true',
-                        help='Continuum-remove each patch (upper-hull CR over the '
-                             '59-band good-band window) on read, BEFORE the '
-                             'denoising corruption, so the MAE reconstructs in CR '
-                             'space. Off → raw-reflectance pretrain unchanged.')
+                        help='CR pipeline: the MAE reconstructs in continuum-removed '
+                             'space. Patches are fed UN-z-scored (per-patch z-score '
+                             'would rescale away absolute band depth). Off → raw '
+                             'pretrain unchanged. Expects global_patch_cache_dir to '
+                             'hold a precomputed CR cache (build_global_patch_cache.py '
+                             '--continuum_removed) unless --cr_on_read is set.')
+    parser.add_argument('--cr_on_read', action='store_true',
+                        help='Shards are RAW; continuum-remove each on read (slow — '
+                             'per-pixel hull; use only for tests/small caches). '
+                             'Requires --continuum_removed. Default: shards are '
+                             'already CR, fed as-is.')
     # Run management
     parser.add_argument('--run_name', type=str, default='spatial_mae_denoising_128d_6l')
     parser.add_argument('--config',   type=str, default='config.yaml')
@@ -76,12 +83,17 @@ def main():
         raise KeyError("config.local.yaml must define global_patch_cache_dir")
     log.info(f"Global patch cache: {shard_dir}")
 
+    if args.cr_on_read and not args.continuum_removed:
+        parser.error('--cr_on_read requires --continuum_removed')
     if args.continuum_removed:
-        log.info("Continuum removal ON: patches are CR before corruption "
-                 "(reconstruction target in CR space)")
+        log.info("Continuum removal ON: reconstruction target in CR space, fed "
+                 f"un-z-scored ({'CR-on-read from raw shards' if args.cr_on_read else 'precomputed CR cache'})")
     from data.cached_patch_dataset import CRISMCachedPatchDataset
-    ds = CRISMCachedPatchDataset(shard_dir=shard_dir, normalize=True, shuffle=True,
-                                 continuum_removed=args.continuum_removed)
+    ds = CRISMCachedPatchDataset(
+        shard_dir=shard_dir,
+        normalize=not args.continuum_removed,      # CR fed un-z-scored (band depth)
+        shuffle=True,
+        continuum_removed=args.cr_on_read)          # re-CR only if shards are raw
     loader = DataLoader(
         ds,
         batch_size=args.batch_size,
