@@ -21,27 +21,31 @@ cd /groups/sbyrne/phillipsm/crism_classification
 git pull
 ```
 
-## 1. Rebuild the global patch cache as CR
+## 1. Rebuild the global patch cache as CR  (batch job, ~6-10 h)
 
-The old global cache is truncated (tile-corruption era) and must be rebuilt anyway.
-Build it CR (writes `global_patches_*.npy` + `_brightness.npy` sidecars +
-`shard_index.json`):
+**PREREQUISITE — repair the /xdisk tiles first.** The global cache reads
+`/xdisk/sbyrne/phillipsm/CRISM_MRDR` tiles; the HPC copies had 64 truncated + 159
+missing mrral tiles. If the tile-refresh rsync isn't done, the CR cache (and every
+pretrain built on it) bakes in zero-fill corruption. Confirm the refresh completed
+before submitting this.
 
 ```bash
-python scripts/build_global_patch_cache.py \
-    --continuum_removed \
-    --output /xdisk/sbyrne/phillipsm/crism_patch_cache_cr
-# uses cfg["data_root"] tiles; ~same size/time as the raw global cache build.
+sbatch scripts/hpc_build_global_cache_cr.slurm   # → /xdisk/.../crism_patch_cache_cr
 ```
-Verify: `ls /xdisk/sbyrne/phillipsm/crism_patch_cache_cr/global_patches_000.npy`.
+Writes `global_patches_*.npy` + `_brightness.npy` sidecars + `shard_index.json`.
+Capture the job id; step 2 chains on it. Verify on completion:
+`ls /xdisk/sbyrne/phillipsm/crism_patch_cache_cr/global_patches_000.npy`.
 
 ## 2. Pretrain the CR encoder — 2-arm size probe
 
 ```bash
-sbatch scripts/hpc_pretrain_cr_denoising.slurm      # array 0-1: embed_dim 128 & 256
+# chain on the cache build so it can't start before the cache exists:
+sbatch --dependency=afterok:<BUILD_JOBID> scripts/hpc_pretrain_cr_denoising.slurm
+# (or plain `sbatch scripts/hpc_pretrain_cr_denoising.slurm` once step 1 is done)
 ```
-Produces `checkpoints/spatial_mae_cr_denoising_{128,256}d_6l_best.pt`. Reads the CR
-cache from step 1 (fed un-z-scored). ~32 h/arm.
+Array 0-1: embed_dim 128 & 256. Produces
+`checkpoints/spatial_mae_cr_denoising_{128,256}d_6l_best.pt`. Reads the CR cache from
+step 1 (fed un-z-scored). ~32 h/arm.
 
 ## 3. Build the CR labeled cache (fine-tune input)
 
