@@ -36,13 +36,26 @@ def convert_split(raw_dir: str, out_dir: str, split: str, patch_size: int,
     if not os.path.exists(raw_path):
         print(f'  {split}: {raw_path} missing, skipping')
         return 0
-    raw = np.load(raw_path, mmap_mode='r')  # (n, P, P, 59)
-    n = raw.shape[0]
-    assert raw.shape[1:] == (patch_size, patch_size, 59), raw.shape
+    # The labeled cache is a RAW headerless memmap (written by
+    # cache_mrral_patches.py via np.memmap and read by CRISMSpectralPatchDataset
+    # the same way — the .npy extension carries no npy header). So we memmap it,
+    # deriving the patch count from the file size, NOT np.load.
+    itembytes = patch_size * patch_size * 59 * 4
+    nbytes = os.path.getsize(raw_path)
+    if nbytes % itembytes != 0:
+        raise ValueError(
+            f'{raw_path} size {nbytes:,} is not a multiple of the per-patch byte '
+            f'count {itembytes:,} (P={patch_size}, 59 bands, float32) — not a raw '
+            f'patch memmap?')
+    n = nbytes // itembytes
+    raw = np.memmap(raw_path, dtype='float32', mode='r',
+                    shape=(n, patch_size, patch_size, 59))
     os.makedirs(out_dir, exist_ok=True)
-    cr_out = np.lib.format.open_memmap(
-        os.path.join(out_dir, fname), mode='w+', dtype='float32',
-        shape=(n, patch_size, patch_size, 59))
+    # CR patches: RAW headerless memmap (fine-tune np.memmaps them with an exact
+    # byte-count guard — a .npy header would misalign and fail that guard).
+    cr_out = np.memmap(os.path.join(out_dir, fname), dtype='float32', mode='w+',
+                       shape=(n, patch_size, patch_size, 59))
+    # Brightness sidecar: a real .npy (fine-tune reads it via np.load).
     br_out = np.lib.format.open_memmap(
         os.path.join(out_dir, f'mrral_{split}_patches_p{patch_size}_brightness.npy'),
         mode='w+', dtype='float32', shape=(n, patch_size, patch_size))
