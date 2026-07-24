@@ -89,7 +89,13 @@ class CRISMCachedPatchDataset(IterableDataset):
         # CR (fine-tune + inference already do not z-score). Brightness/albedo is
         # carried separately as the classifier aux scalar, not via normalization.
         self.normalize = normalize and not continuum_removed
-        self.shards = sorted(glob.glob(os.path.join(shard_dir, 'global_patches_*.npy')))
+        # NB: 'global_patches_*.npy' also matches the CR build's
+        # 'global_patches_NNN_brightness.npy' sidecars (shape (n,P,P)); those must
+        # NOT be ingested as patches (they would yield (P,P) items and break the
+        # model). Exclude them explicitly.
+        self.shards = sorted(
+            s for s in glob.glob(os.path.join(shard_dir, 'global_patches_*.npy'))
+            if not s.endswith('_brightness.npy'))
         if not self.shards:
             raise FileNotFoundError(f"No shards in {shard_dir}")
 

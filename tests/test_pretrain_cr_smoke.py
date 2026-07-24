@@ -36,6 +36,24 @@ def _make_shard(cache_dir: str, n: int = 32, seed: int = 0) -> np.ndarray:
     return patches
 
 
+def test_dataset_ignores_brightness_sidecars(tmp_path):
+    """A CR global cache has global_patches_NNN_brightness.npy sidecars next to the
+    patch shards; the shard glob must NOT ingest them as patches (they are (n,P,P)
+    and would yield (P,P) items that break the model)."""
+    from data.cached_patch_dataset import CRISMCachedPatchDataset
+    cache_dir = str(tmp_path / 'cr_cache')
+    os.makedirs(cache_dir)
+    np.save(os.path.join(cache_dir, 'global_patches_000.npy'),
+            np.random.default_rng(0).uniform(0, 1, (8, 7, 7, 59)).astype(np.float32))
+    np.save(os.path.join(cache_dir, 'global_patches_000_brightness.npy'),
+            np.zeros((8, 7, 7), np.float32))
+    ds = CRISMCachedPatchDataset(shard_dir=cache_dir, normalize=False, shuffle=False)
+    assert len(ds.shards) == 1
+    assert not any(s.endswith('_brightness.npy') for s in ds.shards)
+    for patch in ds:
+        assert tuple(patch.shape) == (7, 7, 59)
+
+
 def test_cached_dataset_cr_on_read_matches_module(tmp_path):
     """CRISMCachedPatchDataset(continuum_removed=True, normalize=False) yields CR
     patches identical to data.continuum_removal.continuum_removed(raw_patch)."""
