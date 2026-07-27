@@ -30,9 +30,10 @@ WORK_DIR=/groups/sbyrne/phillipsm/crism_classification
 CKPT_DIR=${WORK_DIR}/checkpoints
 PYTHON=/groups/sbyrne/phillipsm/micromamba/envs/crism/bin/python
 
-# CR-pretrain winner (set to the 256d ckpt if the linear probe picks it).
-ENCODER=${CKPT_DIR}/spatial_mae_cr_denoising_128d_6l_best.pt
-EMBED_DIM=128
+# CR-pretrain winner: 256d beat 128d on the linear probe (val_mAP_core 0.596 vs
+# 0.541, 2026-07-27) — a clear 5.6 pp margin, so use the 256d encoder.
+ENCODER=${CKPT_DIR}/spatial_mae_cr_denoising_256d_6l_best.pt
+EMBED_DIM=256
 CACHE_DIR=${WORK_DIR}/data/patch_cache_7cls_cr          # built by build_cr_labeled_cache.py
 PARQUET=${WORK_DIR}/data/mrral_pixels_7cls.parquet
 
