@@ -40,7 +40,7 @@ run_region () {
         echo "=== ${region} ${tid} ==="
         $PYTHON scripts/classify_tile_supervised.py \
             --tile "$img" --ckpt "$CKPT" \
-            --save_probs "$npz" --no_plot
+            --save_probs "$npz" --no_plot ${CLASSIFY_EXTRA_ARGS:-}
     done
     $PYTHON scripts/vectorize_per_mineral_thresholds_nili_6cls.py \
         --probs_dir "$probs_dir" --out_dir "$out_dir" \

@@ -243,7 +243,7 @@ def normalize_patches(patches):
     return ((patches.reshape(B, -1) - mu) / sigma).reshape(patches.shape)
 
 
-def load_classifier(ckpt_path, device):
+def load_classifier(ckpt_path, device, embed_dim=128, n_layers=6):
     state = torch.load(ckpt_path, map_location=device, weights_only=False)
     if isinstance(state, dict) and 'model_state' in state:
         val_map = state.get('val_mAP', None)
@@ -252,7 +252,7 @@ def load_classifier(ckpt_path, device):
     _set_n_classes(state)
     model = SpatialSpectralClassifier(
         n_bands=N_BANDS, patch_size=PATCH_SIZE, n_classes=N_CLASSES,
-        embed_dim=128, n_heads=4, n_layers=6,
+        embed_dim=embed_dim, n_heads=4, n_layers=n_layers,
     ).to(device)
     model.load_state_dict(state)
     model.eval()
@@ -439,6 +439,11 @@ def main():
     parser.add_argument('--gpkg', default=None, metavar='PATH',
                         help='GeoPackage with mineral polygon labels')
     parser.add_argument('--batch_size', type=int, default=4096)
+    parser.add_argument('--embed_dim', type=int, default=128,
+                        help='Encoder width; must match the checkpoint (e.g. 256 '
+                             'for the CR 256d encoder). Default 128.')
+    parser.add_argument('--n_layers', type=int, default=6,
+                        help='Encoder depth; must match the checkpoint. Default 6.')
     parser.add_argument('--n_clusters', type=int, default=8)
     parser.add_argument('--drop_pcs', type=int, nargs='+', default=[0, 1, 2, 3])
     parser.add_argument('--out_dir', default='/mnt/mrdr/crism_classification/reports')
@@ -498,7 +503,7 @@ def main():
         aux_dim = 1 if args.brightness_aux else 2
         model = SpatialSpectralClassifierAux(
             n_bands=N_BANDS, patch_size=PATCH_SIZE, n_classes=N_CLASSES,
-            embed_dim=128, n_heads=4, n_layers=6, aux_dim=aux_dim,
+            embed_dim=args.embed_dim, n_heads=4, n_layers=args.n_layers, aux_dim=aux_dim,
         ).to(device)
         model.load_state_dict(state)
         model.eval()
@@ -509,7 +514,7 @@ def main():
             print(f'Loading mrrsu aux tile: {mrrsu_path}')
             aux_rasters = load_mrrsu_aux_rasters(mrrsu_path, args.mrrsu_aux_stats)
     else:
-        model = load_classifier(args.ckpt, device)
+        model = load_classifier(args.ckpt, device, args.embed_dim, args.n_layers)
         aux_rasters = None
 
     print('Running supervised inference...')
