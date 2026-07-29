@@ -16,6 +16,18 @@ from evaluation.metrics import compute_full_metrics, compute_map
 logger = logging.getLogger(__name__)
 
 
+def _core_map(y_true: np.ndarray, y_score: np.ndarray) -> float:
+    """val_mAP_core: mAP with the junk class excluded whenever the current
+    label set includes one. Name-based (not width-based) so pyx 6-class
+    heads (LABEL_COLS_PYX, which has junk) are handled the same as 7-class
+    heads; label sets without junk (5/6-class non-pyx) are a no-op and
+    core == full mAP."""
+    import data.dataset as _d
+    if 'junk' in _d.LABEL_COLS[:y_score.shape[1]]:
+        return compute_map(y_true, y_score, exclude=('junk',))
+    return compute_map(y_true, y_score)
+
+
 def build_class_balanced_weights(df: pd.DataFrame) -> np.ndarray:
     """
     Build per-pixel sampling weights to oversample rare-class positives.
@@ -430,12 +442,10 @@ def train_torch_model(
 
         metrics = compute_full_metrics(y_true, y_score, conf_tiers)
         val_map = metrics['mAP']
-        # Core mAP: junk excluded in 7-class mode (LABEL_COLS_7CLASS width);
-        # for 5/6-class heads there is no junk class, so core == full.
-        if y_score.shape[1] == 7:
-            val_map_core = compute_map(y_true, y_score, exclude=('junk',))
-        else:
-            val_map_core = val_map
+        # Core mAP: junk excluded whenever the current label set has a junk
+        # class (name-based, not width-based -- covers 7-class AND pyx
+        # 6-class; label sets without junk get core == full via compute_map).
+        val_map_core = _core_map(y_true, y_score)
         if val_map > best_map:
             best_map = val_map
             best_map_state = copy.deepcopy(model.state_dict())
