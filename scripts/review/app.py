@@ -243,23 +243,30 @@ def make_spectrum_figure(spectra: np.ndarray,
             sp = sp[idx]
         sp = medfilt(sp, kernel_size=(1, 3))          # light band-wise denoise
         cr = _cr(sp)                                   # (n, 59), CR per pixel
-        mean = np.nanmean(cr, axis=0)
-        std = np.nanstd(cr, axis=0)
-        upper = mean + std
-        lower = mean - std
+        # Envelope as per-band 16-84 percentiles, NOT mean±σ. CR is bounded
+        # above by 1.0 per pixel (each pixel hits its own hull anchors at 1.0),
+        # so mean+σ pokes UNPHYSICALLY above 1.0 near the anchors, and a few
+        # noisy pixels in the low-SNR visible bands blow σ into a sharp spike.
+        # Percentiles are bounded by the data (≤1.0) and robust to those
+        # outliers; the median centre always sits inside the band.
+        center = np.nanmedian(cr, axis=0)
+        lower = np.nanpercentile(cr, 16, axis=0)
+        upper = np.nanpercentile(cr, 84, axis=0)
+        center_name = 'median (16–84%)'
         # Gap the 1 µm detector-overlap bands (m16-19) so they don't render as
         # a flat notch/spike — plotly breaks the line at NaN.
         excl = ~good_band_mask_59()
-        for arr in (mean, upper, lower):
+        for arr in (center, upper, lower):
             arr[excl] = np.nan
     else:
         if continuum_removed:
             # CR needs the 59-band m0..m58 window; fall back to raw otherwise.
             continuum_removed = False
-        mean = spectra.mean(axis=0)
+        center = spectra.mean(axis=0)
         std = spectra.std(axis=0)
-        upper = mean + std
-        lower = mean - std
+        upper = center + std
+        lower = center - std
+        center_name = 'mean'
 
     fig.add_trace(go.Scatter(
         x=wavelengths_nm, y=upper, mode='lines',
@@ -273,8 +280,8 @@ def make_spectrum_figure(spectra: np.ndarray,
         showlegend=False, hoverinfo='skip',
     ))
     fig.add_trace(go.Scatter(
-        x=wavelengths_nm, y=mean, mode='lines',
-        line=dict(width=2, color='royalblue'), name='mean',
+        x=wavelengths_nm, y=center, mode='lines',
+        line=dict(width=2, color='royalblue'), name=center_name,
     ))
 
     # Step 2: robust explicit y-range. Compute it ONLY from bands inside the
