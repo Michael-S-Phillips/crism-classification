@@ -50,10 +50,24 @@ _CLASS_NAMES_7 = ['olivine', 'lcp', 'hcp', 'plagioclase', 'bland', 'alteration',
 _CLASS_COLORS_7 = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#aaaaaa',
                    '#cc8899', '#808080']  # alteration puce
 
+# pyx-merge vocab (Task 4): LCP+HCP collapsed into a single 'pyx' class.
+# A 6-class head is otherwise ambiguous between this and _CLASS_NAMES_6
+# (alteration); --pyx sets PYX_MODE=True before the checkpoint is loaded to
+# disambiguate.
+PYX_MODE = False
+_CLASS_NAMES_PYX = ['olivine', 'pyx', 'plagioclase', 'bland', 'alteration', 'junk']
+_CLASS_COLORS_PYX = ['#e6194b', '#ff8000', '#f58231', '#aaaaaa', '#cc8899', '#808080']
+
 
 def _set_n_classes(state):
     """Rebind N_CLASSES / CLASS_NAMES / CLASS_COLORS from a checkpoint
-    state_dict's head.weight shape (5-, 6-, and 7-class supported)."""
+    state_dict's head.weight shape (5-, 6-, and 7-class supported).
+
+    A 6-class head is ambiguous: it could be the alteration-6 vocab
+    (_CLASS_NAMES_6) or the pyx-merge vocab (_CLASS_NAMES_PYX). PYX_MODE
+    (set via --pyx before the checkpoint loads) disambiguates in favor of
+    pyx.
+    """
     global N_CLASSES, CLASS_NAMES, CLASS_COLORS
     head_w = state.get('head.weight')
     if head_w is None:
@@ -61,7 +75,9 @@ def _set_n_classes(state):
     n = int(head_w.shape[0])
     if n == N_CLASSES:
         return
-    if n == 6:
+    if n == 6 and PYX_MODE:
+        N_CLASSES, CLASS_NAMES, CLASS_COLORS = 6, _CLASS_NAMES_PYX, _CLASS_COLORS_PYX
+    elif n == 6:
         N_CLASSES, CLASS_NAMES, CLASS_COLORS = 6, _CLASS_NAMES_6, _CLASS_COLORS_6
     elif n == 7:
         N_CLASSES, CLASS_NAMES, CLASS_COLORS = 7, _CLASS_NAMES_7, _CLASS_COLORS_7
@@ -473,6 +489,12 @@ def main():
                              'SpatialSpectralClassifierAux (aux_dim=1). Requires '
                              '--continuum_removed; mutually exclusive with '
                              '--mrrsu_aux.')
+    parser.add_argument('--pyx', action='store_true',
+                        help='Checkpoint uses the pyx-merge vocab (LCP+HCP collapsed '
+                             "into 'pyx'). Forces a 6-class head to be interpreted as "
+                             '_CLASS_NAMES_PYX instead of the alteration-6 default '
+                             '(_CLASS_NAMES_6). Must be set before the checkpoint is '
+                             'loaded.')
     args = parser.parse_args()
 
     if args.brightness_aux and not args.continuum_removed:
@@ -480,6 +502,10 @@ def main():
     if args.brightness_aux and args.mrrsu_aux:
         parser.error('--brightness_aux and --mrrsu_aux are mutually exclusive '
                      '(both feed the aux head).')
+
+    if args.pyx:
+        global PYX_MODE
+        PYX_MODE = True
 
     tile_name = os.path.splitext(os.path.basename(args.tile))[0]
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
