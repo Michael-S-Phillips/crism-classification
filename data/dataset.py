@@ -24,6 +24,9 @@ LABEL_COLS_WITH_ALTERATION = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other',
 # catch-all. Train with --seven_class in train.py.
 LABEL_COLS_7CLASS = ['olivine', 'lcp', 'hcp', 'plagioclase', 'bland',
                      'alteration', 'junk']
+# pyx (pyroxene) 6-class label set: lcp and hcp merged into a single 'pyx' class
+# for tasks requiring a unified pyroxene mineral class.
+LABEL_COLS_PYX = ['olivine', 'pyx', 'plagioclase', 'bland', 'alteration', 'junk']
 
 # Ordered list of all known label sets, indexed by head width.
 _LABEL_COLS_BY_N = {
@@ -105,6 +108,13 @@ def _collapse_labels(df: pd.DataFrame) -> pd.DataFrame:
         out['junk'] = np.float32(0.0)
     else:
         out['junk'] = (out['junk'] > 0).astype(np.float32)
+    # pyx = pyroxene merge (LCP+HCP) for the 6-class pyx target; lcp/hcp are
+    # left intact for the post-hoc ortho/clino overlay (Spec B).
+    if 'lcp' not in out.columns:
+        out['lcp'] = np.float32(0.0)
+    if 'hcp' not in out.columns:
+        out['hcp'] = np.float32(0.0)
+    out['pyx'] = out[['lcp', 'hcp']].max(axis=1).astype(np.float32)
     if 'confidence_tier' in out.columns:
         mapped = (
             out['confidence_tier']
