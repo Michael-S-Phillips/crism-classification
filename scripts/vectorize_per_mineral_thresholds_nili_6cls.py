@@ -66,7 +66,9 @@ COMMON_CRS = CRS.from_wkt(MARS_GEO_WKT)
 
 PROB_CHANNELS = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other', 'alteration']
 _PROB_CHANNELS_7 = ['olivine', 'lcp', 'hcp', 'plagioclase', 'bland', 'alteration', 'junk']
+_PROB_CHANNELS_PYX = ['olivine', 'pyx', 'plagioclase', 'bland', 'alteration', 'junk']
 MINERAL_NAMES = ['olivine', 'lcp', 'hcp', 'plagioclase', 'alteration']
+_MINERAL_NAMES_PYX = ['olivine', 'pyx', 'plagioclase', 'alteration']
 
 UNIFORM_THRESHOLDS = [0.50, 0.60, 0.75, 0.85, 0.90, 0.95, 0.97, 0.99]
 PER_MINERAL_THRESHOLDS = {m: list(UNIFORM_THRESHOLDS) for m in MINERAL_NAMES}
@@ -80,6 +82,7 @@ MINERAL_BASE_RGB = {
     'olivine':     (1.00, 0.00, 0.00),
     'hcp':         (1.00, 0.00, 1.00),
     'lcp':         (0.00, 1.00, 1.00),
+    'pyx':         (1.00, 0.50, 0.00),  # matches classify_tile_supervised.py _CLASS_COLORS_PYX '#ff8000'
     'plagioclase': (1.00, 0.84, 0.00),
     'alteration':  (0.80, 0.53, 0.60),  # puce — scaled across thresholds for shades
 }
@@ -89,19 +92,27 @@ MAX_SAT = 1.00
 
 
 def _check_npz_channels(data, expected_channels):
-    """Accept 6-class (other) or 7-class (bland+junk) npz; update PROB_CHANNELS."""
-    global PROB_CHANNELS
+    """Accept 6-class (other), 7-class (bland+junk), or pyx-merge (lcp+hcp -> pyx)
+    npz channel orders; update the module PROB_CHANNELS / MINERAL_NAMES /
+    PER_MINERAL_THRESHOLDS globals to match whichever vocab the npz carries."""
+    global PROB_CHANNELS, MINERAL_NAMES, PER_MINERAL_THRESHOLDS
     if 'class_names' not in getattr(data, 'files', []):
         return
     names = [str(x) for x in data['class_names']]
-    if names == list(expected_channels):
+    if expected_channels is not None and names == list(expected_channels):
         return
     if names == _PROB_CHANNELS_7:
         PROB_CHANNELS = _PROB_CHANNELS_7
         return
+    if names == _PROB_CHANNELS_PYX:
+        PROB_CHANNELS = _PROB_CHANNELS_PYX
+        MINERAL_NAMES = _MINERAL_NAMES_PYX
+        PER_MINERAL_THRESHOLDS = {m: list(UNIFORM_THRESHOLDS) for m in MINERAL_NAMES}
+        return
     raise SystemExit(
         f'npz class_names {names} != expected channel orders '
-        f'{list(expected_channels)} or {_PROB_CHANNELS_7}.')
+        f'{list(expected_channels) if expected_channels is not None else None}, '
+        f'{_PROB_CHANNELS_7}, or {_PROB_CHANNELS_PYX}.')
 
 
 def discover_tiles() -> list[dict]:
@@ -365,6 +376,13 @@ def main():
     if not tiles:
         print('No tiles to process — exiting.')
         sys.exit(1)
+
+    # Peek at the first tile's npz to detect its channel vocab (6-class /
+    # 7-class / pyx-merge) and update PROB_CHANNELS / MINERAL_NAMES /
+    # PER_MINERAL_THRESHOLDS *before* allocating accum, so accum's keys
+    # match whatever mineral set this run's checkpoint actually produced.
+    first_npz = np.load(os.path.join(PROBS_DIR, f'{tiles[0]["tid"]}_probs.npz'))
+    _check_npz_channels(first_npz, PROB_CHANNELS)
 
     accum: dict[str, dict[float, list[gpd.GeoDataFrame]]] = {
         m: {t: [] for t in PER_MINERAL_THRESHOLDS[m]} for m in MINERAL_NAMES
