@@ -117,14 +117,57 @@ class _UnionFind:
             self.rank[ra] += 1
 
 
-def _link_components(lat: np.ndarray, lon: np.ndarray, link_deg: float) -> np.ndarray:
+def _pixel_share_unions(df: pd.DataFrame, cents: pd.DataFrame, uf: _UnionFind) -> None:
+    """Union polygon indices (rows of `cents`, i.e. positions in the
+    (tile_id, polygon_id) group table) whose ORIGINAL rows in `df` share a
+    literal (tile_id, pixel_row, pixel_col) physical pixel.
+
+    This closes the nested threshold-ladder leak: re-reviewed/re-thresholded
+    polygons that share pixel footprint but whose mean centroids land more
+    than `link_deg` apart (because one polygon's OTHER pixels are far away)
+    must still end up in the same split-assignment unit. Applied in ADDITION
+    to (not instead of) the centroid-distance linkage in `_link_components`,
+    using the same union-find so both criteria merge transitively.
+
+    Confined to the duplicated-pixel subset of `df` for speed: on the real
+    corpus only ~16% of pixels are touched by >1 polygon_id, so filtering via
+    `duplicated(keep=False)` first avoids a full-corpus groupby.
+    """
+    key_cols = ['tile_id', 'pixel_row', 'pixel_col']
+    dup_mask = df.duplicated(subset=key_cols, keep=False)
+    if not dup_mask.any():
+        return
+    idx_map = {
+        (t, p): i for i, (t, p) in enumerate(zip(cents['tile_id'], cents['polygon_id']))
+    }
+    sub = df.loc[dup_mask, key_cols + ['polygon_id']]
+    cidx = np.fromiter(
+        (idx_map[(t, p)] for t, p in zip(sub['tile_id'], sub['polygon_id'])),
+        dtype=int, count=len(sub))
+    sub = sub.assign(_cidx=cidx)
+    for _, grp in sub.groupby(key_cols, sort=False)['_cidx']:
+        uniq = pd.unique(grp.to_numpy())
+        if len(uniq) > 1:
+            first = int(uniq[0])
+            for other in uniq[1:]:
+                uf.union(first, int(other))
+
+
+def _link_components(lat: np.ndarray, lon: np.ndarray, link_deg: float,
+                      uf: _UnionFind | None = None) -> np.ndarray:
     """Single-linkage connected components; returns integer component id per point.
 
     Distance: sqrt(dlat^2 + (dlon_wrapped * cos(mean_lat))^2) in degrees.
     Grid-bucketed by link_deg cells so only nearby polygons are compared.
+
+    If `uf` is provided, unions are added to it in place (allowing callers to
+    layer additional union criteria, e.g. literal pixel sharing, into the same
+    union-find before/after this pass) and the caller's `uf` is used for the
+    final component computation instead of a fresh one.
     """
     n = len(lat)
-    uf = _UnionFind(n)
+    if uf is None:
+        uf = _UnionFind(n)
     if n <= 1:
         return np.zeros(n, dtype=int)
 
@@ -174,10 +217,17 @@ def polygon_units(df: pd.DataFrame, link_deg: float = LINK_DEG) -> pd.Series:
     """Unit id per row (indexed like df).
 
     Polygon centroid = tile center + 5*((mean_col/1500)-.5) lon,
-    -(5*((mean_row/1500)-.5)) lat; single-linkage components at link_deg.
+    -(5*((mean_row/1500)-.5)) lat; single-linkage components at link_deg,
+    UNIONED WITH any two polygons that share >=1 literal
+    (tile_id, pixel_row, pixel_col) pixel (regardless of centroid distance) --
+    this is what guarantees nested threshold-ladder re-review polygons that
+    share physical pixels always end up in the same unit, and therefore the
+    same train/val/test split (see reviewonly_leak_diagnosis.md).
     """
     cents = _polygon_centroids(df)
-    comp = _link_components(cents['lat'].to_numpy(), cents['lon'].to_numpy(), link_deg)
+    uf = _UnionFind(len(cents))
+    _pixel_share_unions(df, cents, uf)
+    comp = _link_components(cents['lat'].to_numpy(), cents['lon'].to_numpy(), link_deg, uf=uf)
     cents['unit'] = comp
     key = df[['tile_id', 'polygon_id']].merge(
         cents[['tile_id', 'polygon_id', 'unit']],
@@ -325,3 +375,45 @@ def achieved_fractions(df: pd.DataFrame, splits, label_cols) -> pd.DataFrame:
         for ci, c in enumerate(label_cols):
             out.loc[c, s] = counts[ci] / totals[ci] if totals[ci] > 0 else 0.0
     return out
+
+
+# ── Pixel-leak guard (opt-in; NOT called automatically by assign_unit_balanced_splits) ──
+
+def find_pixel_split_leaks(df: pd.DataFrame, splits) -> pd.DataFrame:
+    """Return the (tile_id, pixel_row, pixel_col) keys whose rows span more
+    than one split, with the distinct splits they hit.
+
+    This is a defense-in-depth check, not a correctness guarantee on its own:
+    with a correct `polygon_units()` (pixel-sharing polygons unioned into one
+    unit) this should always come back empty. It is a groupby over the full
+    frame, so it is deliberately NOT invoked inside `assign_unit_balanced_splits`
+    on every call (that would slow large builds); call it explicitly where it's
+    cheap -- e.g. once after the final joint re-split in a build script, or in
+    tests -- via `assert_no_pixel_split_leak` below.
+
+    Returns an empty DataFrame (columns: tile_id, pixel_row, pixel_col, splits)
+    when there is no leak.
+    """
+    if not isinstance(splits, pd.Series):
+        splits = pd.Series(np.asarray(splits), index=df.index)
+    tmp = df[['tile_id', 'pixel_row', 'pixel_col']].copy()
+    tmp['split'] = splits.to_numpy()
+    g = tmp.groupby(['tile_id', 'pixel_row', 'pixel_col'])['split'].agg(
+        lambda s: tuple(sorted(set(s))))
+    leaked = g[g.map(len) > 1]
+    return leaked.reset_index().rename(columns={'split': 'splits'})
+
+
+def assert_no_pixel_split_leak(df: pd.DataFrame, splits) -> None:
+    """Raise AssertionError if any physical pixel spans more than one split.
+
+    See `find_pixel_split_leaks` for cost/usage notes -- call this explicitly
+    (e.g. once after a build's final split assignment), not inside the greedy
+    assignment loop.
+    """
+    leaks = find_pixel_split_leaks(df, splits)
+    if len(leaks):
+        sample = leaks.head(10).to_dict('records')
+        raise AssertionError(
+            f'{len(leaks)} physical (tile_id, pixel_row, pixel_col) pixels span '
+            f'more than one split (expected 0). Sample: {sample}')
