@@ -32,6 +32,40 @@ from scripts.review.persistence import (
 DEFAULT_GPKG_DIR = '/mnt/mrdr/crism_classification/data/vector_mc13_7cls_v3_lrscale001'
 DEFAULT_MRRAL_DIR = '/mnt/mrdr/mc13'
 DEFAULT_OUT_DIR = '/mnt/mrdr/crism_classification/data/mc13_review_7cls_v3'
+
+_PROJ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _gpkg_dir_choices() -> list:
+    """Auto-discover dirs that actually contain per-mineral gpkgs (data/vector_*
+    and reports/floor_tests/*/*), so the dropdown stays current as new vector
+    products/floor tests appear — no hardcoded list to maintain."""
+    import glob
+    cands = {DEFAULT_GPKG_DIR}
+    for pat in (os.path.join(_PROJ, 'data', 'vector_*'),
+                os.path.join(_PROJ, 'reports', 'floor_tests', '*', '*')):
+        for d in glob.glob(pat):
+            if os.path.isdir(d) and glob.glob(os.path.join(d, '*.gpkg')):
+                cands.add(d)
+    return sorted(cands)
+
+
+def _mrral_dir_choices() -> list:
+    """The Mars-chart tile dirs under /mnt/mrdr (mc02..mc30)."""
+    import glob
+    return sorted(glob.glob('/mnt/mrdr/mc[0-9][0-9]')) or [DEFAULT_MRRAL_DIR]
+
+
+def _out_dir_choices() -> list:
+    """Known review output dirs (data/*review*), plus the standard defaults."""
+    import glob
+    cands = {DEFAULT_OUT_DIR,
+             os.path.join(_PROJ, 'data', 'mc13_review'),
+             os.path.join(_PROJ, 'data', 'cr_review')}
+    for d in glob.glob(os.path.join(_PROJ, 'data', '*review*')):
+        if os.path.isdir(d):
+            cands.add(d)
+    return sorted(cands)
 # For MC11 review: gpkg dir data/vector_mc11_7cls_v3_lrscale001,
 # mrral dir /mnt/mrdr/mc11, out dir data/mc11_review_7cls_v3.
 # Default spectrum-plot wavelength window (nm). The mrral cube's first band
@@ -297,10 +331,20 @@ def main():
     st.set_page_config(page_title='MC13 polygon review', layout='wide')
     st.title('MC13 polygon review')
 
-    # Sidebar config
-    gpkg_dir = st.sidebar.text_input('gpkg dir', DEFAULT_GPKG_DIR)
-    mrral_dir = st.sidebar.text_input('mrral tile dir', DEFAULT_MRRAL_DIR)
-    out_dir = st.sidebar.text_input('output dir', DEFAULT_OUT_DIR)
+    # Sidebar config — dropdowns of known locations, with an "Other" escape
+    # hatch that reveals a free-text box for a custom path.
+    _OTHER = '⟨ other — type a path ⟩'
+
+    def _pick(label, choices, default):
+        opts = ([default] if default not in choices else []) + list(choices) + [_OTHER]
+        sel = st.sidebar.selectbox(label, opts, index=opts.index(default))
+        if sel == _OTHER:
+            return st.sidebar.text_input(f'{label} — custom path', default)
+        return sel
+
+    gpkg_dir = _pick('gpkg dir', _gpkg_dir_choices(), DEFAULT_GPKG_DIR)
+    mrral_dir = _pick('mrral tile dir', _mrral_dir_choices(), DEFAULT_MRRAL_DIR)
+    out_dir = _pick('output dir', _out_dir_choices(), DEFAULT_OUT_DIR)
     continuum_removed = st.sidebar.checkbox(
         'continuum removed (band depths)', value=False,
         help='Divide the spectrum by an upper-hull continuum so absorption '
