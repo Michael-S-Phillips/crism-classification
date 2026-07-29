@@ -196,20 +196,36 @@ def make_spectrum_figure(spectra: np.ndarray,
     if n_dropped:
         spectra = spectra[valid_mask]
 
-    mean = spectra.mean(axis=0)
-    std = spectra.std(axis=0)
-    upper = mean + std
-    lower = mean - std
-
-    if continuum_removed and mean.shape[0] == 59:
-        from data.continuum_removal import continuum_removed as _cr
-        mean = _cr(mean)
-        upper = _cr(upper)
-        lower = _cr(lower)
-    elif continuum_removed:
-        # CR needs the 59-band m0..m58 window; fall back to raw if band count
-        # differs rather than mis-transform.
-        continuum_removed = False
+    if continuum_removed and spectra.shape[1] == 59:
+        # Continuum-remove PER PIXEL (median-filtered to tame noise so the
+        # upper hull isn't dragged onto spikes), then aggregate in CR space —
+        # this gives a coherent mean±σ envelope. Cap the pixel count so the
+        # per-spectrum hull stays fast on huge polygons.
+        from scipy.signal import medfilt
+        from data.continuum_removal import continuum_removed as _cr, good_band_mask_59
+        sp = spectra
+        if sp.shape[0] > 4000:
+            idx = np.random.default_rng(0).choice(sp.shape[0], 4000, replace=False)
+            sp = sp[idx]
+        sp = medfilt(sp, kernel_size=(1, 3))          # light band-wise denoise
+        cr = _cr(sp)                                   # (n, 59), CR per pixel
+        mean = np.nanmean(cr, axis=0)
+        std = np.nanstd(cr, axis=0)
+        upper = mean + std
+        lower = mean - std
+        # Gap the 1 µm detector-overlap bands (m16-19) so they don't render as
+        # a flat notch/spike — plotly breaks the line at NaN.
+        excl = ~good_band_mask_59()
+        for arr in (mean, upper, lower):
+            arr[excl] = np.nan
+    else:
+        if continuum_removed:
+            # CR needs the 59-band m0..m58 window; fall back to raw otherwise.
+            continuum_removed = False
+        mean = spectra.mean(axis=0)
+        std = spectra.std(axis=0)
+        upper = mean + std
+        lower = mean - std
 
     fig.add_trace(go.Scatter(
         x=wavelengths_nm, y=upper, mode='lines',
