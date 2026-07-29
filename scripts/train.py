@@ -30,7 +30,7 @@ def load_config(config_path):
         with open(config_path) as f:
             return yaml.safe_load(f)
 
-def main():
+def _build_parser():
     parser = argparse.ArgumentParser(description="Train a mineral classification model.")
     parser.add_argument('--model', required=True, choices=list(SKLEARN_MODELS | TORCH_MODELS))
     parser.add_argument('--config', default='config.yaml')
@@ -72,6 +72,11 @@ def main():
              'bland, alteration, junk). Requires a parquet built by '
              'scripts/build_7cls_dataset.py containing bland and junk columns. '
              'Mutually exclusive with --with_alteration.')
+    parser.add_argument('--pyx', action='store_true',
+                        help='6-class pyroxene-merged vocab '
+                             '(olivine/pyx/plagioclase/bland/alteration/junk); '
+                             'pyx = max(lcp,hcp). Mutually exclusive with '
+                             '--seven_class / --with_alteration.')
     parser.add_argument('--use_pos_weight', action='store_true',
                         help='Use pos_weight in loss to upweight rare classes')
     parser.add_argument('--weight_decay', type=float, default=1e-4,
@@ -211,6 +216,11 @@ def main():
     parser.add_argument('--lambda_adv_max', type=float, default=1.0,
                         help='Max value of the adversarial GRL multiplier for '
                              'DecompSpVitAdv. Schedule warms from ~0 → this value.')
+    return parser
+
+
+def build_args():
+    parser = _build_parser()
     args = parser.parse_args()
 
     if args.freeze_encoder and args.encoder_lr_scale is not None:
@@ -221,6 +231,8 @@ def main():
                      'loads only the encoder).')
     if args.seven_class and args.with_alteration:
         parser.error('--seven_class and --with_alteration are mutually exclusive.')
+    if args.pyx and (args.seven_class or args.with_alteration):
+        parser.error('--pyx is mutually exclusive with --seven_class/--with_alteration.')
     if args.brightness_aux and not args.continuum_removed:
         parser.error('--brightness_aux requires --continuum_removed.')
     if args.brightness_aux and args.model != 'spatial_vit_aux':
@@ -247,6 +259,18 @@ def main():
                     f'forcing n_classes=6.')
             args.n_classes = 6
         logging.info('6-class mode: LABEL_COLS = %s', data.dataset.LABEL_COLS)
+    elif args.pyx:
+        import data.dataset
+        data.dataset.LABEL_COLS = list(data.dataset.LABEL_COLS_PYX)
+        args.n_classes = 6
+        logging.info('pyx mode: LABEL_COLS = %s', data.dataset.LABEL_COLS)
+
+    return args
+
+
+def main():
+    parser = _build_parser()
+    args = build_args()
 
     # Parse class_weights once for all torch training paths. In binary mode the
     # single value is routed to pos_weight (BCE positive-sample multiplier),
