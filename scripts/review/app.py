@@ -162,7 +162,8 @@ def build_queue_dataframe(gpkg_path: str, mineral: str,
 
 
 def make_spectrum_figure(spectra: np.ndarray,
-                          wavelengths_nm: np.ndarray) -> go.Figure:
+                          wavelengths_nm: np.ndarray,
+                          continuum_removed: bool = False) -> go.Figure:
     """Mean + ±1σ envelope, with robust handling of out-of-range pixels.
 
     A single NODATA-sentinel or gain-stage artifact pixel can otherwise drag
@@ -173,6 +174,11 @@ def make_spectrum_figure(spectra: np.ndarray,
          outlier influence at the source.
       2. Use the actual trace extremes (the mean and envelope we're about
          to draw) to decide whether to autoscale or fall back to [0, 1].
+
+    When ``continuum_removed`` is set, the mean and envelope are divided by
+    an upper-hull continuum (data.continuum_removal, the same 59-band m0..m58
+    transform the CR classifier uses) so absorption band depths are legible;
+    the 1 µm detector-overlap bands (m16-19) read flat (=1.0) by design.
     """
     fig = go.Figure()
     if spectra.shape[0] == 0:
@@ -194,6 +200,16 @@ def make_spectrum_figure(spectra: np.ndarray,
     std = spectra.std(axis=0)
     upper = mean + std
     lower = mean - std
+
+    if continuum_removed and mean.shape[0] == 59:
+        from data.continuum_removal import continuum_removed as _cr
+        mean = _cr(mean)
+        upper = _cr(upper)
+        lower = _cr(lower)
+    elif continuum_removed:
+        # CR needs the 59-band m0..m58 window; fall back to raw if band count
+        # differs rather than mis-transform.
+        continuum_removed = False
 
     fig.add_trace(go.Scatter(
         x=wavelengths_nm, y=upper, mode='lines',
@@ -236,7 +252,8 @@ def make_spectrum_figure(spectra: np.ndarray,
         title = f'({n_dropped:,} of {n_dropped + len(spectra):,} pixels dropped: out-of-range values)'
 
     fig.update_layout(
-        xaxis_title='wavelength (nm)', yaxis_title='reflectance',
+        xaxis_title='wavelength (nm)',
+        yaxis_title='continuum-removed reflectance' if continuum_removed else 'reflectance',
         xaxis=dict(range=list(PLOT_XRANGE_NM)),
         yaxis=yaxis_args,
         title=title, title_font_size=10,
@@ -268,6 +285,10 @@ def main():
     gpkg_dir = st.sidebar.text_input('gpkg dir', DEFAULT_GPKG_DIR)
     mrral_dir = st.sidebar.text_input('mrral tile dir', DEFAULT_MRRAL_DIR)
     out_dir = st.sidebar.text_input('output dir', DEFAULT_OUT_DIR)
+    continuum_removed = st.sidebar.checkbox(
+        'continuum removed (band depths)', value=False,
+        help='Divide the spectrum by an upper-hull continuum so absorption '
+             'band depths are legible; 1 µm overlap bands (m16-19) read flat.')
     decisions_csv = os.path.join(out_dir, 'decisions.csv')
     # Per-polygon parquet datasets (one file per decided polygon under each
     # directory). The previous single-file design did a multi-GB
@@ -500,11 +521,15 @@ def main():
             caption='context (false-color RGB ~2.2/1.5/0.8 µm, polygon outlined red)',
             use_container_width=True,
         )
-        c_spec.plotly_chart(make_spectrum_figure(bundle.spectra, wavelengths),
-                             use_container_width=True)
+        c_spec.plotly_chart(
+            make_spectrum_figure(bundle.spectra, wavelengths,
+                                 continuum_removed=continuum_removed),
+            use_container_width=True)
     else:
-        st.plotly_chart(make_spectrum_figure(bundle.spectra, wavelengths),
-                         use_container_width=True)
+        st.plotly_chart(
+            make_spectrum_figure(bundle.spectra, wavelengths,
+                                 continuum_removed=continuum_removed),
+            use_container_width=True)
         if st.button('Show context image', key='show_thumb'):
             _load_thumb_for_current()
             st.rerun()
