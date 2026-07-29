@@ -59,7 +59,8 @@ still shows pyroxene weakness CR would fix.
 - Same honest unit-balanced splits; same MTRDR synth-plag injection the champion
   used (kept here — this is the single-variable control vs the champion).
 - 3-arm sweep `encoder_lr_scale {0.001, 0.01, 0.1}`; stop metric `val_mAP_core`
-  (now mean AP over `olivine, pyx, plagioclase, alteration`).
+  (junk excluded — mean AP over `olivine, pyx, plagioclase, bland, alteration`;
+  excludes only junk, matching the champion's 7-class core for single-variable parity).
 - Produces `ft_6cls_pyx_lrscale{0001,001,01}_best.pt`.
 
 ### 6-class pyx vocabulary wiring
@@ -98,7 +99,7 @@ by the single pyx check. Baseline for comparison = champion's lcp+hcp combined.
 ## Testing
 - **build merge (unit):** `pyx = max(lcp, hcp)` per row; 6-class LABEL_COLS emitted;
   `lcp`/`hcp` columns preserved in `labeled_spectra` (not dropped).
-- **metrics (unit):** 6-class `val_mAP_core` = mean AP over olivine/pyx/plag/alteration.
+- **metrics (unit):** 6-class `val_mAP_core` excludes only junk = mean AP over olivine/pyx/plagioclase/bland/alteration.
 - **train (smoke):** a 6-class step runs on synthetic data without shape errors.
 - **vectorizer (smoke):** emits a `pyx` gpkg for the 6-class model.
 - **acceptance:** the simplified floor-test gate above, vs the champion's lcp+hcp.
