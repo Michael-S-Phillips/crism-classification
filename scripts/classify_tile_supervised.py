@@ -215,9 +215,19 @@ def load_tile(img_path):
     return data.transpose(1, 2, 0), valid_mask, transform, crs
 
 
-def extract_patches_batched(tile, batch_size=4096):
-    H, W, C = tile.shape
-    padded = np.pad(tile, ((PAD, PAD), (PAD, PAD), (0, 0)), mode='constant')
+def extract_patches_batched(tile, batch_size=4096, already_padded=False):
+    """Yield (B, P, P, C) patch batches + their row-major center-pixel indices.
+
+    already_padded: `tile` is already zero-padded by PAD on each side (used by
+    the CR path, which pads once before continuum-removing the whole cube). The
+    slicing math is identical either way — H/W are the unpadded dims.
+    """
+    if already_padded:
+        padded = tile
+        H, W = padded.shape[0] - 2 * PAD, padded.shape[1] - 2 * PAD
+    else:
+        H, W, C = tile.shape
+        padded = np.pad(tile, ((PAD, PAD), (PAD, PAD), (0, 0)), mode='constant')
     n_pixels = H * W
     for start in range(0, n_pixels, batch_size):
         end = min(start + batch_size, n_pixels)
@@ -283,9 +293,10 @@ def run_supervised(tile, model, device, batch_size=4096, aux_rasters=None,
     to SpatialSpectralClassifierAux using the same row-major pixel ordering as
     extract_patches_batched (which yields idx = np.arange(start, end)).
 
-    continuum_removed: continuum-remove each patch (data.continuum_removal.cr_patch)
-      before the encoder — identical to CR fine-tuning, which feeds UNnormalized CR
-      patches (so the raw-path z-score normalize is skipped in CR mode).
+    continuum_removed: continuum-remove the whole tile once (per-pixel upper hull)
+      and slice CR patches from it — identical output to per-patch CR but ~49x
+      cheaper. Matches CR fine-tuning, which feeds UNnormalized CR patches (so the
+      raw-path z-score normalize is skipped in CR mode).
     brightness_aux: pass the center-pixel brightness scalar as the 1-D aux to the
       aux model (aux_dim=1). Requires continuum_removed and mutually exclusive with
       aux_rasters.
@@ -298,15 +309,35 @@ def run_supervised(tile, model, device, batch_size=4096, aux_rasters=None,
     # Flatten aux_rasters row-major to (H*W, 2) once; sliced per batch via idx.
     aux_flat = aux_rasters.reshape(-1, 2) if aux_rasters is not None else None
 
+    # In CR mode, continuum-remove the ENTIRE tile ONCE, then slice patches from
+    # the CR'd cube — instead of re-CR'ing every 7x7 patch, which recomputes each
+    # pixel's upper-hull up to PATCH_SIZE**2 times across overlapping patches
+    # (~49x redundant, the dominant cost of a full-tile CR classify). CR is
+    # per-pixel and independent of the patch, so this is bit-for-bit identical to
+    # the per-patch cr_transform_batch: zero-pad exactly as extract_patches_batched
+    # does, CR the padded cube (so border/pad pixels are CR'd the same way
+    # cr_patch would), and read center-pixel brightness from the unpadded tile.
+    cr_padded = None
+    bright_flat = None
+    if continuum_removed:
+        from data.continuum_removal import (continuum_removed as _cr_cube,
+                                            brightness_scalar as _brightness)
+        padded_tile = np.pad(tile, ((PAD, PAD), (PAD, PAD), (0, 0)), mode='constant')
+        cr_padded = _cr_cube(padded_tile).astype(np.float32)
+        bright_flat = _brightness(tile).reshape(-1).astype(np.float32)
+
+    patch_iter = (
+        extract_patches_batched(cr_padded, batch_size, already_padded=True)
+        if continuum_removed else extract_patches_batched(tile, batch_size))
+
     from tqdm import tqdm
     with torch.no_grad():
-        for patches, idx in tqdm(extract_patches_batched(tile, batch_size),
-                                  total=n_batches, desc='Classifying'):
-            bright = None
+        for patches, idx in tqdm(patch_iter, total=n_batches, desc='Classifying'):
             if continuum_removed:
-                patches, bright = cr_transform_batch(patches)  # CR, no z-score
+                bright = bright_flat[idx].reshape(-1, 1)  # (B,1) center-pixel, pre-CR
             else:
                 patches = normalize_patches(patches)
+                bright = None
             x = torch.from_numpy(patches).to(device)
             if brightness_aux:
                 aux_batch = torch.from_numpy(bright).to(device)     # (B, 1)
