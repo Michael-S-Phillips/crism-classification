@@ -20,11 +20,16 @@ bash scripts/floor_test.sh <checkpoint.pt> [tag]
 # e.g. bash scripts/floor_test.sh checkpoints/ft_7cls_v3b_lrscale001_best.pt
 ```
 
-- ~25 min cold (6 tiles × ~4 min); per-tile skip-if-exists → resumable.
+- ~35 min cold (8 tiles × ~4 min); per-tile skip-if-exists → resumable.
 - Output: `reports/floor_tests/<tag>/summary.md` (+ styled gpkgs per region for QGIS).
 - Tiles: Nili t1249 t1250 t1321 t1322 (`/mnt/mrdr/mc13`); Argyre t0434 t0435
-  (`/mnt/mrdr/mc26`). Do not vectorize Argyre with the default mc13 tile_dir —
-  the script handles this; it was a real failure once.
+  (`/mnt/mrdr/mc26`); MC11 t1086 t1087 (`/mnt/mrdr/mc11`). Do not vectorize a region
+  with the wrong tile_dir — the script passes each region's own tile_dir; it was a
+  real failure once.
+- MC11 is the altered/dusty **OOD probe** — no established good/bad count signature
+  yet (unlike the Nili/Argyre table below). Read it qualitatively: false minerals
+  flooding altered ground is the classic MC11 failure; alteration collapsing to bland
+  is the conservative failure. Neither candidate model has solved MC11 alteration.
 
 ## Judge the result
 

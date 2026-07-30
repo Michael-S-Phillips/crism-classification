@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# Checkpoint floor test: classify the 6 standard tiles (4 Nili, 2 Argyre),
+# Checkpoint floor test: classify the 8 standard tiles (4 Nili, 2 Argyre, 2 MC11),
 # vectorize per-mineral threshold polygons, and write a summary report.
 #
 # Usage:
 #   bash scripts/floor_test.sh <checkpoint.pt> [tag]
 #
 # tag defaults to the checkpoint basename (sans .pt). Outputs:
-#   /tmp/floor_test_<tag>/{nili,argyre}/            per-tile probs (resumable)
-#   reports/floor_tests/<tag>/{nili,argyre}/        threshold polygon gpkgs
+#   /tmp/floor_test_<tag>/{nili,argyre,mc11}/       per-tile probs (resumable)
+#   reports/floor_tests/<tag>/{nili,argyre,mc11}/   threshold polygon gpkgs
 #   reports/floor_tests/<tag>/summary.md            tables + gpkg sizes
 #
 # Inference is skip-if-exists per tile, so a killed run resumes where it left
-# off. Expect ~25 min for a cold run (6 tiles x ~4 min).
+# off. Expect ~35 min for a cold run (8 tiles x ~4 min). MC11 (t1086/t1087) is
+# the altered/dusty OOD probe — no established good/bad signature yet; read it
+# qualitatively (false minerals on altered ground = the classic MC11 failure).
 set -euo pipefail
 
 CKPT="${1:?usage: floor_test.sh <checkpoint.pt> [tag]}"
@@ -50,6 +52,7 @@ run_region () {
 
 run_region nili   /mnt/mrdr/mc13 t1249 t1250 t1321 t1322
 run_region argyre /mnt/mrdr/mc26 t0434 t0435
+run_region mc11   /mnt/mrdr/mc11 t1086 t1087
 
 # ── Summary report ────────────────────────────────────────────────────────────
 SUMMARY="${REPORT_DIR}/summary.md"
@@ -58,8 +61,8 @@ SUMMARY="${REPORT_DIR}/summary.md"
     echo
     echo "- checkpoint: \`${CKPT}\`"
     echo "- date: $(date -u +%Y-%m-%dT%H:%MZ)"
-    echo "- tiles: nili t1249 t1250 t1321 t1322 | argyre t0434 t0435"
-    for region in nili argyre; do
+    echo "- tiles: nili t1249 t1250 t1321 t1322 | argyre t0434 t0435 | mc11 t1086 t1087"
+    for region in nili argyre mc11; do
         echo
         echo "## ${region} — per-mineral × threshold polygon counts"
         echo '```'
