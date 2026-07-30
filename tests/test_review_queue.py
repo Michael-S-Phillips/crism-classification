@@ -140,3 +140,49 @@ def test_lookup_items_silently_drops_unknown_uids(tmp_path):
         't0001::thresh_0.95::0',          # valid
     ])
     assert list(found.keys()) == ['t0001::thresh_0.95::0']
+
+
+# ── rank-prefixed physical layer names (QGIS highest-first ordering) ──────────
+# The vectorizer writes `thresh_01_0.99` … so QGIS stacks the most-confident layer
+# on top. polygon_queue must parse those, but keep the uid on the canonical
+# `thresh_0.NN` so existing decisions.csv references survive the rename.
+
+def test_layer_threshold_parses_legacy_and_rank_prefixed():
+    from scripts.review.polygon_queue import _layer_threshold
+    assert _layer_threshold('thresh_0.99') == 0.99          # legacy
+    assert _layer_threshold('thresh_01_0.99') == 0.99       # rank-prefixed
+    assert _layer_threshold('thresh_08_0.50') == 0.50
+    assert _layer_threshold('layer_styles') is None
+
+
+def test_uid_is_canonical_regardless_of_rank_prefix(tmp_path):
+    """A rank-prefixed physical layer must still yield the canonical thresh_0.NN
+    uid/layer — never the physical thresh_01_0.99."""
+    gpkg = tmp_path / 'hcp.gpkg'
+    _write_layered_gpkg(str(gpkg), {
+        'thresh_01_0.99': [(0, 0, 100, 't0001')],
+        'thresh_02_0.97': [(20, 20, 80, 't0002')],
+    })
+    items = list(PolygonQueue(gpkg_path=str(gpkg), mineral='hcp'))
+    assert items[0].polygon_uid == 't0001::thresh_0.99::0'
+    assert items[0].layer == 'thresh_0.99'
+    assert items[1].polygon_uid == 't0002::thresh_0.97::0'
+    # lookup_items round-trips the canonical uid back to the right physical layer
+    got = PolygonQueue(gpkg_path=str(gpkg), mineral='hcp').lookup_items(
+        [items[0].polygon_uid])
+    assert items[0].polygon_uid in got
+    assert got[items[0].polygon_uid].tile_id == 't0001'
+    assert got[items[0].polygon_uid].layer == 'thresh_0.99'
+
+
+def test_uid_identical_legacy_vs_rank_prefixed(tmp_path):
+    """The SAME polygon must get the SAME uid whether the gpkg uses legacy or
+    rank-prefixed layer names — this is what preserves decisions.csv continuity
+    when a review gpkg is re-vectorized with the new naming."""
+    legacy = tmp_path / 'legacy.gpkg'
+    ranked = tmp_path / 'ranked.gpkg'
+    _write_layered_gpkg(str(legacy), {'thresh_0.99': [(0, 0, 100, 't0001')]})
+    _write_layered_gpkg(str(ranked), {'thresh_01_0.99': [(0, 0, 100, 't0001')]})
+    ul = list(PolygonQueue(gpkg_path=str(legacy), mineral='hcp'))[0].polygon_uid
+    ur = list(PolygonQueue(gpkg_path=str(ranked), mineral='hcp'))[0].polygon_uid
+    assert ul == ur == 't0001::thresh_0.99::0'

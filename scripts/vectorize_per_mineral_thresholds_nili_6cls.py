@@ -425,7 +425,13 @@ def main():
                 continue
             merged = pd.concat(frames, ignore_index=True)
             merged = gpd.GeoDataFrame(merged, geometry='geometry', crs=COMMON_CRS)
-            layer_name = f'thresh_{thresh:.2f}'
+            # Rank-prefix (01 = highest threshold) so QGIS, which stacks a gpkg's
+            # sublayers by ALPHABETICAL name, puts the most-confident layer on top.
+            # The threshold stays in the name; polygon_queue parses it and keys the
+            # uid on the canonical `thresh_0.NN` (rank-independent) so review
+            # decisions.csv references survive this rename.
+            rank = len(PER_MINERAL_THRESHOLDS[mineral]) - layer_idx
+            layer_name = f'thresh_{rank:02d}_{thresh:.2f}'
             merged.to_file(out_path, layer=layer_name, driver='GPKG')
             per_mineral_total += len(merged)
             written_layer_colors[layer_name] = _threshold_color_rgb255(mineral, layer_idx)

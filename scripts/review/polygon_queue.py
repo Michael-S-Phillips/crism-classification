@@ -45,12 +45,25 @@ class PolygonItem:
                                        # loader uses this to reproject before rasterizing)
 
 
-_LAYER_RE = re.compile(r'^thresh_(?P<p>\d+(?:\.\d+)?)$')
+# Matches both the legacy layer name (`thresh_0.99`) and the rank-prefixed form
+# (`thresh_01_0.99`) the vectorizer now writes so QGIS stacks layers highest-first.
+# The optional `\d+_` group is the sort-rank prefix; the threshold is always the
+# trailing float.
+_LAYER_RE = re.compile(r'^thresh_(?:\d+_)?(?P<p>\d+(?:\.\d+)?)$')
 
 
 def _layer_threshold(name: str) -> Optional[float]:
     m = _LAYER_RE.match(name)
     return float(m.group('p')) if m else None
+
+
+def _canonical_layer(prob: float) -> str:
+    """Canonical, uid-stable layer token for a threshold — independent of the
+    physical gpkg layer name. Physical layers may carry a rank prefix
+    (`thresh_01_0.99`) for QGIS ordering, but polygon_uid always uses this form
+    (`thresh_0.99`) so decisions.csv references stay valid across re-vectorizations
+    that change only the physical layer names."""
+    return f'thresh_{prob:.2f}'
 
 
 class PolygonQueue:
@@ -80,6 +93,10 @@ class PolygonQueue:
                   if _layer_threshold(L) is not None]
         layers.sort(key=_layer_threshold, reverse=True)
         self._layers = layers
+        # canonical uid token -> physical gpkg layer name (identity for legacy
+        # gpkgs; maps thresh_0.99 -> thresh_01_0.99 for rank-prefixed ones).
+        self._canon_to_physical = {
+            _canonical_layer(_layer_threshold(L)): L for L in layers}
 
         gpkg_parent = os.path.basename(os.path.dirname(os.path.abspath(gpkg_path)))
         gpkg_file = os.path.basename(gpkg_path)
@@ -98,15 +115,16 @@ class PolygonQueue:
             gdf['_original_idx'] = gdf.index
             gdf['_area'] = [_polygon_area_m2(g, layer_crs) for g in gdf.geometry]
             gdf = gdf.sort_values('_area', ascending=False, kind='mergesort')
+            canon = _canonical_layer(prob)   # uid token, independent of rank prefix
             for _, row in gdf.iterrows():
                 tile_id = str(row.get('tile_id', ''))
-                uid = f'{tile_id}::{layer}::{int(row["_original_idx"])}'
+                uid = f'{tile_id}::{canon}::{int(row["_original_idx"])}'
                 if uid in self._skip_uids:
                     continue
                 yield PolygonItem(
                     polygon_uid=uid,
                     tile_id=tile_id,
-                    layer=layer,
+                    layer=canon,
                     predicted_class=self.mineral,
                     geometry=row.geometry,
                     area_m2=float(row['_area']),
@@ -122,6 +140,8 @@ class PolygonQueue:
         decisions.csv on app restart. Reads only the layers referenced by the
         requested uids; unknown uids are silently omitted from the result.
         """
+        # uid layer token is canonical (thresh_0.99); map it to the physical gpkg
+        # layer (which may be rank-prefixed) before reading.
         wanted_by_layer: dict[str, list[tuple[str, int]]] = {}
         for uid in polygon_uids:
             parts = uid.split('::')
@@ -134,11 +154,12 @@ class PolygonQueue:
             wanted_by_layer.setdefault(parts[1], []).append((uid, idx))
 
         results: dict[str, PolygonItem] = {}
-        for layer, wanted in wanted_by_layer.items():
-            if layer not in self._layers:
+        for canon, wanted in wanted_by_layer.items():
+            physical = self._canon_to_physical.get(canon)
+            if physical is None:
                 continue
-            prob = _layer_threshold(layer)
-            gdf = gpd.read_file(self.gpkg_path, layer=layer).reset_index(drop=True)
+            prob = _layer_threshold(physical)
+            gdf = gpd.read_file(self.gpkg_path, layer=physical).reset_index(drop=True)
             if gdf.empty:
                 continue
             layer_crs = gdf.crs
@@ -152,7 +173,7 @@ class PolygonQueue:
                 results[uid] = PolygonItem(
                     polygon_uid=uid,
                     tile_id=tile_id,
-                    layer=layer,
+                    layer=canon,
                     predicted_class=self.mineral,
                     geometry=row.geometry,
                     area_m2=area,
