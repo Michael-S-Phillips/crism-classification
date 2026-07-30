@@ -401,44 +401,52 @@ def main():
         print(f'  {total:,} polygons across {len(MINERAL_NAMES)}×{N_LAYERS_PER_MINERAL} cells')
 
     os.makedirs(OUT_DIR, exist_ok=True)
+    import shutil
+    import tempfile
 
     for mineral in MINERAL_NAMES:
         out_path = os.path.join(OUT_DIR, f'{mineral}.gpkg')
-        if os.path.exists(out_path):
-            try:
-                os.remove(out_path)
-            except PermissionError:
-                with open(out_path, 'wb'):
-                    pass
         print(f'\nWriting {out_path} …')
         per_mineral_total = 0
         written_layer_colors: dict[str, tuple[int, int, int]] = {}
-        # Write layers highest-threshold FIRST so they land first in the GPKG's
-        # gpkg_contents (OGR layer) order — QGIS's "add all layers" follows that
-        # order, putting the most-confident (highest-threshold) layer on TOP of
-        # the tree instead of at the bottom. layer_idx stays tied to the ascending
-        # threshold rank so the color ramp (light→saturated) is unchanged.
-        for layer_idx, thresh in reversed(list(enumerate(PER_MINERAL_THRESHOLDS[mineral]))):
-            frames = accum[mineral][thresh]
-            if not frames:
-                print(f'  thresh_{thresh:.2f}: 0 polygons (skipping layer)')
-                continue
-            merged = pd.concat(frames, ignore_index=True)
-            merged = gpd.GeoDataFrame(merged, geometry='geometry', crs=COMMON_CRS)
-            # Rank-prefix (01 = highest threshold) so QGIS, which stacks a gpkg's
-            # sublayers by ALPHABETICAL name, puts the most-confident layer on top.
-            # The threshold stays in the name; polygon_queue parses it and keys the
-            # uid on the canonical `thresh_0.NN` (rank-independent) so review
-            # decisions.csv references survive this rename.
-            rank = len(PER_MINERAL_THRESHOLDS[mineral]) - layer_idx
-            layer_name = f'thresh_{rank:02d}_{thresh:.2f}'
-            merged.to_file(out_path, layer=layer_name, driver='GPKG')
-            per_mineral_total += len(merged)
-            written_layer_colors[layer_name] = _threshold_color_rgb255(mineral, layer_idx)
-            print(f'  {layer_name}: {len(merged):,} polygons')
-        if written_layer_colors:
-            add_qgis_layer_styles(out_path, written_layer_colors)
-            print(f'  embedded QGIS layer_styles for {len(written_layer_colors)} layers')
+        # Build the gpkg in a private temp dir, then byte-copy it over out_path.
+        # The output mount stores files as root:root and forbids non-root
+        # unlink/rename/chmod — so os.remove AND os.replace both fail on a
+        # PRE-EXISTING gpkg, and truncating in place then re-opening with GDAL
+        # corrupts it (the 0-byte-olivine failure). open(out_path, 'wb')
+        # (create-or-truncate) IS permitted, so a raw byte-copy is the only
+        # reliable in-place overwrite here.
+        tmp_dir = tempfile.mkdtemp(prefix='vec_')
+        tmp_path = os.path.join(tmp_dir, f'{mineral}.gpkg')
+        try:
+            # Rank-prefix (01 = highest threshold): QGIS stacks a gpkg's sublayers
+            # by ALPHABETICAL name, so thresh_01_0.99 lands on TOP. The threshold
+            # stays in the name; polygon_queue parses it and keys the uid on the
+            # canonical thresh_0.NN (rank-independent) so review decisions.csv
+            # references survive the rename.
+            for layer_idx, thresh in enumerate(PER_MINERAL_THRESHOLDS[mineral]):
+                frames = accum[mineral][thresh]
+                if not frames:
+                    print(f'  thresh_{thresh:.2f}: 0 polygons (skipping layer)')
+                    continue
+                merged = pd.concat(frames, ignore_index=True)
+                merged = gpd.GeoDataFrame(merged, geometry='geometry', crs=COMMON_CRS)
+                rank = len(PER_MINERAL_THRESHOLDS[mineral]) - layer_idx
+                layer_name = f'thresh_{rank:02d}_{thresh:.2f}'
+                merged.to_file(tmp_path, layer=layer_name, driver='GPKG')
+                per_mineral_total += len(merged)
+                written_layer_colors[layer_name] = _threshold_color_rgb255(mineral, layer_idx)
+                print(f'  {layer_name}: {len(merged):,} polygons')
+            if written_layer_colors:
+                add_qgis_layer_styles(tmp_path, written_layer_colors)
+                print(f'  embedded QGIS layer_styles for {len(written_layer_colors)} layers')
+            if os.path.exists(tmp_path):
+                with open(tmp_path, 'rb') as src, open(out_path, 'wb') as dst:
+                    shutil.copyfileobj(src, dst)
+            else:
+                print(f'  (no polygons for {mineral}; leaving {os.path.basename(out_path)} untouched)')
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
         print(f'  → {per_mineral_total:,} polygons total in {os.path.basename(out_path)}')
 
     wl = read_wavelengths_nm(tiles[0]['mrral'])
