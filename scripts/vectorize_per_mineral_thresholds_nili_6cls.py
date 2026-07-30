@@ -82,7 +82,7 @@ MINERAL_BASE_RGB = {
     'olivine':     (1.00, 0.00, 0.00),
     'hcp':         (1.00, 0.00, 1.00),
     'lcp':         (0.00, 1.00, 1.00),
-    'pyx':         (1.00, 0.50, 0.00),  # matches classify_tile_supervised.py _CLASS_COLORS_PYX '#ff8000'
+    'pyx':         (0.00, 0.00, 1.00),  # matches classify_tile_supervised.py _CLASS_COLORS_PYX '#0000ff'
     'plagioclase': (1.00, 0.84, 0.00),
     'alteration':  (0.80, 0.53, 0.60),  # puce — scaled across thresholds for shades
 }
@@ -413,7 +413,12 @@ def main():
         print(f'\nWriting {out_path} …')
         per_mineral_total = 0
         written_layer_colors: dict[str, tuple[int, int, int]] = {}
-        for layer_idx, thresh in enumerate(PER_MINERAL_THRESHOLDS[mineral]):
+        # Write layers highest-threshold FIRST so they land first in the GPKG's
+        # gpkg_contents (OGR layer) order — QGIS's "add all layers" follows that
+        # order, putting the most-confident (highest-threshold) layer on TOP of
+        # the tree instead of at the bottom. layer_idx stays tied to the ascending
+        # threshold rank so the color ramp (light→saturated) is unchanged.
+        for layer_idx, thresh in reversed(list(enumerate(PER_MINERAL_THRESHOLDS[mineral]))):
             frames = accum[mineral][thresh]
             if not frames:
                 print(f'  thresh_{thresh:.2f}: 0 polygons (skipping layer)')

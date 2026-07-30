@@ -56,7 +56,7 @@ _CLASS_COLORS_7 = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#aaaaaa',
 # disambiguate.
 PYX_MODE = False
 _CLASS_NAMES_PYX = ['olivine', 'pyx', 'plagioclase', 'bland', 'alteration', 'junk']
-_CLASS_COLORS_PYX = ['#e6194b', '#ff8000', '#f58231', '#aaaaaa', '#cc8899', '#808080']
+_CLASS_COLORS_PYX = ['#e6194b', '#0000ff', '#f58231', '#aaaaaa', '#cc8899', '#808080']
 
 
 def _set_n_classes(state):
