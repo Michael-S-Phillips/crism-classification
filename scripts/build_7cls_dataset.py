@@ -281,10 +281,38 @@ def _apply_hand_mineral_policy(non_bland: pd.DataFrame,
     raise ValueError(f'unknown hand_minerals policy: {hand_minerals!r}')
 
 
+# Plagioclase label artifacts (audited 2026-07-30): 5 full-width "strip" ROIs that
+# are spectrally featureless (BD1300<=0, no 1.3um feldspar band) — filled boxes
+# spanning the whole CRISM strip, NOT plag. Together they are ~31% of plag training
+# pixels (109,860 px) and teach the model that dust/bland spectra = plagioclase.
+# Dropped at the base-parquet read so every downstream build (7cls, pyx, reviewonly)
+# is clean. See memory plag-label-contamination + reports/plag_roi_audit.csv.
+PLAG_EXCLUDE_POLYGONS: set[tuple[str, int]] = {
+    ('t0638', 949), ('t0636', 823), ('t0566', 958),
+    ('t0636', 769), ('t0638', 852),
+}
+
+
+def _drop_excluded_polygons(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop rows belonging to known-bad (tile_id, polygon_id) label artifacts."""
+    if not PLAG_EXCLUDE_POLYGONS or 'polygon_id' not in df.columns:
+        return df
+    mask = pd.Series(False, index=df.index)
+    tid = df['tile_id'].astype(str)
+    for t, p in PLAG_EXCLUDE_POLYGONS:
+        mask |= (tid == t) & (df['polygon_id'] == p)
+    n = int(mask.sum())
+    if n:
+        print(f'  dropped {n:,} rows from {len(PLAG_EXCLUDE_POLYGONS)} excluded '
+              f'plag-artifact polygons (strip ROIs — plag-label-contamination)')
+    return df[~mask].reset_index(drop=True)
+
+
 def _build_base(path: str, n_bland_target: int,
                 hand_minerals: str = 'all') -> pd.DataFrame:
     print(f'Loading base parquet: {path}')
     df = pd.read_parquet(path)
+    df = _drop_excluded_polygons(df)
     print(f'  {len(df):,} rows, columns: {list(df.columns)[:8]} …')
 
     bland_mask = df.get('other', pd.Series(0.0, index=df.index)) > 0
