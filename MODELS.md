@@ -77,12 +77,32 @@ backbone, encoder_lr_scale 0.01. A name should tell you what the model *is*.
 - floor (`v4honest_lrscale001`, 2026-07-13): **LCP → 0 polygons at Nili & Argyre** despite
   val 0.838 (two-population problem confirmed, not split geometry); plag improved 1→67 @Nili;
   olivine over-predicted (mafic→olivine collapse worsened); Argyre HCP cratered 187→2.
-- status: current 7-class best by core; LCP OOD-generalization is the open problem.
+- status: best **raw-mrral** 7-class by val core, but **superseded as best-so-far by
+  `ft_7cls_cr_lrscale0001`** (below) on the floor test — its LCP collapses to 0 OOD, which
+  the CR representation fixes.
 
 ### ft_7cls_v3b_lrscale0001 / _lrscale01  (7-class, sweep arms)
 - files: `ft_7cls_v3b_lrscale0001_best.pt` (core 0.7767 @ep104) ·
   `ft_7cls_v3b_lrscale01_best.pt` (core 0.7883 @ep6, then degraded)
 - status: honest-splits recovery sweep siblings of the winner above.
+
+### ft_7cls_cr_lrscale0001  — **current best so far** (7-class, continuum-removed)
+- file: `ft_7cls_cr_lrscale0001_best.pt`  (classify with `--continuum_removed --brightness_aux --embed_dim 256`)
+- representation: **continuum-removed mrral** (59-band upper-hull CR, fed UN-z-scored to
+  preserve absolute band depth) + per-pixel brightness as aux (aux_dim=1); CR-native 256d encoder.
+- classes (7): olivine · lcp · hcp · plagioclase · bland · alteration · junk
+- val_mAP_core **0.560** / val_mAP 0.551 — **NOT comparable** to raw-mrral runs (CR changes the
+  input distribution; low val is expected here, the floor test is the arbiter).
+- per-class val AP: oliv 0.745 · lcp 0.412 · hcp 0.734 · plag 0.069 · alt 0.745 · bland 0.659 · junk 0.492
+- floor (`cr_lrscale0001`, 2026-07-28): **Nili LCP RESTORED — 1,197 @0.50 → 513 @0.99** (every
+  raw-mrral 7-class model collapsed LCP to 0 OOD; this is the first to fix the two-population
+  collapse). Nili oliv 1,092→475, hcp 879→208, alt 1,027→1, plag 0. Argyre: **olivine diffuse**
+  (425 @0.50 → 44 @0.99, peaks low) — the known CR weakness; lcp 312→8, hcp 743→15.
+- deployed: full MC11 map at `data/vector_mc11_cr_lrscale0001/`.
+- status: **current best so far (visual/floor judgment, 2026-07-30).** Solves the LCP OOD collapse —
+  the project's biggest open problem — at the cost of diffuse Argyre olivine. val_mAP is low and
+  non-comparable; do not rank it against raw runs on val. (pyx-merge line under evaluation — see
+  floor tests `pyx_lrscale001`/`pyx_lrscale0001`, not yet promoted.)
 
 ### ft_6cls_mc11val_denoise  — best MC11-alteration model (6-class)
 - file: `ft_6cls_mc11val_denoise_best.pt`
