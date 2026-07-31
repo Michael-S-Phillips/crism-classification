@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import multiprocessing as mp
 import os
 import sys
 
@@ -29,8 +30,32 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.continuum_removal import continuum_removed, brightness_scalar  # noqa: E402
 
 
+# ── parallel worker state ─────────────────────────────────────────────────────
+# continuum_removed is a single-threaded per-spectrum hull loop; over millions of
+# labeled patches that pins one core for hours while the rest sit idle. Workers
+# open the raw + output memmaps by path and each CR a disjoint [s:e] slice, so the
+# written bytes are IDENTICAL to the serial path — just spread across cores.
+_W: dict = {}
+
+
+def _init_worker(raw_path, cr_path, br_path, n, P):
+    _W['raw'] = np.memmap(raw_path, dtype='float32', mode='r', shape=(n, P, P, 59))
+    _W['cr'] = np.memmap(cr_path, dtype='float32', mode='r+', shape=(n, P, P, 59))
+    _W['br'] = np.load(br_path, mmap_mode='r+')
+
+
+def _cr_range(se) -> int:
+    s, e = se
+    block = np.asarray(_W['raw'][s:e], dtype=np.float32)
+    _W['cr'][s:e] = continuum_removed(block)
+    _W['br'][s:e] = brightness_scalar(block)
+    _W['cr'].flush()
+    _W['br'].flush()
+    return e - s
+
+
 def convert_split(raw_dir: str, out_dir: str, split: str, patch_size: int,
-                  chunk: int) -> int:
+                  chunk: int, jobs: int = 1) -> int:
     fname = f'mrral_{split}_patches_p{patch_size}.npy'
     raw_path = os.path.join(raw_dir, fname)
     if not os.path.exists(raw_path):
@@ -56,17 +81,31 @@ def convert_split(raw_dir: str, out_dir: str, split: str, patch_size: int,
     cr_out = np.memmap(os.path.join(out_dir, fname), dtype='float32', mode='w+',
                        shape=(n, patch_size, patch_size, 59))
     # Brightness sidecar: a real .npy (fine-tune reads it via np.load).
+    br_path = os.path.join(out_dir, f'mrral_{split}_patches_p{patch_size}_brightness.npy')
     br_out = np.lib.format.open_memmap(
-        os.path.join(out_dir, f'mrral_{split}_patches_p{patch_size}_brightness.npy'),
-        mode='w+', dtype='float32', shape=(n, patch_size, patch_size))
-    for s in range(0, n, chunk):
-        e = min(s + chunk, n)
-        block = np.asarray(raw[s:e], dtype=np.float32)          # (b, P, P, 59)
-        cr_out[s:e] = continuum_removed(block)                  # (b, P, P, 59)
-        br_out[s:e] = brightness_scalar(block)                  # (b, P, P)
-        if s % (chunk * 20) == 0:
-            print(f'  {split}: {e:,}/{n:,}', flush=True)
-    cr_out.flush(); br_out.flush()
+        br_path, mode='w+', dtype='float32', shape=(n, patch_size, patch_size))
+    ranges = [(s, min(s + chunk, n)) for s in range(0, n, chunk)]
+
+    if jobs > 1 and len(ranges) > 1:
+        # Release the main-process handles so workers own the files, then fan the
+        # disjoint chunk ranges across a pool. Output bytes are identical to serial.
+        cr_path = os.path.join(out_dir, fname)
+        cr_out.flush(); br_out.flush()
+        del cr_out, br_out, raw
+        done = 0
+        with mp.Pool(jobs, initializer=_init_worker,
+                     initargs=(raw_path, cr_path, br_path, n, patch_size)) as pool:
+            for c in pool.imap_unordered(_cr_range, ranges):
+                done += c
+                print(f'  {split}: {done:,}/{n:,} ({jobs} workers)', flush=True)
+    else:
+        for i, (s, e) in enumerate(ranges):
+            block = np.asarray(raw[s:e], dtype=np.float32)      # (b, P, P, 59)
+            cr_out[s:e] = continuum_removed(block)              # (b, P, P, 59)
+            br_out[s:e] = brightness_scalar(block)              # (b, P, P)
+            if i % 20 == 0:
+                print(f'  {split}: {e:,}/{n:,}', flush=True)
+        cr_out.flush(); br_out.flush()
     print(f'  {split}: wrote {n:,} CR patches + brightness sidecar')
     return n
 
@@ -78,11 +117,15 @@ def main() -> None:
     ap.add_argument('--splits', nargs='+', default=['train', 'val', 'test'])
     ap.add_argument('--patch_size', type=int, default=7)
     ap.add_argument('--chunk', type=int, default=4096)
+    ap.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 1) - 1),
+                    help='parallel worker processes for the CR hull loop '
+                         '(default: cpu_count-1; 1 = serial).')
     args = ap.parse_args()
+    print(f'CR cache build: jobs={args.jobs}, chunk={args.chunk}')
     total = 0
     for split in args.splits:
         total += convert_split(args.raw_dir, args.out_dir, split,
-                               args.patch_size, args.chunk)
+                               args.patch_size, args.chunk, jobs=args.jobs)
     print(f'done: {total:,} patches converted → {args.out_dir}')
 
 
