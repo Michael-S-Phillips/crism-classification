@@ -42,7 +42,7 @@ from shapely.geometry import shape as shapely_shape
 PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 DEFAULT_PROBS_DIR = '/tmp/6cls_mc13'
-DEFAULT_TILE_DIR  = '/mnt/mrdr/mc13'
+DEFAULT_TILE_DIR  = '/Volumes/Mars_GIS/CRISM/MRDR/mc13'
 DEFAULT_OUT_DIR   = os.path.join(PROJ, 'data', 'vector_nili_6cls')
 
 NILI_TILES = ['t1249', 't1250', 't1321', 't1322']

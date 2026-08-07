@@ -14,7 +14,7 @@ Each polygon carries:
 
 Usage:
     python scripts/vectorize_tile_minerals.py \\
-        --tile /mnt/mrdr/mc26/t0435_mrral_40s323_0327_4.img \\
+        --tile /Volumes/Mars_GIS/CRISM/MRDR/mc26/t0435_mrral_40s323_0327_4.img \\
         --probs /tmp/t0435_mrral_40s323_0327_4_probs.npz \\
         --thresholds config/vectroscopy_thresholds.json \\
         --out data/vector/t0435_mineral_map.gpkg
@@ -293,7 +293,9 @@ def main():
             load_tile, load_classifier, run_supervised
         )
         import torch
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from device import get_device
+        device = get_device()
         tile, valid_mask, _, _ = load_tile(args.tile)
         H, W = valid_mask.shape
         model = load_classifier(args.ckpt, device)

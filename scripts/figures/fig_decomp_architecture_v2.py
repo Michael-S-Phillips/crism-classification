@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
 
-OUT_PATH = '/mnt/mrdr/crism_classification/reports/v5/fig_v5_decomp_architecture_v2.png'
+OUT_PATH = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/reports/v5/fig_v5_decomp_architecture_v2.png'
 
 # Component color palette — distinguishes structural roles at a glance.
 COLOR_INPUT     = '#e9ecef'

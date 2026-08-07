@@ -8,8 +8,8 @@ import pytest
 
 from sam_analysis.endmembers import N_BANDS, load_endmember_library
 
-XLSX = "/mnt/mrdr/endmember_extraction/crism_endmembers/crism_endmember_spectra.xlsx"
-PARQUET = "/mnt/mrdr/crism_classification/data/mrral_pixels.parquet"
+XLSX = "/Volumes/Mars_GIS/CRISM/MRDR/endmember_extraction/crism_endmembers/crism_endmember_spectra.xlsx"
+PARQUET = "/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/data/mrral_pixels.parquet"
 
 
 pytestmark = pytest.mark.skipif(

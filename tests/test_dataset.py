@@ -5,7 +5,7 @@ import pandas as pd
 import torch
 from data.dataset import CRISMPixelDataset, load_sklearn_arrays
 
-PARQUET = '/mnt/gigas/CRISM/MRDR/crism_classification/data/pixels.parquet'
+PARQUET = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/data/pixels.parquet'
 
 @pytest.fixture
 def small_df():
@@ -85,7 +85,7 @@ def test_patch_dataset_uses_cache(tmp_path):
 def test_patch_dataset_shape(small_df):
     from data.dataset import CRISMPatchDataset
     import yaml, os
-    cfg_path = '/mnt/gigas/CRISM/MRDR/crism_classification/config.yaml'
+    cfg_path = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/config.yaml'
     with open(cfg_path) as f:
         cfg = yaml.safe_load(f)
     from data.extract_pixels import find_tile_pairs
@@ -98,7 +98,7 @@ def test_patch_dataset_shape(small_df):
 
 # --- CRISMSpectralDataset tests ---
 
-MRRAL_PARQUET = '/mnt/gigas/CRISM/MRDR/crism_classification/data/mrral_pixels.parquet'
+MRRAL_PARQUET = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/data/mrral_pixels.parquet'
 
 
 @pytest.fixture
@@ -210,7 +210,7 @@ def test_spectral_patch_dataset_shape():
     from data.dataset import CRISMSpectralPatchDataset
     import rasterio
 
-    mrral_files = sorted(glob.glob('/mnt/crism/MRDR/mc*/t*mrral*.hdr'))[:5]
+    mrral_files = sorted(glob.glob('/Volumes/Mars_GIS/CRISM/MRDR/mc*/t*mrral*.hdr'))[:5]
     mrral_map = {}
     for hdr in mrral_files:
         basename = os.path.basename(hdr)

@@ -51,7 +51,7 @@ PATCH_SIZE = 7
 N_BANDS = 59
 PAD = PATCH_SIZE // 2
 
-FELDSREVIEW_ROOT_DEFAULT = '/mnt/mrdr/categorized_mineral_units/FeldsReview'
+FELDSREVIEW_ROOT_DEFAULT = '/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units/FeldsReview'
 EXCLUDE_MARKER = 'ACTUALLY NOT GOOD'
 
 # In-file band order (1-indexed for rasterio):
@@ -373,7 +373,7 @@ def main():
     ap.add_argument('--feldsreview_root', default=FELDSREVIEW_ROOT_DEFAULT)
     ap.add_argument('--mrral_hdr', default=None,
                     help='Any mrral .hdr to read the 59 MRDR target wavelengths from. '
-                         'Default: first /mnt/mrdr/mc*/t*_mrral_*.hdr found.')
+                         'Default: first /Volumes/Mars_GIS/CRISM/MRDR/mc*/t*_mrral_*.hdr found.')
     ap.add_argument('--output_dir', default='data/contrastive/extra_plag_roi')
     ap.add_argument('--include_low', action='store_true',
                     help='Also harvest rows whose confidence starts with "Low".')
@@ -387,7 +387,7 @@ def main():
     )
 
     mrral_hdr = args.mrral_hdr or sorted(
-        glob.glob('/mnt/mrdr/mc*/t*_mrral_*.hdr'))[0]
+        glob.glob('/Volumes/Mars_GIS/CRISM/MRDR/mc*/t*_mrral_*.hdr'))[0]
     target_wl = np.asarray(
         envi.open(mrral_hdr).bands.centers, dtype=np.float64,
     )[:N_BANDS]

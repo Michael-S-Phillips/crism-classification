@@ -7,7 +7,7 @@ This is the "deployable linear probe": same numbers as
 the classifier wrapper's format so existing inference + vectorization scripts
 just work.
 
-Local-machine note: ``/mnt/mrdr`` here is a 9p network mount. Random-access
+Local-machine note: ``/Volumes/Mars_GIS/CRISM/MRDR`` here is a 9p network mount. Random-access
 reads over the full ~22 GB patch cache are unusably slow. We therefore
 random-sample N indices, sort them for near-sequential memmap reads, load the
 selected patches into RAM, and train the head against that fixed tensor.
@@ -29,6 +29,8 @@ import time
 import numpy as np
 import pandas as pd
 import torch
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from device import get_device
 import torch.nn as nn
 from torch.utils.data import ConcatDataset, DataLoader, TensorDataset
 
@@ -138,7 +140,7 @@ def main():
             cfg_path,
         )
     cfg = load_config(cfg_path)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = get_device()
     print(f'device: {device}')
 
     # 1. Load contrastive encoder

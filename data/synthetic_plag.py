@@ -1,7 +1,7 @@
 # data/synthetic_plag.py
 """Build synthetic plagioclase training patches from ENVI mean-spectra libraries.
 
-The 30 plagioclase spectra in /mnt/mrdr/plagioclase-targeted/ are mean spectra per
+The 30 plagioclase spectra in /Volumes/Mars_GIS/CRISM/MRDR/plagioclase-targeted/ are mean spectra per
 ROI (545 bands, 364-3937 nm) with no spatial info. This module (a) resamples each
 spectrum to the 59 mrral bands and (b) synthesizes spatial 7x7x59 patches by tiling
 the spectrum and adding per-pixel noise — so they can train the spatial encoder.

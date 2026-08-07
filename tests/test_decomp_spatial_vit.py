@@ -68,7 +68,7 @@ def test_classifier_reads_center_pixel_embedding(model):
 def test_load_mae_encoder_checkpoint():
     """Encoder state from a SpatialSpectralMAE checkpoint should load cleanly."""
     import os
-    ckpt_path = '/mnt/mrdr/crism_classification/checkpoints/spatial_mae_128d_6l_best.pt'
+    ckpt_path = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/checkpoints/spatial_mae_128d_6l_best.pt'
     if not os.path.exists(ckpt_path):
         pytest.skip(f"MAE checkpoint not available at {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)

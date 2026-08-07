@@ -36,7 +36,7 @@ import numpy as np
 import rasterio
 from matplotlib.colors import ListedColormap
 
-PROJECT_ROOT = '/mnt/mrdr/crism_classification'
+PROJECT_ROOT = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification'
 
 # Per-class val_AP for the best v3 denoising classifier (ft_v3_denoising_lrscale001).
 # Pulled from wandb 2026-05-19.
@@ -58,7 +58,7 @@ INVERSE_THRESH = np.array([0.99 - 0.49 * VAL_AP[c] for c in CLASS_NAMES])
 # Tiles to compare (Argyre MC26)
 TILES = ['t0434', 't0435']
 PROBS_DIR = '/tmp/v3_argyre'
-TILE_DIR = '/mnt/mrdr/mc26'
+TILE_DIR = '/Volumes/Mars_GIS/CRISM/MRDR/mc26'
 TILE_MRRAL = {
     't0434': f'{TILE_DIR}/t0434_mrral_40s318_0327_4.img',
     't0435': f'{TILE_DIR}/t0435_mrral_40s323_0327_4.img',

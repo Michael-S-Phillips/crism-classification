@@ -14,6 +14,8 @@ import logging
 import numpy as np
 import pandas as pd
 import torch
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from device import get_device
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -45,7 +47,7 @@ def main():
     ds = CRISMSpectralDataset(df)
 
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = get_device()
 
     from models.mae import SpectralMAE
     model = SpectralMAE(

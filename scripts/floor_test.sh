@@ -27,6 +27,10 @@ cd "$PROJ"
 [ -f "$CKPT" ] || { echo "ERROR: checkpoint not found: $CKPT" >&2; exit 1; }
 mkdir -p "$REPORT_DIR"
 
+# Resolve the machine-local data root from config (portable: Mac /Volumes, HPC /xdisk).
+DATA_ROOT=$($PYTHON -c "from config_loader import load_config; print(load_config()['data_root'])")
+[ -n "$DATA_ROOT" ] || { echo "ERROR: could not resolve data_root from config" >&2; exit 1; }
+
 # region <name> <tile_dir> <tile...>
 run_region () {
     local region="$1" tile_dir="$2"; shift 2
@@ -50,9 +54,9 @@ run_region () {
         | tee "${REPORT_DIR}/${region}_vectorize.log"
 }
 
-run_region nili   /mnt/mrdr/mc13 t1249 t1250 t1321 t1322
-run_region argyre /mnt/mrdr/mc26 t0434 t0435
-run_region mc11   /mnt/mrdr/mc11 t1086 t1087
+run_region nili   "${DATA_ROOT}/mc13" t1249 t1250 t1321 t1322
+run_region argyre "${DATA_ROOT}/mc26" t0434 t0435
+run_region mc11   "${DATA_ROOT}/mc11" t1086 t1087
 
 # ── Summary report ────────────────────────────────────────────────────────────
 SUMMARY="${REPORT_DIR}/summary.md"

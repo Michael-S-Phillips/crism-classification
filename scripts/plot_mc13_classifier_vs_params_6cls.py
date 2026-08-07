@@ -27,9 +27,9 @@ from affine import Affine
 from pyproj import CRS
 from rasterio.enums import Resampling
 
-PROJECT_ROOT = '/mnt/mrdr/crism_classification'
+PROJECT_ROOT = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification'
 PROBS_DIR    = '/tmp/6cls_mc13'
-MC13_DIR     = '/mnt/mrdr/mc13'
+MC13_DIR     = '/Volumes/Mars_GIS/CRISM/MRDR/mc13'
 
 # Mars 2000 geographic CRS (degrees lon/lat)
 MARS_GEO_WKT = (

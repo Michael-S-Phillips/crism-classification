@@ -35,7 +35,7 @@ CLIP_MAX = 0.5
 PATCH_SIZE = 7
 PAD = PATCH_SIZE // 2
 N_BANDS = 59
-FELDSREVIEW_ROOT = '/mnt/mrdr/categorized_mineral_units/FeldsReview'
+FELDSREVIEW_ROOT = '/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units/FeldsReview'
 TIER_WEIGHT = {'High': 1.0, 'Moderate': 0.85, 'Low': 0.7}
 
 
@@ -127,7 +127,7 @@ def main():
     ap.add_argument('--output_dir', default='data/patch_cache')
     args = ap.parse_args()
 
-    mrral_hdr = args.mrral_hdr or sorted(glob.glob('/mnt/mrdr/mc*/t*_mrral_*.hdr'))[0]
+    mrral_hdr = args.mrral_hdr or sorted(glob.glob('/Volumes/Mars_GIS/CRISM/MRDR/mc*/t*_mrral_*.hdr'))[0]
     target_wl = load_target_wavelengths(mrral_hdr)
     print(f'target MRDR wavelengths: {len(target_wl)} bands, '
           f'{target_wl[0]:.1f}-{target_wl[-1]:.1f} nm (from {os.path.basename(mrral_hdr)})')

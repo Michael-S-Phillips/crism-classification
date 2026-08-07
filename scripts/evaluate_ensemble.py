@@ -16,6 +16,8 @@ import logging
 import numpy as np
 import pandas as pd
 import torch
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from device import get_device
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -70,7 +72,7 @@ def main():
 
     from config_loader import load_config
     cfg = load_config()
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = get_device()
 
     # Load data (prefer mrral if available)
     mrral_path = os.path.join(cfg['output_dir'], 'mrral_pixels.parquet')

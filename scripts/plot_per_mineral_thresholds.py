@@ -44,11 +44,11 @@ from affine import Affine
 from pyproj import CRS
 from rasterio.enums import Resampling
 
-PROJECT_ROOT = '/mnt/mrdr/crism_classification'
+PROJECT_ROOT = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification'
 
 # Defaults match the v3-denoising MC13 product; overridable via CLI for
 # bland-v3 / bland-v4 / Nili-only / etc. experiments.
-DEFAULT_TILE_DIR   = '/mnt/mrdr/mc13'
+DEFAULT_TILE_DIR   = '/Volumes/Mars_GIS/CRISM/MRDR/mc13'
 DEFAULT_VECTOR_DIR = os.path.join(PROJECT_ROOT, 'data', 'vector_mc13_v3_denoising')
 DEFAULT_OUT_DIR    = os.path.join(PROJECT_ROOT, 'reports', 'per_mineral_mc13')
 DEFAULT_WAVELENGTHS_NAME = 'mc13_v3_denoising_per_mineral_wavelengths.json'

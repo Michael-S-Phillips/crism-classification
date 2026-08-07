@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-sys.path.insert(0, '/mnt/mrdr/crism_classification')
+sys.path.insert(0, '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification')
 from models.spend_spatial_mae import SpendSpatialSpectralMAE
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -33,7 +33,7 @@ from _utils import (
     get_wavelengths_59, load_mrral_parquet, read_patch_from_tile,
 )
 
-OUT_PATH = '/mnt/mrdr/crism_classification/reports/v5/fig_v5_spend_partition.png'
+OUT_PATH = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/reports/v5/fig_v5_spend_partition.png'
 CLASSES_TO_SHOW = ['olivine', 'hcp', 'plagioclase']
 
 

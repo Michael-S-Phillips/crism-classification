@@ -29,9 +29,9 @@ from scripts.review.persistence import (
     DecisionLog, ConfirmedPixelsWriter, HardNegativesWriter,
 )
 
-DEFAULT_GPKG_DIR = '/mnt/mrdr/crism_classification/data/vector_mc13_7cls_v3_lrscale001'
-DEFAULT_MRRAL_DIR = '/mnt/mrdr/mc13'
-DEFAULT_OUT_DIR = '/mnt/mrdr/crism_classification/data/mc13_review_7cls_v3'
+DEFAULT_GPKG_DIR = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/data/vector_mc13_7cls_v3_lrscale001'
+DEFAULT_MRRAL_DIR = '/Volumes/Mars_GIS/CRISM/MRDR/mc13'
+DEFAULT_OUT_DIR = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/data/mc13_review_7cls_v3'
 
 _PROJ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -51,9 +51,9 @@ def _gpkg_dir_choices() -> list:
 
 
 def _mrral_dir_choices() -> list:
-    """The Mars-chart tile dirs under /mnt/mrdr (mc02..mc30)."""
+    """The Mars-chart tile dirs under /Volumes/Mars_GIS/CRISM/MRDR (mc02..mc30)."""
     import glob
-    return sorted(glob.glob('/mnt/mrdr/mc[0-9][0-9]')) or [DEFAULT_MRRAL_DIR]
+    return sorted(glob.glob('/Volumes/Mars_GIS/CRISM/MRDR/mc[0-9][0-9]')) or [DEFAULT_MRRAL_DIR]
 
 
 def _out_dir_choices() -> list:
@@ -67,7 +67,7 @@ def _out_dir_choices() -> list:
             cands.add(d)
     return sorted(cands)
 # For MC11 review: gpkg dir data/vector_mc11_7cls_v3_lrscale001,
-# mrral dir /mnt/mrdr/mc11, out dir data/mc11_review_7cls_v3.
+# mrral dir /Volumes/Mars_GIS/CRISM/MRDR/mc11, out dir data/mc11_review_7cls_v3.
 # Default spectrum-plot wavelength window (nm). The mrral cube's first band
 # (~410 nm) is frequently noisy; it stays out of the display AND out of the
 # y-range computation.
@@ -90,7 +90,7 @@ MAX_CACHE_ENTRIES = 9999
 # sidecar, the relabeled run did not. Both gpkg sources point at the same
 # 59-band mrral cubes, so this file is the right reference regardless of which
 # vector dir we're reviewing.
-DEFAULT_WAVELENGTHS = '/mnt/mrdr/crism_classification/data/vector_mc13_6cls/vector_mc13_6cls_wavelengths.json'
+DEFAULT_WAVELENGTHS = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/data/vector_mc13_6cls/vector_mc13_6cls_wavelengths.json'
 TARGET_PIXELS_PER_CLASS = 30000
 
 MINERALS = ['olivine', 'lcp', 'hcp', 'plagioclase', 'alteration']

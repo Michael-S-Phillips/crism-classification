@@ -729,7 +729,7 @@ def main():
     draw_panel_a(ax_a)
     draw_panel_b(ax_b)
 
-    out_dir = '/mnt/mrdr/crism_classification/reports'
+    out_dir = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/reports'
     os.makedirs(out_dir, exist_ok=True)
     png_path = os.path.join(out_dir, 'fig_v3_denoise_architecture.png')
     svg_path = os.path.join(out_dir, 'fig_v3_denoise_architecture.svg')

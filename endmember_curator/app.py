@@ -1,7 +1,7 @@
 """Streamlit app — browse polygons, compare to endmember library, curate.
 
 Launch with:
-    cd /mnt/mrdr/crism_classification
+    cd /Volumes/Mars_GIS/CRISM/MRDR/crism_classification
     bash scripts/launch_endmember_curator.sh
 """
 from __future__ import annotations

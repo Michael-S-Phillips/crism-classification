@@ -42,7 +42,7 @@ PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Defaults match the original MC13 v3-denoising run; override at the CLI for
 # other experiments (e.g. bland-v3 / bland-v4 / Nili-only).
 DEFAULT_PROBS_DIR = '/tmp/6cls_mc13'
-DEFAULT_TILE_DIR  = '/mnt/mrdr/mc13'
+DEFAULT_TILE_DIR  = '/Volumes/Mars_GIS/CRISM/MRDR/mc13'
 DEFAULT_OUT_DIR   = os.path.join(PROJ, 'data', 'vector_mc13_6cls')
 DEFAULT_WAVELENGTHS_SIDECAR_NAME = 'mc13_6cls_per_mineral_wavelengths.json'
 

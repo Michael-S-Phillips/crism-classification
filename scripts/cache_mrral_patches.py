@@ -93,14 +93,12 @@ def main():
     print(f'concat: {len(df):,} rows total')
 
     print('Building mrral tile map ...')
-    data_root = cfg.get('data_root', '/mnt/crism/MRDR')
+    data_root = cfg['data_root']
     # Support both nested (mc*/<file>) and flat (<file>) tile layouts.
     mrral_hdrs = sorted(set(
         glob.glob(os.path.join(data_root, 'mc*', 't*mrral*.hdr')) +
         glob.glob(os.path.join(data_root, 't*mrral*.hdr'))
     ))
-    if not mrral_hdrs:
-        mrral_hdrs = sorted(glob.glob('/mnt/crism/MRDR/mc*/t*mrral*.hdr'))
     mrral_map = {}
     for hdr in mrral_hdrs:
         tid = os.path.basename(hdr).split('_mrral_')[0]

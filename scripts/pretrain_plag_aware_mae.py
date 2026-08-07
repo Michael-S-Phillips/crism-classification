@@ -23,6 +23,8 @@ import sys
 import numpy as np
 import pandas as pd
 import torch
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from device import get_device
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -62,7 +64,7 @@ def main():
     cfg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             args.config)
     cfg = load_config(cfg_path)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_device()
     log.info(f"device={device}")
 
     # ── Stream U: unlabeled global cache (recon only) ────────────────────────
@@ -227,7 +229,7 @@ def main():
 
 def _build_mrral_map(cfg):
     import glob
-    data_root = cfg.get("data_root", "/mnt/mrdr")
+    data_root = cfg["data_root"]
     hdrs = sorted(set(glob.glob(os.path.join(data_root, "mc*", "t*mrral*.hdr"))
                       + glob.glob(os.path.join(data_root, "t*mrral*.hdr"))))
     return {os.path.basename(h).split("_mrral_")[0]: h.replace(".hdr", ".img")

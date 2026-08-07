@@ -19,10 +19,10 @@ import pandas as pd
 
 N_BANDS = 59
 
-DEFAULT_XLSX = "/mnt/mrdr/endmember_extraction/crism_endmembers/crism_endmember_spectra.xlsx"
-DEFAULT_PARQUET = "/mnt/mrdr/crism_classification/data/mrral_pixels.parquet"
+DEFAULT_XLSX = "/Volumes/Mars_GIS/CRISM/MRDR/endmember_extraction/crism_endmembers/crism_endmember_spectra.xlsx"
+DEFAULT_PARQUET = "/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/data/mrral_pixels.parquet"
 XLSX_PARQUET_FALLBACK = (
-    "/mnt/mrdr/endmember_extraction/crism_endmembers/crism_endmember_spectra.parquet"
+    "/Volumes/Mars_GIS/CRISM/MRDR/endmember_extraction/crism_endmembers/crism_endmember_spectra.parquet"
 )
 
 # Map our class names to the column basename used in the xlsx 'Summary' sheet.

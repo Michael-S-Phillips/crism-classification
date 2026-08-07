@@ -6,8 +6,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 
-CFG_DATA_ROOT = '/mnt/gigas/CRISM/MRDR'
-CFG_GPKG_DIR = '/mnt/gigas/CRISM/MRDR/categorized_mineral_units'
+CFG_DATA_ROOT = '/Volumes/Mars_GIS/CRISM/MRDR'
+CFG_GPKG_DIR = '/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units'
 
 
 def test_find_mrral_pairs_returns_mrral_paths():

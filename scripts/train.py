@@ -539,7 +539,7 @@ def main():
 
         elif args.model == 'spatial_vit':
             import glob as _glob
-            data_root = cfg.get('data_root', '/mnt/crism/MRDR')
+            data_root = cfg['data_root']
             globs_to_try = [
                 os.path.join(data_root, 'mc*', 't*mrral*.hdr'),
                 os.path.join(data_root, 't*mrral*.hdr'),
@@ -682,7 +682,7 @@ def main():
                                  'or --brightness_aux')
                 aux_dim = 2
             import glob as _glob
-            data_root = cfg.get('data_root', '/mnt/mrdr')
+            data_root = cfg['data_root']
             mrral_hdrs = sorted(set(
                 _glob.glob(os.path.join(data_root, 'mc*', 't*mrral*.hdr'))
                 + _glob.glob(os.path.join(data_root, 't*mrral*.hdr'))))
@@ -731,7 +731,7 @@ def main():
 
         elif args.model == 'decomp_spatial_vit':
             import glob as _glob
-            data_root = cfg.get('data_root', '/mnt/crism/MRDR')
+            data_root = cfg['data_root']
             globs_to_try = [
                 os.path.join(data_root, 'mc*', 't*mrral*.hdr'),
                 os.path.join(data_root, 't*mrral*.hdr'),
@@ -802,7 +802,7 @@ def main():
 
         elif args.model == 'decomp_spatial_vit_adv':
             import glob as _glob
-            data_root = cfg.get('data_root', '/mnt/crism/MRDR')
+            data_root = cfg['data_root']
             globs_to_try = [
                 os.path.join(data_root, 'mc*', 't*mrral*.hdr'),
                 os.path.join(data_root, 't*mrral*.hdr'),

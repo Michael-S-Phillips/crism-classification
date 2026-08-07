@@ -1,18 +1,18 @@
 # scripts/categorize_sup_gpkg.py
 """
 Categorize raw supplementary GeoPackages so they match the schema of the
-existing /mnt/mrdr/categorized_mineral_units/*.gpkg files.
+existing /Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units/*.gpkg files.
 
 Ports the `categorize_minerals` function from
-/mnt/mrdr/categorize_gpkg_ratio_files.ipynb (the notebook used to produce
+/Volumes/Mars_GIS/CRISM/MRDR/categorize_gpkg_ratio_files.ipynb (the notebook used to produce
 the original 40 categorized files), adds a contaminated-denom skip rule,
 and writes outputs alongside the existing categorized files.
 
 Usage:
     conda run -n crism python scripts/categorize_sup_gpkg.py
     conda run -n crism python scripts/categorize_sup_gpkg.py \\
-        --input_dir /mnt/mrdr/categorized_mineral_units/sup \\
-        --output_dir /mnt/mrdr/categorized_mineral_units
+        --input_dir /Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units/sup \\
+        --output_dir /Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units
 """
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ def categorize_minerals(row) -> str:
     Mineral ID 1-4 columns.
 
     Faithful port of the categorize_minerals function in
-    /mnt/mrdr/categorize_gpkg_ratio_files.ipynb, with two safety guards added
+    /Volumes/Mars_GIS/CRISM/MRDR/categorize_gpkg_ratio_files.ipynb, with two safety guards added
     over the notebook source: NaN-before-.lower() (the notebook called
     row[col].lower() before its pd.isna check, which would crash on a NaN
     float; the guard is moved here to run first) and an explicit empty-string
@@ -241,12 +241,12 @@ def main() -> int:
     )
     parser.add_argument(
         "--input_dir",
-        default="/mnt/mrdr/categorized_mineral_units/sup",
+        default="/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units/sup",
         help="Directory containing raw sup .gpkg files (default: %(default)s)",
     )
     parser.add_argument(
         "--output_dir",
-        default="/mnt/mrdr/categorized_mineral_units",
+        default="/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units",
         help="Directory to write categorized .gpkg files (default: %(default)s)",
     )
     args = parser.parse_args()

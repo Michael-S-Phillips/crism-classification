@@ -12,7 +12,7 @@ import os
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 
-OUT_PATH = '/mnt/mrdr/crism_classification/reports/v5/fig_v5_decomp_architecture.png'
+OUT_PATH = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/reports/v5/fig_v5_decomp_architecture.png'
 
 
 def block(ax, x, y, w, h, label, color='#cdeaf7', edgecolor='#1f77b4',

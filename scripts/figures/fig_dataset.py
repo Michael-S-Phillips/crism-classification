@@ -20,7 +20,7 @@ from _utils import (
     get_wavelengths_59, load_mrral_parquet,
 )
 
-OUT_PATH = '/mnt/mrdr/crism_classification/reports/v5/fig_v5_dataset_overview.png'
+OUT_PATH = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/reports/v5/fig_v5_dataset_overview.png'
 
 
 def main():

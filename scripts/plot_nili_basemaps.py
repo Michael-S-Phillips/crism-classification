@@ -47,29 +47,29 @@ VECTOR_DIR = os.path.join(PROJ, 'data', 'vector')
 
 TILES = [
     {
-        'mrral': '/mnt/mrdr/mc13/t1249_mrral_20n073_0327_4.img',
-        'mrrsu': '/mnt/mrdr/mc13/t1249_mrrsu_20n073_0327_4.img',
+        'mrral': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1249_mrral_20n073_0327_4.img',
+        'mrrsu': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1249_mrrsu_20n073_0327_4.img',
         'gpkg':  os.path.join(VECTOR_DIR, 't1249_mrral_20n073_0327_4_mineral_map.gpkg'),
     },
     {
-        'mrral': '/mnt/mrdr/mc13/t1250_mrral_20n078_0327_4.img',
-        'mrrsu': '/mnt/mrdr/mc13/t1250_mrrsu_20n078_0327_4.img',
+        'mrral': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1250_mrral_20n078_0327_4.img',
+        'mrrsu': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1250_mrrsu_20n078_0327_4.img',
         'gpkg':  os.path.join(VECTOR_DIR, 't1250_mrral_20n078_0327_4_mineral_map.gpkg'),
     },
     {
-        'mrral': '/mnt/mrdr/mc13/t1321_mrral_25n073_0327_4.img',
-        'mrrsu': '/mnt/mrdr/mc13/t1321_mrrsu_25n073_0327_4.img',
+        'mrral': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1321_mrral_25n073_0327_4.img',
+        'mrrsu': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1321_mrrsu_25n073_0327_4.img',
         'gpkg':  os.path.join(VECTOR_DIR, 't1321_mrral_25n073_0327_4_mineral_map.gpkg'),
     },
     {
-        'mrral': '/mnt/mrdr/mc13/t1322_mrral_25n078_0327_4.img',
-        'mrrsu': '/mnt/mrdr/mc13/t1322_mrrsu_25n078_0327_4.img',
+        'mrral': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1322_mrral_25n078_0327_4.img',
+        'mrrsu': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1322_mrrsu_25n078_0327_4.img',
         'gpkg':  os.path.join(VECTOR_DIR, 't1322_mrral_25n078_0327_4_mineral_map.gpkg'),
     },
 ]
 
 THEMIS_PATH = (
-    '/mnt/phillips/Mars_GIS_data/THEMIS/global/'
+    '/Volumes/phillipsm/Mars_GIS_Data/THEMIS/global/'
     'Mars_MO_THEMIS-IR-Day_mosaic_global_100m_v12.tif'
 )
 

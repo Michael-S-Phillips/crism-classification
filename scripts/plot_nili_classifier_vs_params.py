@@ -35,7 +35,7 @@ from affine import Affine
 from pyproj import CRS
 from rasterio.enums import Resampling
 
-PROJECT_ROOT = '/mnt/mrdr/crism_classification'
+PROJECT_ROOT = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification'
 PROBS_DIR = '/tmp/v3_nili'
 
 # Mars 2000 geographic CRS (degrees lon/lat) — matches plot_nili_seamless.py
@@ -50,23 +50,23 @@ COMMON_CRS = CRS.from_wkt(MARS_GEO_WKT)
 TILES_INFO = [
     {
         'tid':   't1249',
-        'mrral': '/mnt/mrdr/mc13/t1249_mrral_20n073_0327_4.img',
-        'mrrsu': '/mnt/mrdr/mc13/t1249_mrrsu_20n073_0327_4.img',
+        'mrral': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1249_mrral_20n073_0327_4.img',
+        'mrrsu': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1249_mrrsu_20n073_0327_4.img',
     },
     {
         'tid':   't1250',
-        'mrral': '/mnt/mrdr/mc13/t1250_mrral_20n078_0327_4.img',
-        'mrrsu': '/mnt/mrdr/mc13/t1250_mrrsu_20n078_0327_4.img',
+        'mrral': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1250_mrral_20n078_0327_4.img',
+        'mrrsu': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1250_mrrsu_20n078_0327_4.img',
     },
     {
         'tid':   't1321',
-        'mrral': '/mnt/mrdr/mc13/t1321_mrral_25n073_0327_4.img',
-        'mrrsu': '/mnt/mrdr/mc13/t1321_mrrsu_25n073_0327_4.img',
+        'mrral': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1321_mrral_25n073_0327_4.img',
+        'mrrsu': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1321_mrrsu_25n073_0327_4.img',
     },
     {
         'tid':   't1322',
-        'mrral': '/mnt/mrdr/mc13/t1322_mrral_25n078_0327_4.img',
-        'mrrsu': '/mnt/mrdr/mc13/t1322_mrrsu_25n078_0327_4.img',
+        'mrral': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1322_mrral_25n078_0327_4.img',
+        'mrrsu': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1322_mrrsu_25n078_0327_4.img',
     },
 ]
 

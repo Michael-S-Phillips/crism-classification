@@ -25,7 +25,7 @@ import numpy as np
 import torch
 
 # ── project root on sys.path ────────────────────────────────────────────────
-PROJECT_ROOT = '/mnt/mrdr/crism_classification'
+PROJECT_ROOT = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification'
 sys.path.insert(0, PROJECT_ROOT)
 
 from models.denoising_spatial_mae import DenoisingSpatialSpectralMAE

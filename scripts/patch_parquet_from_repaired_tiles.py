@@ -26,7 +26,7 @@ import pandas as pd
 import rasterio
 
 BAND_COLS = [f'm{i}' for i in range(59)]
-TILE_GLOBS = ['/mnt/mrdr/mc*/{tid}_mrral_*_0327_4.img']
+TILE_GLOBS = ['/Volumes/Mars_GIS/CRISM/MRDR/mc*/{tid}_mrral_*_0327_4.img']
 
 
 def find_tile_img(tid: str) -> str:

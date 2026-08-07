@@ -34,6 +34,8 @@ from typing import Dict, Optional
 
 import numpy as np
 import torch
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from device import get_device
 import torch.nn as nn
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -127,7 +129,7 @@ def linear_probe(encoder_ckpt: str, df, mrral_map: Optional[dict] = None,
     return frozen-encoder val metrics. Key result: ``val_mAP_core`` (mean per-class
     AP excluding junk)."""
     if device is None:
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device = get_device()
     device = torch.device(device)
 
     from data.dataset import CRISMSpectralPatchDataset, _collapse_labels, LABEL_COLS
@@ -235,7 +237,7 @@ def main():
         for s in ('train', 'val'))
     if not cache_complete:
         import glob as _glob
-        data_root = cfg.get('data_root', '/mnt/mrdr')
+        data_root = cfg.get('data_root', '/Volumes/Mars_GIS/CRISM/MRDR')
         hdrs = sorted(set(_glob.glob(os.path.join(data_root, 'mc*', 't*mrral*.hdr'))
                           + _glob.glob(os.path.join(data_root, 't*mrral*.hdr'))))
         mrral_map = {os.path.basename(h).split('_mrral_')[0]: h.replace('.hdr', '.img')

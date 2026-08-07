@@ -82,8 +82,8 @@ INVERSE = {c: 0.99 - 0.49 * v for c, v in VAL_AP.items()}
 THRESH = {c: max(INVERSE[c], GLOBAL_FLOOR) for c in VAL_AP}
 
 TILES = [
-    {'tid': 't0434', 'mrral': '/mnt/mrdr/mc26/t0434_mrral_40s318_0327_4.img'},
-    {'tid': 't0435', 'mrral': '/mnt/mrdr/mc26/t0435_mrral_40s323_0327_4.img'},
+    {'tid': 't0434', 'mrral': '/Volumes/Mars_GIS/CRISM/MRDR/mc26/t0434_mrral_40s318_0327_4.img'},
+    {'tid': 't0435', 'mrral': '/Volumes/Mars_GIS/CRISM/MRDR/mc26/t0435_mrral_40s323_0327_4.img'},
 ]
 
 MEDIAN_SIZE = 3

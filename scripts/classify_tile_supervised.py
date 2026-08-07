@@ -12,16 +12,18 @@ GeoPackage mineral polygon outlines are overlaid on the class maps.
 
 Usage:
     python scripts/classify_tile_supervised.py \\
-        --tile /mnt/mrdr/mc26/t0435_mrral_40s323_0327_4.img \\
+        --tile /Volumes/Mars_GIS/CRISM/MRDR/mc26/t0435_mrral_40s323_0327_4.img \\
         --ckpt checkpoints/spvit_lrscale001_best.pt \\
         --embeddings /tmp/t0435_embeddings.npz \\
-        --gpkg /mnt/mrdr/categorized_mineral_units/T0435.gpkg
+        --gpkg /Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units/T0435.gpkg
 """
 import argparse
 import os
 import sys
 import numpy as np
 import torch
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from device import get_device
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -493,7 +495,7 @@ def main():
                         help='Encoder depth; must match the checkpoint. Default 6.')
     parser.add_argument('--n_clusters', type=int, default=8)
     parser.add_argument('--drop_pcs', type=int, nargs='+', default=[0, 1, 2, 3])
-    parser.add_argument('--out_dir', default='/mnt/mrdr/crism_classification/reports')
+    parser.add_argument('--out_dir', default='/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/reports')
     parser.add_argument('--save_probs', default=None, metavar='PATH',
                         help='Save (H,W,5) mineral prob raster to .npz for vectorization')
     parser.add_argument('--out', default=None, metavar='PATH',
@@ -539,7 +541,7 @@ def main():
         PYX_MODE = True
 
     tile_name = os.path.splitext(os.path.basename(args.tile))[0]
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = get_device()
     print(f'Device: {device}')
 
     print(f'Loading tile: {args.tile}')

@@ -60,7 +60,7 @@ NORM_MODES = ("zscore", "minmax", "pertile_zscore")
 
 
 def build_mrrsu_map(cfg) -> dict:
-    data_root = cfg.get('data_root', '/mnt/mrdr')
+    data_root = cfg['data_root']
     hdrs = sorted(set(glob.glob(os.path.join(data_root, 'mc*', 't*mrrsu*.hdr'))
                       + glob.glob(os.path.join(data_root, 't*mrrsu*.hdr'))))
     return {os.path.basename(h).split('_mrrsu_')[0]: h.replace('.hdr', '.img')

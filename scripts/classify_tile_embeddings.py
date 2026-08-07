@@ -14,6 +14,8 @@ import os
 import sys
 import numpy as np
 import torch
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from device import get_device
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -110,7 +112,7 @@ def embed_tile(tile, model, device, batch_size=4096):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--tile', required=True, help='Path to mrral .img file')
-    parser.add_argument('--ckpt', default='/mnt/mrdr/crism_classification/checkpoints/spatial_mae_128d_6l_best.pt')
+    parser.add_argument('--ckpt', default='/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/checkpoints/spatial_mae_128d_6l_best.pt')
     parser.add_argument('--n_clusters', type=int, default=8)
     parser.add_argument('--batch_size', type=int, default=4096)
     parser.add_argument('--out', default=None, help='Output path (default: reports/)')
@@ -121,9 +123,9 @@ def main():
     args = parser.parse_args()
 
     tile_name = os.path.splitext(os.path.basename(args.tile))[0]
-    out_path = args.out or f'/mnt/mrdr/crism_classification/reports/{tile_name}_clusters_k{args.n_clusters}.png'
+    out_path = args.out or f'/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/reports/{tile_name}_clusters_k{args.n_clusters}.png'
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = get_device()
     print(f'Device: {device}')
 
     print(f'Loading tile: {args.tile}')

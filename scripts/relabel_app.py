@@ -20,8 +20,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-GPKG_DIR = '/mnt/mrdr/categorized_mineral_units'
-RELABEL_CSV = '/mnt/mrdr/crism_classification/data/olivine_relabels.csv'
+GPKG_DIR = '/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units'
+RELABEL_CSV = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/data/olivine_relabels.csv'
 
 # 2 um pyroxene band: continuum 1.81 -> 2.46 um, absorption minimum ~2.32 um
 WL_LEFT, WL_MIN, WL_RIGHT = 1809.0, 2318.0, 2457.0

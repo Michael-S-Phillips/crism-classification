@@ -24,14 +24,14 @@ WAVELENGTHS_59 = None  # cached on first access
 
 def get_wavelengths_59() -> np.ndarray:
     """Wavelengths (nm) for the 59 mrral bands used in training. Read from
-    the first available .hdr file under /mnt/mrdr/mc*/."""
+    the first available .hdr file under /Volumes/Mars_GIS/CRISM/MRDR/mc*/."""
     global WAVELENGTHS_59
     if WAVELENGTHS_59 is not None:
         return WAVELENGTHS_59
     import spectral.io.envi as envi
-    hdrs = sorted(glob.glob('/mnt/mrdr/mc*/t*mrral*.hdr'))
+    hdrs = sorted(glob.glob('/Volumes/Mars_GIS/CRISM/MRDR/mc*/t*mrral*.hdr'))
     if not hdrs:
-        raise RuntimeError('No mrral .hdr files found under /mnt/mrdr/mc*/.')
+        raise RuntimeError('No mrral .hdr files found under /Volumes/Mars_GIS/CRISM/MRDR/mc*/.')
     hdr = envi.open(hdrs[0])
     WAVELENGTHS_59 = np.array(
         [float(w) for w in hdr.metadata['wavelength']][:59], dtype=np.float32,
@@ -39,17 +39,17 @@ def get_wavelengths_59() -> np.ndarray:
     return WAVELENGTHS_59
 
 
-def load_mrral_parquet(path: str = '/mnt/mrdr/crism_classification/data/mrral_pixels.parquet') -> pd.DataFrame:
+def load_mrral_parquet(path: str = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/data/mrral_pixels.parquet') -> pd.DataFrame:
     """Load the post-collapse parquet, with `olivine` aggregated and a
     consistent confidence_weight column applied (matches training behavior)."""
     df = pd.read_parquet(path)
     import sys
-    sys.path.insert(0, '/mnt/mrdr/crism_classification')
+    sys.path.insert(0, '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification')
     from data.dataset import _collapse_labels
     return _collapse_labels(df)
 
 
-def build_mrral_map(data_root: str = '/mnt/mrdr') -> Dict[str, str]:
+def build_mrral_map(data_root: str = '/Volumes/Mars_GIS/CRISM/MRDR') -> Dict[str, str]:
     """tile_id → .img path map. Supports nested (mc*/) and flat layouts."""
     hdrs = sorted(set(
         glob.glob(os.path.join(data_root, 'mc*', 't*mrral*.hdr'))

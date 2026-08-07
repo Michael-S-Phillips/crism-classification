@@ -7,9 +7,9 @@ spectrum and run it through bland-v3 to compare hand-labeled mineral class
 vs predicted argmax class.
 
 Sources:
-  1. /mnt/mrdr/categorized_mineral_units/T*.gpkg  (spectra inline)
-  2. /mnt/gigas/massif-themis-analysis/argyre-gis/*.gpkg  (spectra inline)
-  3. /mnt/mrdr/categorized_mineral_units/north_hellas_mafics_geometries_fixed.gpkg
+  1. /Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units/T*.gpkg  (spectra inline)
+  2. /Volumes/Mars_GIS/massif-themis-analysis/argyre-gis/*.gpkg  (spectra inline)
+  3. /Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units/north_hellas_mafics_geometries_fixed.gpkg
      (no inline spectra; extract by rasterizing each polygon onto its mrral tile)
 
 Outputs:
@@ -37,8 +37,10 @@ import numpy as np
 import rasterio
 import rasterio.features
 import torch
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from device import get_device
 
-PROJ = '/mnt/mrdr/crism_classification'
+PROJ = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification'
 sys.path.insert(0, PROJ)
 from data.label_parser import parse_category, CLASSES   # 6-class space
 from models.spatial_spectral_transformer import SpatialSpectralClassifier
@@ -46,10 +48,10 @@ from models.spatial_spectral_transformer import SpatialSpectralClassifier
 CKPT       = os.path.join(PROJ, 'checkpoints/ft_bland_v3_lrscale0001_best.pt')
 OUT_DIR    = os.path.join(PROJ, 'reports/bland_v3_polygon_eval')
 
-CMU_DIR    = '/mnt/mrdr/categorized_mineral_units'
-ARGYRE_DIR = '/mnt/gigas/massif-themis-analysis/argyre-gis'
+CMU_DIR    = '/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units'
+ARGYRE_DIR = '/Volumes/Mars_GIS/massif-themis-analysis/argyre-gis'
 HELLAS_GPKG = os.path.join(CMU_DIR, 'north_hellas_mafics_geometries_fixed.gpkg')
-MC_GLOB    = '/mnt/mrdr/mc*/t*_mrral_*_0327_4.img'
+MC_GLOB    = '/Volumes/Mars_GIS/CRISM/MRDR/mc*/t*_mrral_*_0327_4.img'
 
 N_BANDS   = 59
 NODATA    = 65535.0
@@ -530,7 +532,7 @@ def main():
 
     print()
     print('Loading bland-v3 classifier …')
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = get_device()
     model = load_classifier(device)
 
     # Build mrral tile index ONCE; reused by Hellas loader (above) and also

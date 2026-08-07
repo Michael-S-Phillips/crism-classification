@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-sys.path.insert(0, '/mnt/mrdr/crism_classification')
+sys.path.insert(0, '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification')
 from models.decomp_spatial_vit_adv import DecompSpVitAdv
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -36,13 +36,13 @@ from _utils import (
 
 CHECKPOINTS = [
     ('spvit_decomp_v2_lrscale001',
-     '/mnt/mrdr/crism_classification/checkpoints/spvit_decomp_v2_lrscale001_best.pt'),
+     '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/checkpoints/spvit_decomp_v2_lrscale001_best.pt'),
     ('spvit_decomp_v2_lrscale0001',
-     '/mnt/mrdr/crism_classification/checkpoints/spvit_decomp_v2_lrscale0001_best.pt'),
+     '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/checkpoints/spvit_decomp_v2_lrscale0001_best.pt'),
 ]
 CLASSES_TO_SHOW = ['olivine', 'hcp', 'plagioclase']
 DIAGNOSTIC_BAND_NM = 1000   # detector seam region
-OUT_DIR = '/mnt/mrdr/crism_classification/reports/v5'
+OUT_DIR = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/reports/v5'
 
 
 def load_model(ckpt_path: str) -> DecompSpVitAdv:

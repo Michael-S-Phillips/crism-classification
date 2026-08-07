@@ -103,7 +103,7 @@ def test_lambda_adv_zero_blocks_encoder_gradient(model):
 def test_load_mae_encoder(model):
     """MAE checkpoint state loads cleanly into the encoder."""
     import os
-    ckpt_path = '/mnt/mrdr/crism_classification/checkpoints/spatial_mae_128d_6l_best.pt'
+    ckpt_path = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/checkpoints/spatial_mae_128d_6l_best.pt'
     if not os.path.exists(ckpt_path):
         pytest.skip(f"MAE checkpoint not available at {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)

@@ -54,7 +54,7 @@ def _load_tile_centers() -> dict[str, tuple[float, float]]:
         if not os.path.exists(_TILE_CENTERS_CSV):
             raise FileNotFoundError(
                 f'tile centers lookup missing: {_TILE_CENTERS_CSV}. '
-                'Regenerate by globbing /mnt/mrdr/mc*/t*_mrral_*.img filenames.')
+                'Regenerate by globbing /Volumes/Mars_GIS/CRISM/MRDR/mc*/t*_mrral_*.img filenames.')
         cc = pd.read_csv(_TILE_CENTERS_CSV)
         _TILE_CENTERS = {
             str(r.tile_id): (float(r.lat), float(r.lon))

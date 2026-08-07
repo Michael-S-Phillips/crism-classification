@@ -93,6 +93,7 @@ def _recompute_derived_paths(cfg: dict) -> None:
 _KNOWN_OLD_ROOTS = [
     '/mnt/gigas/CRISM/MRDR',
     '/mnt/crism/MRDR',
+    '/mnt/mrdr',
 ]
 
 

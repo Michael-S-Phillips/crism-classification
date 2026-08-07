@@ -9,7 +9,7 @@ Three pools (each ``(N, 7, 7, 59)`` float32, clipped to ``[0, 0.5]``):
   flagged as spectrally olivine — the bias we want the contrastive loss to
   remove.
 * **positives** — pixels inside polygons of
-  ``/mnt/mrdr/categorized_mineral_units/T*.gpkg`` whose ``Category`` is
+  ``/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units/T*.gpkg`` whose ``Category`` is
   ``plagioclase (High)`` or ``plagioclase (Moderate)``.
 * **soft_negatives** — pixels inside polygons of the same labeled gpkgs whose
   ``Category`` is ``Type 1 olivine (High)`` or ``Type 2 olivine (High)``.
@@ -30,7 +30,7 @@ Usage:
   conda run -n crism python scripts/build_contrastive_data.py \\
       --mc13_plag_gpkg data/vector_mc13_relabeled/plagioclase.gpkg \\
       --mc13_threshold_layer thresh_0.92 \\
-      --labeled_gpkg_dir /mnt/mrdr/categorized_mineral_units \\
+      --labeled_gpkg_dir /Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units \\
       --output_dir data/contrastive
 
 For a fast smoke test:
@@ -62,7 +62,7 @@ CLIP_MAX = 0.5
 PATCH_SIZE = 7
 N_BANDS = 59
 PAD = PATCH_SIZE // 2
-DEFAULT_DATA_ROOT = '/mnt/mrdr'
+DEFAULT_DATA_ROOT = '/Volumes/Mars_GIS/CRISM/MRDR'
 
 
 def make_tile_globs(data_root: str) -> tuple:
@@ -95,7 +95,7 @@ def find_mrral_for_tile(
     Searches ``tile_dir`` first if provided, then falls back to
     ``<data_root>/mc*/{tile}_mrral*.img`` patterns. On HPC ``data_root`` is
     typically ``$DATA_ROOT`` (e.g. ``/groups/sbyrne/$USER/CRISM_MRDR``);
-    locally it defaults to ``/mnt/mrdr``.
+    locally it defaults to ``/Volumes/Mars_GIS/CRISM/MRDR``.
     """
     tile = tile_id.lower()
     if tile_dir is not None:
@@ -441,11 +441,11 @@ def main():
     ap.add_argument('--skip_hard_mc13', action='store_true',
                     help='Skip the MC13 polygon-based hard-negative harvest even '
                          'if --mc13_plag_gpkg is provided. SAM parquets still run.')
-    ap.add_argument('--labeled_gpkg_dir', default='/mnt/mrdr/categorized_mineral_units')
+    ap.add_argument('--labeled_gpkg_dir', default='/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units')
     ap.add_argument('--output_dir', default='data/contrastive')
     ap.add_argument('--tile_dir', default=None,
                     help='Restrict mrral-cube search to this directory '
-                         '(e.g. /mnt/mrdr/mc13/ for MC13-only).')
+                         '(e.g. /Volumes/Mars_GIS/CRISM/MRDR/mc13/ for MC13-only).')
     ap.add_argument('--data_root', default=DEFAULT_DATA_ROOT,
                     help='Base dir for mrral cube search. On HPC, point this '
                          'at e.g. /xdisk/sbyrne/$USER/CRISM_MRDR. The script tries '

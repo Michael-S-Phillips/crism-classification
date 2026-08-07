@@ -18,6 +18,8 @@ import sys
 
 import numpy as np
 import torch
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from device import get_device
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -81,7 +83,7 @@ def main():
     )
 
     # ── Model ─────────────────────────────────────────────────────────────
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = get_device()
     log.info(f"Using device: {device}")
 
     from models.spend_spatial_mae import (
@@ -152,7 +154,7 @@ def main():
     batches_per_epoch = args.patches_per_epoch // args.batch_size
     data_iter = iter(loader)
 
-    ckpt_dir = cfg.get('checkpoints_dir', '/mnt/mrdr/crism_classification/checkpoints')
+    ckpt_dir = cfg['checkpoints_dir']
     os.makedirs(ckpt_dir, exist_ok=True)
 
     for epoch in range(start_epoch, args.epochs + 1):

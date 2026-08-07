@@ -51,7 +51,7 @@ RELABEL_OPTIONS = ["olivine", "lcp", "hcp", "plagioclase", "alteration",
 # Source-tile glob for back-filling m0/m1 (raster bands 1-2) at real pixel
 # coords. {tile_id} is substituted; overridable so tests can point at a fixture.
 DEFAULT_TILE_GLOB = os.environ.get(
-    "NDVIZ_TILE_GLOB", "/mnt/mrdr/mc*/{tile_id}_mrral_*_0327_4.img")
+    "NDVIZ_TILE_GLOB", "/Volumes/Mars_GIS/CRISM/MRDR/mc*/{tile_id}_mrral_*_0327_4.img")
 
 # Review-app class palette (fixed).
 CLASS_PALETTE = {

@@ -15,6 +15,8 @@ import sys
 import os
 import numpy as np
 import torch
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from device import get_device
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -106,7 +108,7 @@ def main():
     parser.add_argument('--out', default='reports/mae_reconstructions.png')
     args = parser.parse_args()
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = get_device()
     print(f'Using device: {device}')
 
     model = load_model(args.ckpt, device)

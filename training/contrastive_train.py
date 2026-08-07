@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 import torch
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from device import get_device
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -88,7 +90,7 @@ class TrainConfig:
     num_workers: int = 0
     grad_clip: float = 1.0
     log_every: int = 20            # steps between stdout prints
-    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device: str = get_device()
 
 
 def _param_groups(model: nn.Module, base_lr: float, encoder_lr_scale: float):

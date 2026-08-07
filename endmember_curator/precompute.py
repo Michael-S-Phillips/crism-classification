@@ -28,7 +28,7 @@ import numpy as np
 import pandas as pd
 
 PROJ_ROOT = Path(__file__).resolve().parent.parent
-GPKG_DIR = "/mnt/mrdr/categorized_mineral_units"
+GPKG_DIR = "/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units"
 OUT_PARQUET = PROJ_ROOT / "data" / "endmember_curator" / "polygon_spectra.parquet"
 
 MINERAL_KEYWORDS = {

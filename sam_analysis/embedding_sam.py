@@ -45,7 +45,7 @@ def load_encoder(
     from models.spatial_spectral_transformer import SpatialSpectralClassifier
 
     if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = get_device()
 
     model = SpatialSpectralClassifier(
         n_bands=N_BANDS, patch_size=PATCH_SIZE, n_classes=N_CLASSES,
@@ -109,6 +109,8 @@ def extract_embeddings(
     cache_path: optional .npz to load/save the full embedding raster from.
     """
     import torch
+    import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from device import get_device
     from tqdm import tqdm
 
     if cache_path and os.path.exists(cache_path):

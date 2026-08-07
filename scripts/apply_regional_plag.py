@@ -10,7 +10,7 @@ detection floor; regional spectral averaging recovers it, AUC ~0.92 tile-disjoin
 
 Usage:
   conda run -n crism python scripts/apply_regional_plag.py \\
-    --tiles /mnt/mrdr/mc13/t1249_mrral_*.img /mnt/mrdr/mc26/t0505_mrral_*.img \\
+    --tiles /Volumes/Mars_GIS/CRISM/MRDR/mc13/t1249_mrral_*.img /Volumes/Mars_GIS/CRISM/MRDR/mc26/t0505_mrral_*.img \\
     --out data/regional_plag/regional_plag.gpkg
 """
 import argparse

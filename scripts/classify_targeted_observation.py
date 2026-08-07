@@ -11,7 +11,7 @@ script handles the spectral resampling. Spatial resampling is optional
 
 Spectral subsampling: for each MRDR wavelength λ_i, pick the targeted band
 whose center wavelength is closest to λ_i (nearest-neighbor). MRDR
-wavelengths are read from any /mnt/mrdr/mc*/t*mrral*.hdr file.
+wavelengths are read from any /Volumes/Mars_GIS/CRISM/MRDR/mc*/t*mrral*.hdr file.
 
 Output is the same .npz + figure pair as classify_tile_supervised.py, so
 downstream pipelines (vectorize, threshold compare, etc.) consume it
@@ -57,6 +57,8 @@ import numpy as np
 import rasterio
 import spectral.io.envi as envi
 import torch
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from device import get_device
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.spatial_spectral_transformer import SpatialSpectralClassifier
@@ -77,10 +79,10 @@ CLASS_COLORS = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#aaaaaa']
 def get_mrdr_wavelengths() -> np.ndarray:
     """Read the 59 MRDR mrral wavelengths from the first available mrral .hdr."""
     import glob
-    hdrs = sorted(glob.glob('/mnt/mrdr/mc*/t*mrral*.hdr'))
+    hdrs = sorted(glob.glob('/Volumes/Mars_GIS/CRISM/MRDR/mc*/t*mrral*.hdr'))
     if not hdrs:
         raise RuntimeError(
-            'No mrral .hdr files found under /mnt/mrdr/mc*/. Pass --mrdr_hdr '
+            'No mrral .hdr files found under /Volumes/Mars_GIS/CRISM/MRDR/mc*/. Pass --mrdr_hdr '
             'to override.'
         )
     hdr = envi.open(hdrs[0])
@@ -303,7 +305,7 @@ def main():
                    help='Output .png path for the diagnostic panel')
     p.add_argument('--mrdr_hdr', default=None,
                    help='Override path to an mrral .hdr to read 59 reference '
-                        'wavelengths from (default: auto-discover under /mnt/mrdr/mc*).')
+                        'wavelengths from (default: auto-discover under /Volumes/Mars_GIS/CRISM/MRDR/mc*).')
     p.add_argument('--downsample', type=int, default=1,
                    help='Block-average factor over the spatial axes before '
                         'inference (1=no downsample, 10≈MRDR resolution).')
@@ -353,7 +355,7 @@ def main():
           f'valid pixels: {int(valid_mask.sum()):,}')
 
     # 4. Inference
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = get_device()
     print(f'Loading classifier from {args.ckpt} ...')
     model = load_classifier(args.ckpt, device)
     print('Running inference ...')

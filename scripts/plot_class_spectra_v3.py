@@ -22,7 +22,7 @@ BAND_COLS = [f'm{i}' for i in range(59)]
 
 
 def get_wavelengths():
-    hdrs = glob.glob('/mnt/mrdr/mc*/t*_mrral_*.hdr')
+    hdrs = glob.glob('/Volumes/Mars_GIS/CRISM/MRDR/mc*/t*_mrral_*.hdr')
     if hdrs:
         try:
             import spectral.io.envi as envi

@@ -23,7 +23,7 @@ import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
-OUT_PATH = '/mnt/mrdr/crism_classification/reports/v5/fig_v5_decomp_v2_architecture.png'
+OUT_PATH = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/reports/v5/fig_v5_decomp_v2_architecture.png'
 
 # Palette — same role coding as v1 but with a dedicated red for the
 # adversarial path so it pops.

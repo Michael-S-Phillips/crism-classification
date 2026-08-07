@@ -191,7 +191,7 @@ def main():
         )
         from config_loader import load_config
         cfg = load_config(cfg_path)
-        data_root = cfg.get('data_root', '/mnt/crism/MRDR')
+        data_root = cfg['data_root']
 
     os.makedirs(args.output, exist_ok=True)
     log.info(f"Output: {args.output}")

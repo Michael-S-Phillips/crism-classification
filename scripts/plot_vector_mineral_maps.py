@@ -31,13 +31,13 @@ os.makedirs(REPORTS, exist_ok=True)
 TILES = [
     {
         'id':   't0435_mrral_40s323_0327_4',
-        'img':  '/mnt/mrdr/mc26/t0435_mrral_40s323_0327_4.img',
+        'img':  '/Volumes/Mars_GIS/CRISM/MRDR/mc26/t0435_mrral_40s323_0327_4.img',
         'gpkg': os.path.join(VECTOR_DIR, 't0435_mrral_40s323_0327_4_mineral_map.gpkg'),
         'label': 'T0435',
     },
     {
         'id':   't0434_mrral_40s318_0327_4',
-        'img':  '/mnt/mrdr/mc26/t0434_mrral_40s318_0327_4.img',
+        'img':  '/Volumes/Mars_GIS/CRISM/MRDR/mc26/t0434_mrral_40s318_0327_4.img',
         'gpkg': os.path.join(VECTOR_DIR, 't0434_mrral_40s318_0327_4_mineral_map.gpkg'),
         'label': 'T0434',
     },

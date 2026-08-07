@@ -29,6 +29,8 @@ import os
 import sys
 
 import torch
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from device import get_device
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -81,7 +83,7 @@ def main():
     ap.add_argument('--noise_sigma_column', type=float, default=0.0049)
     # misc
     ap.add_argument('--seed', type=int, default=42)
-    ap.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
+    ap.add_argument('--device', default=get_device())
     ap.add_argument('--no_wandb', action='store_true')
     ap.add_argument('--wandb_project', default='crism-mineral-classification')
     ap.add_argument('--wandb_entity', default='space-imagery-center')

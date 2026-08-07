@@ -9,7 +9,7 @@ Step 2 (filter): Drop artifact PCs, re-cluster on clean subspace, compare.
 Usage:
   # First: embed the tile and save
   python scripts/classify_tile_embeddings.py \
-      --tile /mnt/mrdr/mc26/t0435_mrral_40s323_0327_4.img \
+      --tile /Volumes/Mars_GIS/CRISM/MRDR/mc26/t0435_mrral_40s323_0327_4.img \
       --save_embeddings /tmp/t0435_embeddings.npz
 
   # Step 1: explore PCs
@@ -33,7 +33,7 @@ from sklearn.decomposition import PCA
 from sklearn.cluster import MiniBatchKMeans
 from scipy.ndimage import binary_dilation
 
-OUT_DIR = '/mnt/mrdr/crism_classification/reports'
+OUT_DIR = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/reports'
 
 
 def load_embeddings(path):

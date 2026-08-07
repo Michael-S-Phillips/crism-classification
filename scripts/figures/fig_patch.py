@@ -23,7 +23,7 @@ from _utils import (
     get_wavelengths_59, load_mrral_parquet, read_patch_from_tile,
 )
 
-OUT_PATH = '/mnt/mrdr/crism_classification/reports/v5/fig_v5_example_patch.png'
+OUT_PATH = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/reports/v5/fig_v5_example_patch.png'
 
 # CRISM false-color band picks (R, G, B) in the 59-band index range, chosen to
 # approximate a visible-IR false color. These correspond to ~2.4, ~1.5, ~0.7 µm.

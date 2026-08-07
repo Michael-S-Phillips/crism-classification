@@ -35,6 +35,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from device import get_device
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -193,7 +195,7 @@ def main():
     ap.add_argument('--probe_debug_rows', type=int, default=None)
     ap.add_argument('--no_probe_train', action='store_true')
     ap.add_argument('--extra_plag_dir',
-                    default='/mnt/mrdr/crism_classification/data/contrastive/extra_plag_roi')
+                    default='/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/data/contrastive/extra_plag_roi')
     ap.add_argument('--mrrsu_aux_npy', default=None)
     args = ap.parse_args()
 
@@ -202,7 +204,7 @@ def main():
     cfg = load_config(cfg_path)
 
     if args.device == 'auto':
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        device = get_device()
     else:
         device = torch.device(args.device)
     print(f'device: {device}')

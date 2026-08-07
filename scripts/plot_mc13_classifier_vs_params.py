@@ -15,7 +15,7 @@ Target raster is downsampled to ~5× native pixel size (~1 km/pixel) to keep
 memory bounded for the full 54-tile quadrant (~2700×1800 pixel output grid).
 
 Probabilities loaded from /tmp/v3_mc13/t*_probs.npz  (classify_tile_supervised.py).
-Band parameters read from /mnt/mrdr/mc13/t*_mrrsu_*_0327_4.img.
+Band parameters read from /Volumes/Mars_GIS/CRISM/MRDR/mc13/t*_mrrsu_*_0327_4.img.
 
 Layout: MC13 spans ~30° lat × 45° lon → wider than tall in geographic degrees,
 but at mid-latitudes the meridional angular width is foreshortened by cos(lat).
@@ -45,9 +45,9 @@ from affine import Affine
 from pyproj import CRS
 from rasterio.enums import Resampling
 
-PROJECT_ROOT = '/mnt/mrdr/crism_classification'
+PROJECT_ROOT = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification'
 PROBS_DIR    = '/tmp/v3_mc13'
-MC13_DIR     = '/mnt/mrdr/mc13'
+MC13_DIR     = '/Volumes/Mars_GIS/CRISM/MRDR/mc13'
 
 # Mars 2000 geographic CRS (degrees lon/lat)
 MARS_GEO_WKT = (

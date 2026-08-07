@@ -7,7 +7,7 @@ Each polygon corresponds to a contiguous region of pixels with the same
 val_AP-informed inverse-proportional + global floor=0.80 scheme). The
 output GPKG has a single layer; per-polygon columns:
 
-  tile_id       str   — t1028 … t1396 (derived from files in /mnt/mrdr/mc13/)
+  tile_id       str   — t1028 … t1396 (derived from files in /Volumes/Mars_GIS/CRISM/MRDR/mc13/)
   category      str   — e.g. 'olivine', 'olivine + hcp', 'lcp + hcp + plagioclase'
   n_minerals    int   — 0 (unclassified) … 4 (all mineral classes)
   prob_olivine, prob_lcp, prob_hcp, prob_plagioclase, prob_other  — mean
@@ -23,7 +23,7 @@ Light morphology applied:
   - Polygons below MIN_PIXELS (default 9 = ~3×3) are dropped.
   - Geometry simplified to ~200 m tolerance after reprojection.
 
-Tile list is derived dynamically from /mnt/mrdr/mc13/t*_mrral_*_0327_4.img
+Tile list is derived dynamically from /Volumes/Mars_GIS/CRISM/MRDR/mc13/t*_mrral_*_0327_4.img
 so the script is robust if tiles are added or removed.
 
 Source npz:  /tmp/v3_mc13/t*_probs.npz  (from classify_tile_supervised.py)
@@ -55,7 +55,7 @@ from shapely.geometry import shape as shapely_shape
 
 PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROBS_DIR = '/tmp/v3_mc13'
-MC13_DIR  = '/mnt/mrdr/mc13'
+MC13_DIR  = '/Volumes/Mars_GIS/CRISM/MRDR/mc13'
 OUT_PATH  = os.path.join(PROJ, 'data', 'vector_mc13_v3_denoising',
                          'mc13_v3_denoising_categories.gpkg')
 WAVELENGTHS_SIDECAR = os.path.join(PROJ, 'data', 'vector_mc13_v3_denoising',

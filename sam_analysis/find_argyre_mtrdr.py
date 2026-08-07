@@ -1,6 +1,6 @@
 """Find MTRDR scenes that spatially intersect the Argyre MRDR tiles.
 
-Walks `/mnt/mrdr/categorized_mineral_units/FeldsReview/**` for `*_07_if*j_mtr3.img`
+Walks `/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units/FeldsReview/**` for `*_07_if*j_mtr3.img`
 files, opens their `.hdr`/raster to read corner coordinates, and intersects
 each MTRDR footprint with each Argyre tile footprint.
 
@@ -27,10 +27,10 @@ from shapely.geometry import box
 # per-WKT radii is < 0.3% and we only need a coarse intersection test.
 MARS_R = 3396190.0  # IAU 2000 mean radius (m)
 
-FELDSREVIEW_ROOT = "/mnt/mrdr/categorized_mineral_units/FeldsReview"
+FELDSREVIEW_ROOT = "/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units/FeldsReview"
 DEFAULT_TILES = {
-    "t0434": "/mnt/mrdr/mc26/t0434_mrral_40s318_0327_4.img",
-    "t0435": "/mnt/mrdr/mc26/t0435_mrral_40s323_0327_4.img",
+    "t0434": "/Volumes/Mars_GIS/CRISM/MRDR/mc26/t0434_mrral_40s318_0327_4.img",
+    "t0435": "/Volumes/Mars_GIS/CRISM/MRDR/mc26/t0435_mrral_40s323_0327_4.img",
 }
 OUTPUT_JSON = "sam_analysis/outputs/argyre/mtrdr_pairings.json"
 

@@ -28,8 +28,8 @@ from affine import Affine
 from pyproj import CRS
 from rasterio.enums import Resampling
 
-PROJECT_ROOT = '/mnt/mrdr/crism_classification'
-MC_DIR       = '/mnt/mrdr/mc13'
+PROJECT_ROOT = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification'
+MC_DIR       = '/Volumes/Mars_GIS/CRISM/MRDR/mc13'
 NILI_TILES   = ['t1249', 't1250', 't1321', 't1322']
 
 V3B_PROBS_DIR      = '/tmp/v3b_nili_lrscale0001'

@@ -58,22 +58,22 @@ CLIP_MAX = 0.5
 PATCH_SIZE = 7
 N_CLASSES = 5
 CLASS_NAMES = ("olivine", "lcp", "hcp", "plagioclase", "other")
-PARQUET_PATH = "/mnt/mrdr/crism_classification/data/mrral_pixels.parquet"
-DEFAULT_CKPT = "/mnt/mrdr/crism_classification/checkpoints/ft_plag_aware_relabeled_best.pt"
+PARQUET_PATH = "/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/data/mrral_pixels.parquet"
+DEFAULT_CKPT = "/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/checkpoints/ft_plag_aware_relabeled_best.pt"
 
 DEFAULT_TILE_PATHS = {
-    "t0434": "/mnt/mrdr/mc26/t0434_mrral_40s318_0327_4.img",
-    "t0435": "/mnt/mrdr/mc26/t0435_mrral_40s323_0327_4.img",
+    "t0434": "/Volumes/Mars_GIS/CRISM/MRDR/mc26/t0434_mrral_40s318_0327_4.img",
+    "t0435": "/Volumes/Mars_GIS/CRISM/MRDR/mc26/t0435_mrral_40s323_0327_4.img",
 }
 DEFAULT_GPKG_PATHS = {
-    "t0434": "/mnt/mrdr/categorized_mineral_units/T0434.gpkg",
-    "t0435": "/mnt/mrdr/categorized_mineral_units/T0435.gpkg",
+    "t0434": "/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units/T0434.gpkg",
+    "t0435": "/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units/T0435.gpkg",
 }
 
-OUT_DIR = "/mnt/mrdr/crism_classification/sam_analysis/outputs/argyre"
-REPORTS_DIR = "/mnt/mrdr/crism_classification/reports/sam_argyre"
-SUMMARY_PNG = "/mnt/mrdr/crism_classification/reports/sam_argyre_summary.png"
-SUMMARY_MD = "/mnt/mrdr/crism_classification/reports/sam_argyre_summary.md"
+OUT_DIR = "/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/sam_analysis/outputs/argyre"
+REPORTS_DIR = "/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/reports/sam_argyre"
+SUMMARY_PNG = "/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/reports/sam_argyre_summary.png"
+SUMMARY_MD = "/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/reports/sam_argyre_summary.md"
 MTRDR_PAIRINGS_JSON = os.path.join(OUT_DIR, "mtrdr_pairings.json")
 
 

@@ -21,7 +21,7 @@ def build_bland_gpkg_for_tile(mrral_path: str) -> gpd.GeoDataFrame:
     native CRS. `extract_mrral_pixels_from_pair` filters nodata at the
     pixel-read step, so it's safe to over-cover here.
 
-    Schema mirrors the existing /mnt/mrdr/categorized_mineral_units/T*.gpkg
+    Schema mirrors the existing /Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units/T*.gpkg
     files so the build pipeline ingests it without special-casing.
     """
     with rasterio.open(mrral_path) as src:

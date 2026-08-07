@@ -12,7 +12,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-HDR = '/mnt/mrdr/mc11/t1086_mrral_05n338_0327_4.hdr'
+HDR = '/Volumes/Mars_GIS/CRISM/MRDR/mc11/t1086_mrral_05n338_0327_4.hdr'
 PARQUET = 'data/mrral_pixels_with_review_v2.parquet'
 NODATA = 65535.0
 MC11 = {'t1086', 't1087', 't1088', 't1090'}

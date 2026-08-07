@@ -2,7 +2,7 @@
 Figure: Label polygons vs. supervised vectroscopy output for T0435 and T0434.
 
 2×2 grid: rows = tiles (T0435, T0434), columns = Labels | Predicted.
-Labels come from /mnt/mrdr/categorized_mineral_units/.
+Labels come from /Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units/.
 Predicted comes from data/vector/ vectroscopy GeoPackages.
 Colors: olivine=red, lcp=cyan, hcp=magenta, plagioclase=yellow, other=gray.
 Mixed-mineral labels use an RGB blend of constituent classes.
@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.fig_style import MINERAL_COLORS, DPI
 
 PROJ      = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LABEL_DIR = '/mnt/mrdr/categorized_mineral_units'
+LABEL_DIR = '/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units'
 VECTOR_DIR = os.path.join(PROJ, 'data', 'vector')
 REPORTS   = os.path.join(PROJ, 'reports')
 os.makedirs(REPORTS, exist_ok=True)
@@ -40,14 +40,14 @@ TILES = [
         'label_gpkg': os.path.join(LABEL_DIR, 'T0435.gpkg'),
         'label_layer': 'T0435',
         'pred_gpkg': os.path.join(VECTOR_DIR, 't0435_mrral_40s323_0327_4_mineral_map.gpkg'),
-        'img': '/mnt/mrdr/mc26/t0435_mrral_40s323_0327_4.img',
+        'img': '/Volumes/Mars_GIS/CRISM/MRDR/mc26/t0435_mrral_40s323_0327_4.img',
     },
     {
         'label': 'T0434',
         'label_gpkg': os.path.join(LABEL_DIR, 'T0434.gpkg'),
         'label_layer': 'T0434',
         'pred_gpkg': os.path.join(VECTOR_DIR, 't0434_mrral_40s318_0327_4_mineral_map.gpkg'),
-        'img': '/mnt/mrdr/mc26/t0434_mrral_40s318_0327_4.img',
+        'img': '/Volumes/Mars_GIS/CRISM/MRDR/mc26/t0434_mrral_40s318_0327_4.img',
     },
 ]
 

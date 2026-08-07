@@ -9,7 +9,7 @@ train a 6-class classifier with alteration as a primary output.
 
 This script:
   1. Loads data/mrral_pixels.parquet
-  2. Iterates every gpkg in /mnt/mrdr/categorized_mineral_units/
+  2. Iterates every gpkg in /Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units/
   3. For each polygon whose Category contains "alteration", maps
      (tile_id, polygon_id) → 1.0  (multi-label compatible with the mafic
      labels that may also be present)
@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 _GPKG_DIR_CANDIDATES = [
-    '/mnt/mrdr/categorized_mineral_units',                   # local workstation
+    '/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units',                   # local workstation
     os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                  'data', 'categorized_mineral_units'),       # HPC checkout
 ]

@@ -82,10 +82,10 @@ INVERSE = {c: 0.99 - 0.49 * v for c, v in VAL_AP.items()}
 THRESH = {c: max(INVERSE[c], GLOBAL_FLOOR) for c in VAL_AP}
 
 TILES = [
-    {'tid': 't1249', 'mrral': '/mnt/mrdr/mc13/t1249_mrral_20n073_0327_4.img'},
-    {'tid': 't1250', 'mrral': '/mnt/mrdr/mc13/t1250_mrral_20n078_0327_4.img'},
-    {'tid': 't1321', 'mrral': '/mnt/mrdr/mc13/t1321_mrral_25n073_0327_4.img'},
-    {'tid': 't1322', 'mrral': '/mnt/mrdr/mc13/t1322_mrral_25n078_0327_4.img'},
+    {'tid': 't1249', 'mrral': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1249_mrral_20n073_0327_4.img'},
+    {'tid': 't1250', 'mrral': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1250_mrral_20n078_0327_4.img'},
+    {'tid': 't1321', 'mrral': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1321_mrral_25n073_0327_4.img'},
+    {'tid': 't1322', 'mrral': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1322_mrral_25n078_0327_4.img'},
 ]
 
 MEDIAN_SIZE = 3

@@ -1,7 +1,7 @@
 """Polygon-level evaluation harness for CRISM mineral classifiers (Phase 0).
 
 Walks every labeled gpkg under ``--gpkg_dir`` (default
-``/mnt/mrdr/categorized_mineral_units``), rasterizes each polygon onto its
+``/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units``), rasterizes each polygon onto its
 source ``mrral`` tile, classifies every interior pixel with the supplied
 checkpoint, and aggregates per-polygon by **mean softmax probability**. Emits:
 
@@ -67,6 +67,8 @@ import pandas as pd
 import rasterio
 import rasterio.features
 import torch
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from device import get_device
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
@@ -96,7 +98,7 @@ N_CLASSES = 5
 #   - hellas: T0150..T0250 (north-Hellas + Hellas rim, picked from existing
 #             vector_argyre_v3 / build_hellas_dataset references)
 #   - cmu:    everything else (most of the catalog, named for the source
-#             gpkg dir /mnt/mrdr/categorized_mineral_units)
+#             gpkg dir /Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units)
 # Configurable via the --regions argument (overrides anything passed in).
 DEFAULT_REGIONS = {
     'argyre': {'t0431', 't0432', 't0433', 't0434', 't0435', 't0436', 't0437',
@@ -168,7 +170,7 @@ def tile_region(tile_id: str, regions: dict[str, set[str]]) -> str:
 
 # ---------------------------------------------------------- mrral discovery
 def build_mrral_map(cfg) -> dict[str, str]:
-    data_root = cfg.get('data_root', '/mnt/mrdr')
+    data_root = cfg.get('data_root', '/Volumes/Mars_GIS/CRISM/MRDR')
     hdrs = sorted(set(glob.glob(os.path.join(data_root, 'mc*', 't*mrral*.hdr'))
                       + glob.glob(os.path.join(data_root, 't*mrral*.hdr'))))
     return {os.path.basename(h).split('_mrral_')[0]: h.replace('.hdr', '.img')
@@ -864,7 +866,7 @@ def parse_regions_arg(s: str | None) -> dict[str, set[str]]:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--ckpt', required=True)
-    ap.add_argument('--gpkg_dir', default='/mnt/mrdr/categorized_mineral_units')
+    ap.add_argument('--gpkg_dir', default='/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units')
     ap.add_argument('--apply_relabels', default=None,
                     help='Path to a polygon-level relabels CSV '
                          '(schema: tile,polygon,new_label).')
@@ -891,7 +893,7 @@ def main():
     ap.add_argument('--no_probe_train', action='store_true',
                     help='Refuse to auto-train the probe; require --probe_head_path.')
     ap.add_argument('--extra_plag_dir',
-                    default='/mnt/mrdr/crism_classification/data/contrastive/extra_plag_roi',
+                    default='/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/data/contrastive/extra_plag_roi',
                     help='Directory with patches.npy + meta.parquet for plag '
                          'ROI augmentation during probe training.')
     # mrrsu_aux passthrough — placeholder
@@ -903,7 +905,7 @@ def main():
     cfg = load_config(cfg_path)
 
     if args.device == 'auto':
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        device = get_device()
     else:
         device = torch.device(args.device)
     print(f'device: {device}')

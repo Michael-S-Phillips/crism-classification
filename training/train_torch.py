@@ -6,6 +6,8 @@ from typing import Dict, Any, Optional, List
 import numpy as np
 import pandas as pd
 import torch
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from device import get_device
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -115,7 +117,7 @@ def train_torch_model(
     otherwise uses CRISMPixelDataset (MLP).
     """
     if device is None:
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device = get_device()
     device = torch.device(device)
 
     if use_wandb:

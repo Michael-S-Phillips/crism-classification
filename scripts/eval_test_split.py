@@ -16,6 +16,8 @@ import sys
 import numpy as np
 import pandas as pd
 import torch
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from device import get_device
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -83,7 +85,7 @@ def main():
     )
     model.load_state_dict(state)
     model.eval()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = get_device()
     model.to(device)
     print(f"device: {device}")
 

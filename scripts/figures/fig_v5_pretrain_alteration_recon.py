@@ -1,7 +1,7 @@
 """
 MAE reconstruction quality comparison on alteration-mineral pixels.
 
-Alteration polygons are sourced from /mnt/mrdr/categorized_mineral_units/T*.gpkg.
+Alteration polygons are sourced from /Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units/T*.gpkg.
 For three alteration pixels from DIFFERENT tiles, shows:
   - Col 1: clean center-pixel spectrum (reference, orange color)
   - Col 2: denoising MAE recon overlay
@@ -26,7 +26,7 @@ import numpy as np
 import torch
 
 # ── project root on sys.path ────────────────────────────────────────────────
-PROJECT_ROOT = '/mnt/mrdr/crism_classification'
+PROJECT_ROOT = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification'
 sys.path.insert(0, PROJECT_ROOT)
 
 from models.denoising_spatial_mae import DenoisingSpatialSpectralMAE
@@ -41,7 +41,7 @@ from _utils import (
 CKPT_DENOISING = os.path.join(PROJECT_ROOT, 'checkpoints', 'spatial_mae_denoising_128d_6l_best.pt')
 CKPT_SPEND = os.path.join(PROJECT_ROOT, 'checkpoints', 'spatial_mae_spend_128d_6l_best.pt')
 OUT_PATH = os.path.join(PROJECT_ROOT, 'reports', 'v5', 'fig_v5_pretrain_alteration_recon.png')
-GPKG_DIR = '/mnt/mrdr/categorized_mineral_units'
+GPKG_DIR = '/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units'
 
 # Center pixel flat index for a 7×7 patch (row 3, col 3 → 3*7+3 = 24)
 CENTER_IDX = 24
@@ -128,7 +128,7 @@ def find_alteration_pixels(n: int = 3):
     from shapely.geometry import mapping
 
     # Build mrral tile map
-    hdrs = sorted(glob.glob('/mnt/mrdr/mc*/t*mrral*.hdr'))
+    hdrs = sorted(glob.glob('/Volumes/Mars_GIS/CRISM/MRDR/mc*/t*mrral*.hdr'))
     tile_id_map = {}
     for h in hdrs:
         tid = os.path.basename(h).split('_mrral_')[0]

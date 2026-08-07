@@ -29,7 +29,7 @@ from shapely.geometry import shape as shapely_shape
 
 PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROBS_DIR = '/tmp/6cls_mc13'
-MC13_DIR  = '/mnt/mrdr/mc13'
+MC13_DIR  = '/Volumes/Mars_GIS/CRISM/MRDR/mc13'
 OUT_PATH  = os.path.join(PROJ, 'data', 'vector_mc13_6cls',
                          'mc13_6cls_categories.gpkg')
 WAVELENGTHS_SIDECAR = os.path.join(PROJ, 'data', 'vector_mc13_6cls',

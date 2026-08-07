@@ -34,7 +34,7 @@ from affine import Affine
 from pyproj import CRS
 from rasterio.enums import Resampling
 
-PROJECT_ROOT = '/mnt/mrdr/crism_classification'
+PROJECT_ROOT = '/Volumes/Mars_GIS/CRISM/MRDR/crism_classification'
 PROBS_DIR = '/tmp/v3_argyre'
 
 # Mars 2000 geographic CRS (degrees lon/lat)
@@ -49,13 +49,13 @@ COMMON_CRS = CRS.from_wkt(MARS_GEO_WKT)
 TILES_INFO = [
     {
         'tid':   't0434',
-        'mrral': '/mnt/mrdr/mc26/t0434_mrral_40s318_0327_4.img',
-        'mrrsu': '/mnt/mrdr/mc26/t0434_mrrsu_40s318_0327_4.img',
+        'mrral': '/Volumes/Mars_GIS/CRISM/MRDR/mc26/t0434_mrral_40s318_0327_4.img',
+        'mrrsu': '/Volumes/Mars_GIS/CRISM/MRDR/mc26/t0434_mrrsu_40s318_0327_4.img',
     },
     {
         'tid':   't0435',
-        'mrral': '/mnt/mrdr/mc26/t0435_mrral_40s323_0327_4.img',
-        'mrrsu': '/mnt/mrdr/mc26/t0435_mrrsu_40s323_0327_4.img',
+        'mrral': '/Volumes/Mars_GIS/CRISM/MRDR/mc26/t0435_mrral_40s323_0327_4.img',
+        'mrrsu': '/Volumes/Mars_GIS/CRISM/MRDR/mc26/t0435_mrrsu_40s323_0327_4.img',
     },
 ]
 

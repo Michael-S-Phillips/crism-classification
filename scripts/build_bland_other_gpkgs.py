@@ -4,7 +4,7 @@ Author single-polygon GPKGs for the 8 hand-picked bland tiles.
 Each output GPKG ('T<tile_num>.gpkg') has one row with Category="Other (High)"
 and a polygon covering the source mrral tile's full extent.
 
-Output dir: /mnt/mrdr/categorized_mineral_units/ (existing repository of
+Output dir: /Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units/ (existing repository of
 labeled-tile GPKGs the build pipeline consumes via find_mrral_pairs).
 
 Idempotent: skips files that read back as valid bland GPKGs; overwrites
@@ -25,17 +25,17 @@ from data.bland_tile_gpkg import build_bland_gpkg_for_tile
 
 
 BLAND_TILES = [
-    ('t1241', '/mnt/mrdr/mc12/t1241_mrral_20n033_0327_4.img'),
-    ('t1242', '/mnt/mrdr/mc12/t1242_mrral_20n038_0327_4.img'),
-    ('t1243', '/mnt/mrdr/mc12/t1243_mrral_20n043_0327_4.img'),
-    ('t1280', '/mnt/mrdr/mc09/t1280_mrral_20n228_0327_4.img'),
-    ('t1313', '/mnt/mrdr/mc12/t1313_mrral_25n033_0327_4.img'),
-    ('t1314', '/mnt/mrdr/mc12/t1314_mrral_25n038_0327_4.img'),
-    ('t1315', '/mnt/mrdr/mc12/t1315_mrral_25n043_0327_4.img'),
-    ('t1336', '/mnt/mrdr/mc15/t1336_mrral_25n148_0327_4.img'),
+    ('t1241', '/Volumes/Mars_GIS/CRISM/MRDR/mc12/t1241_mrral_20n033_0327_4.img'),
+    ('t1242', '/Volumes/Mars_GIS/CRISM/MRDR/mc12/t1242_mrral_20n038_0327_4.img'),
+    ('t1243', '/Volumes/Mars_GIS/CRISM/MRDR/mc12/t1243_mrral_20n043_0327_4.img'),
+    ('t1280', '/Volumes/Mars_GIS/CRISM/MRDR/mc09/t1280_mrral_20n228_0327_4.img'),
+    ('t1313', '/Volumes/Mars_GIS/CRISM/MRDR/mc12/t1313_mrral_25n033_0327_4.img'),
+    ('t1314', '/Volumes/Mars_GIS/CRISM/MRDR/mc12/t1314_mrral_25n038_0327_4.img'),
+    ('t1315', '/Volumes/Mars_GIS/CRISM/MRDR/mc12/t1315_mrral_25n043_0327_4.img'),
+    ('t1336', '/Volumes/Mars_GIS/CRISM/MRDR/mc15/t1336_mrral_25n148_0327_4.img'),
 ]
 
-DEFAULT_OUT_DIR = '/mnt/mrdr/categorized_mineral_units'
+DEFAULT_OUT_DIR = '/Volumes/Mars_GIS/CRISM/MRDR/categorized_mineral_units'
 
 
 def _is_valid_bland_gpkg(path: str) -> bool:

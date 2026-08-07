@@ -9,7 +9,7 @@ synthesizes augmented 7x7x59 patches (train-split only), and writes:
 Usage:
   conda run -n crism python scripts/build_synthetic_plag_patches.py \\
     --n_aug 300 \\
-    --mrral_hdr /mnt/mrdr/mc26/t0505_mrral_35s313_0327_4.hdr
+    --mrral_hdr /Volumes/Mars_GIS/CRISM/MRDR/mc26/t0505_mrral_35s313_0327_4.hdr
 """
 import argparse
 import glob
@@ -23,8 +23,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.synthetic_plag import build_synth_rows, interp_to_mrral_wavelengths
 
 LIBS = [
-    ("/mnt/mrdr/plagioclase-targeted/unratioed_plag_highconfidence.hdr", "High"),
-    ("/mnt/mrdr/plagioclase-targeted/unratioed_plag_moderateconfidence_w_2micron.hdr",
+    ("/Volumes/Mars_GIS/CRISM/MRDR/plagioclase-targeted/unratioed_plag_highconfidence.hdr", "High"),
+    ("/Volumes/Mars_GIS/CRISM/MRDR/plagioclase-targeted/unratioed_plag_moderateconfidence_w_2micron.hdr",
      "Moderate"),
 ]
 
@@ -52,11 +52,11 @@ def main():
     ap.add_argument("--mrral_hdr", type=str, default=None,
                     help="any mrral .hdr to read the 59 target wavelengths from")
     ap.add_argument("--output_dir", type=str,
-                    default="/mnt/mrdr/crism_classification/data/patch_cache")
+                    default="/Volumes/Mars_GIS/CRISM/MRDR/crism_classification/data/patch_cache")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
-    mrral_hdr = args.mrral_hdr or sorted(glob.glob("/mnt/mrdr/mc*/t*_mrral_*.hdr"))[0]
+    mrral_hdr = args.mrral_hdr or sorted(glob.glob("/Volumes/Mars_GIS/CRISM/MRDR/mc*/t*_mrral_*.hdr"))[0]
     target_wl = load_target_wavelengths(mrral_hdr)
     print(f"target wavelengths: {len(target_wl)} bands, "
           f"{target_wl[0]:.1f}-{target_wl[-1]:.1f} nm (from {mrral_hdr})")

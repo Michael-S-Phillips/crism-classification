@@ -34,13 +34,13 @@ PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VECTOR_DIR = os.path.join(PROJ, 'data', 'vector_v3_denoising')
 
 TILES = [
-    {'img': '/mnt/mrdr/mc13/t1249_mrral_20n073_0327_4.img',
+    {'img': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1249_mrral_20n073_0327_4.img',
      'gpkg': os.path.join(VECTOR_DIR, 't1249_mrral_20n073_0327_4_mineral_map.gpkg')},
-    {'img': '/mnt/mrdr/mc13/t1250_mrral_20n078_0327_4.img',
+    {'img': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1250_mrral_20n078_0327_4.img',
      'gpkg': os.path.join(VECTOR_DIR, 't1250_mrral_20n078_0327_4_mineral_map.gpkg')},
-    {'img': '/mnt/mrdr/mc13/t1321_mrral_25n073_0327_4.img',
+    {'img': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1321_mrral_25n073_0327_4.img',
      'gpkg': os.path.join(VECTOR_DIR, 't1321_mrral_25n073_0327_4_mineral_map.gpkg')},
-    {'img': '/mnt/mrdr/mc13/t1322_mrral_25n078_0327_4.img',
+    {'img': '/Volumes/Mars_GIS/CRISM/MRDR/mc13/t1322_mrral_25n078_0327_4.img',
      'gpkg': os.path.join(VECTOR_DIR, 't1322_mrral_25n078_0327_4_mineral_map.gpkg')},
 ]
 

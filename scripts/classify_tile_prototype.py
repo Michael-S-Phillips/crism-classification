@@ -12,13 +12,13 @@ in a side-by-side figure.
 Usage:
     # Single encoder
     conda run -n crism python scripts/classify_tile_prototype.py \\
-        --tile /mnt/mrdr/mc26/t0435_mrral_40s323_0327_4.img \\
+        --tile /Volumes/Mars_GIS/CRISM/MRDR/mc26/t0435_mrral_40s323_0327_4.img \\
         --proto_a data/prototypes/proto_finetuned_all.npz \\
         --save_probs /tmp/t0435_proto_finetuned_probs.npz
 
     # Comparison (proto_a vs proto_b, optional supervised baseline)
     conda run -n crism python scripts/classify_tile_prototype.py \\
-        --tile /mnt/mrdr/mc26/t0435_mrral_40s323_0327_4.img \\
+        --tile /Volumes/Mars_GIS/CRISM/MRDR/mc26/t0435_mrral_40s323_0327_4.img \\
         --proto_a data/prototypes/proto_finetuned_all.npz \\
         --proto_b data/prototypes/proto_mae_all.npz \\
         --supervised_probs /tmp/t0435_mrral_40s323_0327_4_probs.npz \\
@@ -32,6 +32,8 @@ from typing import List, Tuple
 
 import numpy as np
 import torch
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from device import get_device
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -329,7 +331,7 @@ def main():
     )
     args = parser.parse_args()
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = get_device()
     tile_id = os.path.splitext(os.path.basename(args.tile))[0]
 
     if args.out is None:
