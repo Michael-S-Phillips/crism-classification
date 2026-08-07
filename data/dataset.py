@@ -27,6 +27,11 @@ LABEL_COLS_7CLASS = ['olivine', 'lcp', 'hcp', 'plagioclase', 'bland',
 # pyx (pyroxene) 6-class label set: lcp and hcp merged into a single 'pyx' class
 # for tasks requiring a unified pyroxene mineral class.
 LABEL_COLS_PYX = ['olivine', 'pyx', 'plagioclase', 'bland', 'alteration', 'junk']
+# pyx 5-class label set for HAND-LABELED-ONLY training (no review data): the base
+# parquet's native classes with lcp+hcp merged into pyx. 'bland'/'junk' are
+# review-derived and absent here, so 'other' stays as the non-mineral catch-all.
+# Train with --pyx_alt. All five columns are produced by _collapse_labels.
+LABEL_COLS_PYX_ALT = ['olivine', 'pyx', 'plagioclase', 'other', 'alteration']
 
 # Ordered list of all known label sets, indexed by head width.
 _LABEL_COLS_BY_N = {

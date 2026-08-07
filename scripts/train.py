@@ -77,6 +77,12 @@ def _build_parser():
                              '(olivine/pyx/plagioclase/bland/alteration/junk); '
                              'pyx = max(lcp,hcp). Mutually exclusive with '
                              '--seven_class / --with_alteration.')
+    parser.add_argument('--pyx_alt', action='store_true',
+                        help='5-class pyroxene-merged vocab for HAND-LABELED-ONLY '
+                             'training (olivine/pyx/plagioclase/other/alteration); '
+                             'pyx = max(lcp,hcp). Uses the base parquet native '
+                             'classes (no review-derived bland/junk). Mutually '
+                             'exclusive with --seven_class/--with_alteration/--pyx.')
     parser.add_argument('--use_pos_weight', action='store_true',
                         help='Use pos_weight in loss to upweight rare classes')
     parser.add_argument('--weight_decay', type=float, default=1e-4,
@@ -233,6 +239,9 @@ def build_args():
         parser.error('--seven_class and --with_alteration are mutually exclusive.')
     if args.pyx and (args.seven_class or args.with_alteration):
         parser.error('--pyx is mutually exclusive with --seven_class/--with_alteration.')
+    if args.pyx_alt and (args.seven_class or args.with_alteration or args.pyx):
+        parser.error('--pyx_alt is mutually exclusive with '
+                     '--seven_class/--with_alteration/--pyx.')
     if args.brightness_aux and not args.continuum_removed:
         parser.error('--brightness_aux requires --continuum_removed.')
     if args.brightness_aux and args.model != 'spatial_vit_aux':
@@ -264,6 +273,11 @@ def build_args():
         data.dataset.LABEL_COLS = list(data.dataset.LABEL_COLS_PYX)
         args.n_classes = 6
         logging.info('pyx mode: LABEL_COLS = %s', data.dataset.LABEL_COLS)
+    elif args.pyx_alt:
+        import data.dataset
+        data.dataset.LABEL_COLS = list(data.dataset.LABEL_COLS_PYX_ALT)
+        args.n_classes = 5
+        logging.info('pyx_alt mode: LABEL_COLS = %s', data.dataset.LABEL_COLS)
 
     return args
 

@@ -60,6 +60,13 @@ PYX_MODE = False
 _CLASS_NAMES_PYX = ['olivine', 'pyx', 'plagioclase', 'bland', 'alteration', 'junk']
 _CLASS_COLORS_PYX = ['#e6194b', '#0000ff', '#f58231', '#aaaaaa', '#cc8899', '#808080']
 
+# pyx_alt vocab: hand-labeled-only 5-class (olivine/pyx/plagioclase/other/alteration).
+# A 5-class head is otherwise assumed to be the default lcp/hcp vocab; --pyx_alt
+# sets PYX_ALT_MODE=True before the checkpoint loads to disambiguate.
+PYX_ALT_MODE = False
+_CLASS_NAMES_PYX_ALT = ['olivine', 'pyx', 'plagioclase', 'other', 'alteration']
+_CLASS_COLORS_PYX_ALT = ['#e6194b', '#0000ff', '#f58231', '#aaaaaa', '#cc8899']
+
 
 def _set_n_classes(state):
     """Rebind N_CLASSES / CLASS_NAMES / CLASS_COLORS from a checkpoint
@@ -75,6 +82,10 @@ def _set_n_classes(state):
     if head_w is None:
         raise KeyError(f'no head.weight in checkpoint — not a classifier')
     n = int(head_w.shape[0])
+    if n == 5 and PYX_ALT_MODE:
+        N_CLASSES, CLASS_NAMES, CLASS_COLORS = 5, _CLASS_NAMES_PYX_ALT, _CLASS_COLORS_PYX_ALT
+        print(f'  checkpoint head: 5-class (pyx_alt) {CLASS_NAMES}')
+        return
     if n == N_CLASSES:
         return
     if n == 6 and PYX_MODE:
@@ -528,6 +539,11 @@ def main():
                              '_CLASS_NAMES_PYX instead of the alteration-6 default '
                              '(_CLASS_NAMES_6). Must be set before the checkpoint is '
                              'loaded.')
+    parser.add_argument('--pyx_alt', action='store_true',
+                        help='Checkpoint uses the hand-labeled 5-class pyx vocab '
+                             "(olivine/pyx/plagioclase/other/alteration). Forces a "
+                             '5-class head to _CLASS_NAMES_PYX_ALT instead of the '
+                             'default lcp/hcp vocab. Must be set before load.')
     args = parser.parse_args()
 
     if args.brightness_aux and not args.continuum_removed:
@@ -539,6 +555,9 @@ def main():
     if args.pyx:
         global PYX_MODE
         PYX_MODE = True
+    if args.pyx_alt:
+        global PYX_ALT_MODE
+        PYX_ALT_MODE = True
 
     tile_name = os.path.splitext(os.path.basename(args.tile))[0]
     device = get_device()

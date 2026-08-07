@@ -67,8 +67,10 @@ COMMON_CRS = CRS.from_wkt(MARS_GEO_WKT)
 PROB_CHANNELS = ['olivine', 'lcp', 'hcp', 'plagioclase', 'other', 'alteration']
 _PROB_CHANNELS_7 = ['olivine', 'lcp', 'hcp', 'plagioclase', 'bland', 'alteration', 'junk']
 _PROB_CHANNELS_PYX = ['olivine', 'pyx', 'plagioclase', 'bland', 'alteration', 'junk']
+_PROB_CHANNELS_PYX_ALT = ['olivine', 'pyx', 'plagioclase', 'other', 'alteration']
 MINERAL_NAMES = ['olivine', 'lcp', 'hcp', 'plagioclase', 'alteration']
 _MINERAL_NAMES_PYX = ['olivine', 'pyx', 'plagioclase', 'alteration']
+_MINERAL_NAMES_PYX_ALT = ['olivine', 'pyx', 'plagioclase', 'alteration']
 
 UNIFORM_THRESHOLDS = [0.50, 0.60, 0.75, 0.85, 0.90, 0.95, 0.97, 0.99]
 PER_MINERAL_THRESHOLDS = {m: list(UNIFORM_THRESHOLDS) for m in MINERAL_NAMES}
@@ -109,10 +111,15 @@ def _check_npz_channels(data, expected_channels):
         MINERAL_NAMES = _MINERAL_NAMES_PYX
         PER_MINERAL_THRESHOLDS = {m: list(UNIFORM_THRESHOLDS) for m in MINERAL_NAMES}
         return
+    if names == _PROB_CHANNELS_PYX_ALT:
+        PROB_CHANNELS = _PROB_CHANNELS_PYX_ALT
+        MINERAL_NAMES = _MINERAL_NAMES_PYX_ALT
+        PER_MINERAL_THRESHOLDS = {m: list(UNIFORM_THRESHOLDS) for m in MINERAL_NAMES}
+        return
     raise SystemExit(
         f'npz class_names {names} != expected channel orders '
         f'{list(expected_channels) if expected_channels is not None else None}, '
-        f'{_PROB_CHANNELS_7}, or {_PROB_CHANNELS_PYX}.')
+        f'{_PROB_CHANNELS_7}, {_PROB_CHANNELS_PYX}, or {_PROB_CHANNELS_PYX_ALT}.')
 
 
 def discover_tiles() -> list[dict]:
