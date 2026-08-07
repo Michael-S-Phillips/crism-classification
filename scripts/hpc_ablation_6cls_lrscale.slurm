@@ -38,12 +38,14 @@
 # (post-audit configuration), MTRDR plag synth rows, champion warm-start.
 
 WORK_DIR=/groups/sbyrne/phillipsm/crism_classification
-CKPT_DIR=${WORK_DIR}/checkpoints
+DATA_ROOT=/xdisk/sbyrne/phillipsm/CRISM_MRDR          # all bulk data (xdisk)
+DATA_DIR=${DATA_ROOT}/crism_classification/data
+CKPT_DIR=${DATA_ROOT}/crism_classification/checkpoints
 ENCODER=${CKPT_DIR}/ft_review_mtrdr_best.pt
-CACHE_DIR=${WORK_DIR}/data/patch_cache_v2_only
-PARQUET=${WORK_DIR}/data/mrral_pixels_with_review_v2.parquet
-MTRDR_PATCHES=${WORK_DIR}/data/contrastive/extra_plag_roi/patches.npy
-MTRDR_ROWS=${WORK_DIR}/data/mtrdr_plag_rows.parquet
+CACHE_DIR=${DATA_DIR}/patch_cache_v2_only
+PARQUET=${DATA_DIR}/mrral_pixels_with_review_v2.parquet
+MTRDR_PATCHES=${DATA_DIR}/contrastive/extra_plag_roi/patches.npy
+MTRDR_ROWS=${DATA_DIR}/mtrdr_plag_rows.parquet
 
 RUN_NAMES=("ft_6cls_lrscale001" "ft_6cls_lrscale01" "ft_6cls_headlr2e3")
 LR_ARGS=("--lr 5e-4 --encoder_lr_scale 0.01"
@@ -56,15 +58,11 @@ THIS_LR_ARGS=${LR_ARGS[$SLURM_ARRAY_TASK_ID]}
 PYTHON=/groups/sbyrne/phillipsm/micromamba/envs/crism/bin/python
 
 cd "$WORK_DIR"
-mkdir -p logs checkpoints
+mkdir -p logs
 
 if [ ! -f config.local.yaml ]; then
     cat > config.local.yaml <<EOF
-data_root: /xdisk/sbyrne/phillipsm/CRISM_MRDR
-checkpoint_dir: ${CKPT_DIR}
-checkpoints_dir: ${CKPT_DIR}
-output_dir: ${WORK_DIR}/data
-patch_cache_dir: ${WORK_DIR}/data/patch_cache
+data_root: ${DATA_ROOT}
 EOF
 fi
 

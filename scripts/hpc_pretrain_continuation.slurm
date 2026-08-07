@@ -19,11 +19,13 @@
 # Spec context: docs/superpowers/specs/2026-05-18-pretrain-patch-cache-design.md
 
 WORK_DIR=/groups/sbyrne/phillipsm/crism_classification
+DATA_ROOT=/xdisk/sbyrne/phillipsm/CRISM_MRDR          # all bulk data (xdisk)
+DATA_DIR=${DATA_ROOT}/crism_classification/data
 PYTHON=/groups/sbyrne/phillipsm/micromamba/envs/crism/bin/python
 
 cd "$WORK_DIR"
 
-mkdir -p logs checkpoints
+mkdir -p logs
 
 echo "=== Continuation pretrain start: $(date) ==="
 
@@ -48,7 +50,7 @@ ${PYTHON} -u scripts/pretrain_spatial_mae.py \
     --n_layers 6 \
     --decoder_dim 64 \
     --mask_ratio 0.75 \
-    --resume "${WORK_DIR}/checkpoints/spatial_mae_128d_6l_march_best.pt" \
+    --resume "${DATA_ROOT}/crism_classification/checkpoints/spatial_mae_128d_6l_march_best.pt" \
     --run_name spatial_mae_128d_6l_cont
 
 echo "=== Continuation pretrain end: $(date) ==="

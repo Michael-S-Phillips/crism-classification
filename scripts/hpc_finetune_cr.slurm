@@ -27,15 +27,17 @@
 # affect. Re-add synth in a follow-up once CR is validated.
 
 WORK_DIR=/groups/sbyrne/phillipsm/crism_classification
-CKPT_DIR=${WORK_DIR}/checkpoints
+DATA_ROOT=/xdisk/sbyrne/phillipsm/CRISM_MRDR          # all bulk data (xdisk)
+DATA_DIR=${DATA_ROOT}/crism_classification/data
+CKPT_DIR=${DATA_ROOT}/crism_classification/checkpoints
 PYTHON=/groups/sbyrne/phillipsm/micromamba/envs/crism/bin/python
 
 # CR-pretrain winner: 256d beat 128d on the linear probe (val_mAP_core 0.596 vs
 # 0.541, 2026-07-27) — a clear 5.6 pp margin, so use the 256d encoder.
 ENCODER=${CKPT_DIR}/spatial_mae_cr_denoising_256d_6l_best.pt
 EMBED_DIM=256
-CACHE_DIR=${WORK_DIR}/data/patch_cache_7cls_cr          # built by build_cr_labeled_cache.py
-PARQUET=${WORK_DIR}/data/mrral_pixels_7cls.parquet
+CACHE_DIR=${DATA_DIR}/patch_cache_7cls_cr          # built by build_cr_labeled_cache.py
+PARQUET=${DATA_DIR}/mrral_pixels_7cls.parquet
 
 RUN_NAMES=("ft_7cls_cr_lrscale0001" "ft_7cls_cr_lrscale001" "ft_7cls_cr_lrscale01")
 LR_SCALES=("0.001" "0.01" "0.1")
@@ -43,15 +45,11 @@ RUN_NAME=${RUN_NAMES[$SLURM_ARRAY_TASK_ID]}
 LR_SCALE=${LR_SCALES[$SLURM_ARRAY_TASK_ID]}
 
 cd "$WORK_DIR"
-mkdir -p logs checkpoints
+mkdir -p logs
 
 if [ ! -f config.local.yaml ]; then
     cat > config.local.yaml <<EOF
-data_root: /xdisk/sbyrne/phillipsm/CRISM_MRDR
-checkpoint_dir: ${CKPT_DIR}
-checkpoints_dir: ${CKPT_DIR}
-output_dir: ${WORK_DIR}/data
-patch_cache_dir: ${WORK_DIR}/data/patch_cache
+data_root: ${DATA_ROOT}
 EOF
 fi
 

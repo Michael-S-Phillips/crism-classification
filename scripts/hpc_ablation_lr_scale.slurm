@@ -13,9 +13,11 @@
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 WORK_DIR=/groups/sbyrne/phillipsm/crism_classification
-CKPT_DIR=${WORK_DIR}/checkpoints
+DATA_ROOT=/xdisk/sbyrne/phillipsm/CRISM_MRDR          # all bulk data (xdisk)
+DATA_DIR=${DATA_ROOT}/crism_classification/data
+CKPT_DIR=${DATA_ROOT}/crism_classification/checkpoints
 PRETRAIN_CKPT=${CKPT_DIR}/spatial_mae_128d_6l_best.pt
-CACHE_DIR=${WORK_DIR}/data/patch_cache
+CACHE_DIR=${DATA_DIR}/patch_cache
 
 # ── Condition arrays (task ID 0-3) ───────────────────────────────────────────
 RUN_NAMES=("spvit_frozen" "spvit_lrscale0001" "spvit_lrscale001" "spvit_lrscale01")
@@ -30,8 +32,7 @@ cd "$WORK_DIR"
 # ── Write config.local.yaml (guard avoids concurrent-task race on array jobs) ─
 if [ ! -f config.local.yaml ]; then
     cat > config.local.yaml <<EOF
-data_root: ${WORK_DIR}/data
-checkpoint_dir: ${CKPT_DIR}
+data_root: ${DATA_ROOT}
 EOF
 fi
 
@@ -41,7 +42,7 @@ if [ ! -f "${CACHE_DIR}/mrral_train_patches_p7.npy" ]; then
     exit 1
 fi
 
-mkdir -p logs checkpoints
+mkdir -p logs
 
 # ── Training ─────────────────────────────────────────────────────────────────
 echo "=== LR scale ablation: ${RUN_NAMES[$SLURM_ARRAY_TASK_ID]} (task $SLURM_ARRAY_TASK_ID) ==="

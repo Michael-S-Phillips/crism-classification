@@ -26,7 +26,7 @@
 # built from the BASE parquet's raw cache (see PREREQUISITES below).
 #
 # Storage layout (harmonized): code + conda env in /groups; all bulk data
-# (tiles, parquets, caches, checkpoints, outputs) under DATA_HOME on xdisk.
+# (tiles, parquets, caches, checkpoints, outputs) under DATA_ROOT on xdisk.
 #
 # Submit:  sbatch scripts/hpc_finetune_pyx_alt_cr.slurm
 # Floor-test each arm with:
@@ -34,15 +34,16 @@
 #     bash scripts/floor_test.sh <ckpt> <tag>
 
 WORK_DIR=/groups/sbyrne/phillipsm/crism_classification          # code (git repo)
-DATA_HOME=/xdisk/sbyrne/phillipsm/CRISM_MRDR                    # bulk data (xdisk)
+DATA_ROOT=/xdisk/sbyrne/phillipsm/CRISM_MRDR                   # all bulk data (xdisk)
 PYTHON=/groups/sbyrne/phillipsm/micromamba/envs/crism/bin/python
 
-CKPT_DIR=${DATA_HOME}/checkpoints
+CKPT_DIR=${DATA_ROOT}/crism_classification/checkpoints
+DATA_DIR=${DATA_ROOT}/crism_classification/data
 ENCODER=${CKPT_DIR}/spatial_mae_cr_denoising_256d_6l_best.pt
 EMBED_DIM=256
-PARQUET=${DATA_HOME}/data/mrral_pixels.parquet                 # BASE, hand-labeled only
-RAW_CACHE=${DATA_HOME}/data/patch_cache                        # raw cache aligned to base parquet
-CACHE_DIR=${DATA_HOME}/data/patch_cache_base_cr                # CR labeled cache (built below)
+PARQUET=${DATA_DIR}/mrral_pixels.parquet                       # BASE, hand-labeled only
+RAW_CACHE=${DATA_DIR}/patch_cache                              # raw cache aligned to base parquet
+CACHE_DIR=${DATA_DIR}/patch_cache_base_cr                      # CR labeled cache (built below)
 
 RUN_NAMES=("ft_5cls_pyxalt_cr_lrscale0001" "ft_5cls_pyxalt_cr_lrscale001" "ft_5cls_pyxalt_cr_lrscale01")
 LR_SCALES=("0.001" "0.01" "0.1")
@@ -52,14 +53,11 @@ LR_SCALE=${LR_SCALES[$SLURM_ARRAY_TASK_ID]}
 cd "$WORK_DIR"
 mkdir -p logs
 
-# Machine-local config: all derived paths point at DATA_HOME (xdisk), not /groups.
+# Only data_root is machine-specific; config_loader derives checkpoints_dir,
+# output_dir, patch_cache_dir, gpkg_dir from it (all under DATA_ROOT).
 if [ ! -f config.local.yaml ]; then
     cat > config.local.yaml <<EOF
-data_root: ${DATA_HOME}
-checkpoint_dir: ${CKPT_DIR}
-checkpoints_dir: ${CKPT_DIR}
-output_dir: ${DATA_HOME}/data
-patch_cache_dir: ${DATA_HOME}/data/patch_cache
+data_root: ${DATA_ROOT}
 EOF
 fi
 

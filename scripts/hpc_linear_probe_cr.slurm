@@ -17,12 +17,14 @@
 # Keep the 256d encoder only if it beats 128d on val_mAP_core.
 
 WORK_DIR=/groups/sbyrne/phillipsm/crism_classification
+DATA_ROOT=/xdisk/sbyrne/phillipsm/CRISM_MRDR          # all bulk data (xdisk)
+DATA_DIR=${DATA_ROOT}/crism_classification/data
 PYTHON=/groups/sbyrne/phillipsm/micromamba/envs/crism/bin/python
 
 cd "$WORK_DIR"
 mkdir -p logs
 
-CACHE_DIR=${WORK_DIR}/data/patch_cache_7cls_cr
+CACHE_DIR=${DATA_DIR}/patch_cache_7cls_cr
 if [ ! -f "${CACHE_DIR}/mrral_train_patches_p7_brightness.npy" ]; then
     echo "ERROR: CR labeled cache/brightness sidecar missing at $CACHE_DIR"
     echo "Build it: sbatch scripts/hpc_build_cr_labeled_cache.slurm"
@@ -30,12 +32,12 @@ if [ ! -f "${CACHE_DIR}/mrral_train_patches_p7_brightness.npy" ]; then
 fi
 
 for D in 128 256; do
-    CKPT=${WORK_DIR}/checkpoints/spatial_mae_cr_denoising_${D}d_6l_best.pt
+    CKPT=${DATA_ROOT}/crism_classification/checkpoints/spatial_mae_cr_denoising_${D}d_6l_best.pt
     if [ ! -f "$CKPT" ]; then echo "ERROR: missing $CKPT"; exit 1; fi
     echo "==================== embed_dim $D ===================="
     ${PYTHON} -u scripts/linear_probe_encoder.py \
         --encoder_ckpt "$CKPT" \
-        --mrral_parquets "${WORK_DIR}/data/mrral_pixels_7cls.parquet" \
+        --mrral_parquets "${DATA_DIR}/mrral_pixels_7cls.parquet" \
         --patch_cache_dir "$CACHE_DIR" \
         --embed_dim $D --n_layers 6 --n_heads 4 --patch_size 7 \
         --seven_class --continuum_removed --cache_is_cr --brightness_aux

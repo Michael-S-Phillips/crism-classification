@@ -23,6 +23,8 @@
 # Keep the 256 encoder only if it wins the linear probe.
 
 WORK_DIR=/groups/sbyrne/phillipsm/crism_classification
+DATA_ROOT=/xdisk/sbyrne/phillipsm/CRISM_MRDR          # all bulk data (xdisk)
+DATA_DIR=${DATA_ROOT}/crism_classification/data
 PYTHON=/groups/sbyrne/phillipsm/micromamba/envs/crism/bin/python
 CR_CACHE=/xdisk/sbyrne/phillipsm/crism_patch_cache_cr   # built by build_global_patch_cache.py --continuum_removed
 
@@ -31,16 +33,11 @@ EMBED_DIM=${EMBED_DIMS[$SLURM_ARRAY_TASK_ID]}
 RUN_NAME=spatial_mae_cr_denoising_${EMBED_DIM}d_6l
 
 cd "$WORK_DIR"
-mkdir -p logs checkpoints
+mkdir -p logs
 
 # Point the global cache at the CR cache for this run.
 cat > config.local.yaml <<EOF
-data_root: /xdisk/sbyrne/phillipsm/CRISM_MRDR
-checkpoint_dir: ${WORK_DIR}/checkpoints
-checkpoints_dir: ${WORK_DIR}/checkpoints
-output_dir: ${WORK_DIR}/data
-patch_cache_dir: ${WORK_DIR}/data/patch_cache
-global_patch_cache_dir: ${CR_CACHE}
+data_root: ${DATA_ROOT}
 EOF
 
 if [ ! -d "$CR_CACHE" ] || [ -z "$(ls -A "$CR_CACHE"/global_patches_*.npy 2>/dev/null)" ]; then

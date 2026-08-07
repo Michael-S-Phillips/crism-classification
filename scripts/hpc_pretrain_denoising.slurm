@@ -15,6 +15,8 @@
 # Spec: docs/superpowers/specs/2026-05-16-denoising-mae-design.md
 
 WORK_DIR=/groups/sbyrne/phillipsm/crism_classification
+DATA_ROOT=/xdisk/sbyrne/phillipsm/CRISM_MRDR          # all bulk data (xdisk)
+DATA_DIR=${DATA_ROOT}/crism_classification/data
 PYTHON=/groups/sbyrne/phillipsm/micromamba/envs/crism/bin/python
 
 cd "$WORK_DIR"
@@ -22,16 +24,11 @@ cd "$WORK_DIR"
 # Make sure config.local.yaml points at the right tile dir
 if [ ! -f config.local.yaml ]; then
     cat > config.local.yaml <<EOF
-data_root: /xdisk/sbyrne/phillipsm/CRISM_MRDR
-checkpoint_dir: ${WORK_DIR}/checkpoints
-checkpoints_dir: ${WORK_DIR}/checkpoints
-output_dir: ${WORK_DIR}/data
-patch_cache_dir: ${WORK_DIR}/data/patch_cache
-global_patch_cache_dir: /xdisk/sbyrne/phillipsm/crism_patch_cache
+data_root: ${DATA_ROOT}
 EOF
 fi
 
-mkdir -p logs checkpoints
+mkdir -p logs
 
 echo "=== Denoising MAE pre-training start: $(date) ==="
 

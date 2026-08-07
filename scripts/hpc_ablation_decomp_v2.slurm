@@ -17,9 +17,11 @@
 # Spec: docs/superpowers/specs/2026-05-15-adversarial-decomposition-design.md
 
 WORK_DIR=/groups/sbyrne/phillipsm/crism_classification
-CKPT_DIR=${WORK_DIR}/checkpoints
+DATA_ROOT=/xdisk/sbyrne/phillipsm/CRISM_MRDR          # all bulk data (xdisk)
+DATA_DIR=${DATA_ROOT}/crism_classification/data
+CKPT_DIR=${DATA_ROOT}/crism_classification/checkpoints
 PRETRAIN_CKPT=${CKPT_DIR}/spatial_mae_128d_6l_best.pt
-CACHE_DIR=${WORK_DIR}/data/patch_cache
+CACHE_DIR=${DATA_DIR}/patch_cache
 
 RUN_NAMES=("spvit_decomp_v2_lrscale0001" "spvit_decomp_v2_lrscale001" "spvit_decomp_v2_lrscale01")
 LR_SCALE_ARGS=("--encoder_lr_scale 0.001" "--encoder_lr_scale 0.01" "--encoder_lr_scale 0.1")
@@ -31,11 +33,7 @@ cd "$WORK_DIR"
 
 if [ ! -f config.local.yaml ]; then
     cat > config.local.yaml <<EOF
-data_root: /xdisk/sbyrne/phillipsm/CRISM_MRDR
-checkpoint_dir: ${CKPT_DIR}
-checkpoints_dir: ${CKPT_DIR}
-output_dir: ${WORK_DIR}/data
-patch_cache_dir: ${WORK_DIR}/data/patch_cache
+data_root: ${DATA_ROOT}
 EOF
 fi
 
@@ -44,7 +42,7 @@ if [ ! -f "${CACHE_DIR}/mrral_train_patches_p7.npy" ]; then
     exit 1
 fi
 
-mkdir -p logs checkpoints
+mkdir -p logs
 
 echo "=== decomp_v2 ablation: ${RUN_NAMES[$SLURM_ARRAY_TASK_ID]} (task $SLURM_ARRAY_TASK_ID) ==="
 ${PYTHON} -u scripts/train.py \

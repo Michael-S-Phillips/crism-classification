@@ -14,9 +14,11 @@
 # Run this before scripts/hpc_ablation_lr_scale_v4.slurm.
 
 WORK_DIR=/groups/sbyrne/phillipsm/crism_classification
+DATA_ROOT=/xdisk/sbyrne/phillipsm/CRISM_MRDR          # all bulk data (xdisk)
+DATA_DIR=${DATA_ROOT}/crism_classification/data
 PYTHON=/groups/sbyrne/phillipsm/micromamba/envs/crism/bin/python
 
 cd "$WORK_DIR"
-mkdir -p logs data/patch_cache
+mkdir -p logs
 
 ${PYTHON} -u scripts/cache_mrral_patches.py --patch_size 7

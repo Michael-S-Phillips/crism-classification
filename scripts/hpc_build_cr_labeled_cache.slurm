@@ -18,13 +18,15 @@
 # tight, point --out_dir at /xdisk and update CACHE_DIR in hpc_finetune_cr.slurm.
 
 WORK_DIR=/groups/sbyrne/phillipsm/crism_classification
+DATA_ROOT=/xdisk/sbyrne/phillipsm/CRISM_MRDR          # all bulk data (xdisk)
+DATA_DIR=${DATA_ROOT}/crism_classification/data
 PYTHON=/groups/sbyrne/phillipsm/micromamba/envs/crism/bin/python
 
 cd "$WORK_DIR"
 mkdir -p logs
 
-RAW_DIR=${WORK_DIR}/data/patch_cache_7cls
-OUT_DIR=${WORK_DIR}/data/patch_cache_7cls_cr
+RAW_DIR=${DATA_DIR}/patch_cache_7cls
+OUT_DIR=${DATA_DIR}/patch_cache_7cls_cr
 
 if [ ! -d "$RAW_DIR" ]; then
     echo "ERROR: raw labeled cache missing at $RAW_DIR (run hpc_build_7cls_data.slurm first)"

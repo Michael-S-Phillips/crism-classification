@@ -15,6 +15,8 @@
 # Spec: docs/superpowers/specs/2026-05-18-pretrain-patch-cache-design.md
 
 WORK_DIR=/groups/sbyrne/phillipsm/crism_classification
+DATA_ROOT=/xdisk/sbyrne/phillipsm/CRISM_MRDR          # all bulk data (xdisk)
+DATA_DIR=${DATA_ROOT}/crism_classification/data
 PYTHON=/groups/sbyrne/phillipsm/micromamba/envs/crism/bin/python
 OUTPUT=/xdisk/sbyrne/phillipsm/crism_patch_cache
 
@@ -23,16 +25,11 @@ cd "$WORK_DIR"
 # Make sure config.local.yaml points at the data on /xdisk.
 if [ ! -f config.local.yaml ]; then
     cat > config.local.yaml <<EOF
-data_root: /xdisk/sbyrne/phillipsm/CRISM_MRDR
-checkpoint_dir: ${WORK_DIR}/checkpoints
-checkpoints_dir: ${WORK_DIR}/checkpoints
-output_dir: ${WORK_DIR}/data
-patch_cache_dir: ${WORK_DIR}/data/patch_cache
-global_patch_cache_dir: ${OUTPUT}
+data_root: ${DATA_ROOT}
 EOF
 fi
 
-mkdir -p logs "$OUTPUT"
+mkdir -p logs
 
 echo "=== Global patch cache build start: $(date) ==="
 

@@ -19,21 +19,18 @@
 # corruption into the CR cache and every downstream pretrain.
 
 WORK_DIR=/groups/sbyrne/phillipsm/crism_classification
+DATA_ROOT=/xdisk/sbyrne/phillipsm/CRISM_MRDR          # all bulk data (xdisk)
+DATA_DIR=${DATA_ROOT}/crism_classification/data
 PYTHON=/groups/sbyrne/phillipsm/micromamba/envs/crism/bin/python
 OUTPUT=/xdisk/sbyrne/phillipsm/crism_patch_cache_cr
 
 cd "$WORK_DIR"
 
 cat > config.local.yaml <<EOF
-data_root: /xdisk/sbyrne/phillipsm/CRISM_MRDR
-checkpoint_dir: ${WORK_DIR}/checkpoints
-checkpoints_dir: ${WORK_DIR}/checkpoints
-output_dir: ${WORK_DIR}/data
-patch_cache_dir: ${WORK_DIR}/data/patch_cache
-global_patch_cache_dir: ${OUTPUT}
+data_root: ${DATA_ROOT}
 EOF
 
-mkdir -p logs "$OUTPUT"
+mkdir -p logs
 
 echo "=== CR global patch cache build start: $(date) ==="
 

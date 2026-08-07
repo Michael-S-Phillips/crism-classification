@@ -31,11 +31,13 @@
 # the band-0 (I/F>1.0 -> nodata) cleanup via the rebuilt cache.
 
 WORK_DIR=/groups/sbyrne/phillipsm/crism_classification
-CKPT_DIR=${WORK_DIR}/checkpoints
-CACHE_DIR=${WORK_DIR}/data/patch_cache_mc11val
-PARQUET=${WORK_DIR}/data/mrral_pixels_with_review_mc11val.parquet
-MTRDR_PATCHES=${WORK_DIR}/data/contrastive/extra_plag_roi/patches.npy
-MTRDR_ROWS=${WORK_DIR}/data/mtrdr_plag_rows.parquet
+DATA_ROOT=/xdisk/sbyrne/phillipsm/CRISM_MRDR          # all bulk data (xdisk)
+DATA_DIR=${DATA_ROOT}/crism_classification/data
+CKPT_DIR=${DATA_ROOT}/crism_classification/checkpoints
+CACHE_DIR=${DATA_DIR}/patch_cache_mc11val
+PARQUET=${DATA_DIR}/mrral_pixels_with_review_mc11val.parquet
+MTRDR_PATCHES=${DATA_DIR}/contrastive/extra_plag_roi/patches.npy
+MTRDR_ROWS=${DATA_DIR}/mtrdr_plag_rows.parquet
 
 RUN_NAMES=("ft_6cls_mc11val_denoise" "ft_6cls_mc11val_spend" "ft_6cls_mc11val_champion")
 ENCODERS=("${CKPT_DIR}/spatial_mae_denoising_128d_6l_best.pt"
@@ -52,15 +54,11 @@ CKPT_FLAG=${CKPT_FLAGS[$SLURM_ARRAY_TASK_ID]}
 PYTHON=/groups/sbyrne/phillipsm/micromamba/envs/crism/bin/python
 
 cd "$WORK_DIR"
-mkdir -p logs checkpoints
+mkdir -p logs
 
 if [ ! -f config.local.yaml ]; then
     cat > config.local.yaml <<EOF
-data_root: /xdisk/sbyrne/phillipsm/CRISM_MRDR
-checkpoint_dir: ${CKPT_DIR}
-checkpoints_dir: ${CKPT_DIR}
-output_dir: ${WORK_DIR}/data
-patch_cache_dir: ${WORK_DIR}/data/patch_cache
+data_root: ${DATA_ROOT}
 EOF
 fi
 
