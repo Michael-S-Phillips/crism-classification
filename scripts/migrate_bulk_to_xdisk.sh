@@ -16,7 +16,8 @@ set -uo pipefail
 DATA_ROOT=/xdisk/sbyrne/phillipsm/CRISM_MRDR
 DATA_DIR=$DATA_ROOT/crism_classification/data
 CKPT_DIR=$DATA_ROOT/crism_classification/checkpoints
-GROUPS=/groups/sbyrne/phillipsm/crism_classification
+# NB: do NOT name this GROUPS — that's a bash built-in (array of group IDs).
+CODE_DIR="$(cd "$(dirname "$0")/.." && pwd)"   # repo root, wherever it is checked out
 XD=/xdisk/sbyrne/phillipsm
 
 mkdir -p "$DATA_DIR" "$CKPT_DIR"
@@ -35,22 +36,22 @@ move() {  # move SRC into DEST dir — logged, guarded, never clobbers
 
 echo "== 1. checkpoints: /groups -> $CKPT_DIR =="
 shopt -s nullglob
-for f in "$GROUPS"/checkpoints/*; do move "$f" "$CKPT_DIR"; done
+for f in "$CODE_DIR"/checkpoints/*; do move "$f" "$CKPT_DIR"; done
 
 echo "== 2. parquets: xdisk sibling /data + /groups/data -> $DATA_DIR =="
-for p in "$XD"/data/*.parquet "$GROUPS"/data/*.parquet; do move "$p" "$DATA_DIR"; done
+for p in "$XD"/data/*.parquet "$CODE_DIR"/data/*.parquet; do move "$p" "$DATA_DIR"; done
 
 echo "== 3. labeled patch caches: xdisk /data + /groups/data -> $DATA_DIR =="
-for c in "$XD"/data/patch_cache* "$GROUPS"/data/patch_cache*; do move "$c" "$DATA_DIR"; done
+for c in "$XD"/data/patch_cache* "$CODE_DIR"/data/patch_cache*; do move "$c" "$DATA_DIR"; done
 
 echo "== 4. contrastive extras (if present in /groups) -> $DATA_DIR =="
-move "$GROUPS/data/contrastive" "$DATA_DIR"
+move "$CODE_DIR/data/contrastive" "$DATA_DIR"
 shopt -u nullglob
 
 echo "== 5. refresh config.local.yaml to just data_root (config_loader derives the rest) =="
-if [ -d "$GROUPS" ]; then
-    printf 'data_root: %s\n' "$DATA_ROOT" > "$GROUPS/config.local.yaml"
-    echo "  wrote $GROUPS/config.local.yaml"
+if [ -d "$CODE_DIR" ]; then
+    printf 'data_root: %s\n' "$DATA_ROOT" > "$CODE_DIR/config.local.yaml"
+    echo "  wrote $CODE_DIR/config.local.yaml"
 fi
 
 echo
@@ -72,5 +73,5 @@ done
 echo "[review inputs] hpc_build_7cls_data*.slurm still read review data via relative"
 echo "    data/ paths under /groups — those two builders aren't harmonized yet."
 echo
-echo "== verify paths resolve (run from $GROUPS with the crism env) =="
+echo "== verify paths resolve (run from $CODE_DIR with the crism env) =="
 echo "  python -c \"from config_loader import load_config; import os; c=load_config(); [print(k, c[k], os.path.exists(c[k])) for k in ('data_root','checkpoints_dir','output_dir','patch_cache_dir','gpkg_dir')]\""
