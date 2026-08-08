@@ -473,17 +473,38 @@ class CRISMSpectralPatchDataset(Dataset):
                             f'brightness sidecar {bfile}; rebuild the CR cache so '
                             f'it is written alongside the patches.')
                     self._bright_cache = np.load(bfile, mmap_mode='r')
+            elif self.cache_is_cr:
+                # cache_is_cr asserts this dir holds CR patches for this split.
+                # Falling back to the on-the-fly rasterio path here would serve
+                # a DIFFERENT representation than the split we do cache, so an
+                # absent file means an incomplete cache build, not "no cache".
+                # Fail here rather than mid-epoch. (An incomplete
+                # patch_cache_base_cr — train written, val never built — is what
+                # killed the pyxalt_cr runs on 2026-08-07.)
+                raise FileNotFoundError(
+                    f"cache_is_cr was set but the '{split}' split is missing "
+                    f'from the CR cache: {cache_file} does not exist. The CR '
+                    f'cache build is incomplete — rebuild it for every split '
+                    f'you train on:  python scripts/build_cr_labeled_cache.py '
+                    f'--raw_dir <raw cache> --out_dir {cache_dir} '
+                    f'--splits train val test')
 
     def __len__(self):
         return self._n
 
-    def _finish(self, patch: np.ndarray, idx: int, brightness=None):
+    def _finish(self, patch: np.ndarray, idx: int, brightness=None,
+                from_cr_cache: bool = False):
         """Apply CR (if requested) and pack the return tuple for a raw patch.
 
-        patch: (P, P, 59) raw (or already-CR when cache_is_cr) float32.
-        brightness: optional precomputed (P, P) brightness map (cache_is_cr path).
+        patch: (P, P, 59) raw, or already-CR when from_cr_cache.
+        brightness: optional precomputed (P, P) brightness map (CR-cache path).
+        from_cr_cache: this patch came out of a cache_is_cr memmap, so CR has
+            already been applied and `brightness` came from the sidecar. Keyed
+            on the actual read path rather than on self.cache_is_cr: the flag
+            describes the cache, and a patch read off any other path still
+            needs CR applied here.
         """
-        if self.continuum_removed and not self.cache_is_cr:
+        if self.continuum_removed and not from_cr_cache:
             from data.continuum_removal import cr_patch
             patch, brightness = cr_patch(patch)
         patch_t = torch.from_numpy(np.ascontiguousarray(patch, dtype=np.float32))
@@ -499,7 +520,8 @@ class CRISMSpectralPatchDataset(Dataset):
             brightness = None
             if self.cache_is_cr and self._bright_cache is not None:
                 brightness = np.asarray(self._bright_cache[idx])
-            return self._finish(patch, idx, brightness)
+            return self._finish(patch, idx, brightness,
+                                from_cr_cache=self.cache_is_cr)
 
         current_pid = os.getpid()
         if current_pid != self._pid:

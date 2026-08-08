@@ -123,10 +123,23 @@ def main() -> None:
     args = ap.parse_args()
     print(f'CR cache build: jobs={args.jobs}, chunk={args.chunk}')
     total = 0
+    skipped = []
     for split in args.splits:
-        total += convert_split(args.raw_dir, args.out_dir, split,
-                               args.patch_size, args.chunk, jobs=args.jobs)
+        n = convert_split(args.raw_dir, args.out_dir, split,
+                          args.patch_size, args.chunk, jobs=args.jobs)
+        if n == 0:
+            skipped.append(split)
+        total += n
     print(f'done: {total:,} patches converted → {args.out_dir}')
+    # A half-built CR cache is worse than none: the fine-tune reads the splits
+    # that exist and used to fall through to a different representation for the
+    # ones that don't. Exit non-zero so a launcher can't treat this as success.
+    if skipped:
+        print(f'ERROR: requested split(s) {skipped} had no raw cache in '
+              f'{args.raw_dir} and were NOT written. {args.out_dir} is '
+              f'INCOMPLETE — build the missing raw splits first, then re-run.',
+              file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == '__main__':

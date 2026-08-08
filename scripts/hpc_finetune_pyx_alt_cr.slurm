@@ -67,17 +67,27 @@ for f in "$ENCODER" "$PARQUET"; do
     if [ ! -f "$f" ]; then echo "ERROR: missing $f"; exit 1; fi
 done
 # 2. Base raw patch cache (built by cache_mrral_patches.py from the base parquet).
-if [ ! -f "${RAW_CACHE}/mrral_train_patches_p7.npy" ]; then
-    echo "ERROR: base raw patch cache missing at $RAW_CACHE"
-    echo "Build it:  $PYTHON scripts/cache_mrral_patches.py    # uses base parquet + data_root"
-    exit 1
-fi
+for split in train val; do
+    if [ ! -f "${RAW_CACHE}/mrral_${split}_patches_p7.npy" ]; then
+        echo "ERROR: base raw patch cache missing the '$split' split at $RAW_CACHE"
+        echo "Build it:  $PYTHON scripts/cache_mrral_patches.py    # uses base parquet + data_root"
+        exit 1
+    fi
+done
 # 3. CR labeled cache + brightness sidecar, built FROM the base raw cache.
-if [ ! -f "${CACHE_DIR}/mrral_train_patches_p7_brightness.npy" ]; then
-    echo "ERROR: base CR labeled cache/brightness sidecar missing at $CACHE_DIR"
-    echo "Build it:  $PYTHON scripts/build_cr_labeled_cache.py --raw_dir ${RAW_CACHE} --out_dir ${CACHE_DIR}"
-    exit 1
-fi
+#    Check EVERY split the run touches, not just train: a train-only cache used
+#    to pass this guard and then die in the first validation pass (2026-08-07).
+for split in train val; do
+    for f in "${CACHE_DIR}/mrral_${split}_patches_p7.npy" \
+             "${CACHE_DIR}/mrral_${split}_patches_p7_brightness.npy"; do
+        if [ ! -f "$f" ]; then
+            echo "ERROR: base CR labeled cache incomplete — missing $f"
+            echo "Build it (all splits, and check it exits 0):"
+            echo "  $PYTHON scripts/build_cr_labeled_cache.py --raw_dir ${RAW_CACHE} --out_dir ${CACHE_DIR} --splits train val test"
+            exit 1
+        fi
+    done
+done
 
 echo "=== arm $SLURM_ARRAY_TASK_ID: $RUN_NAME (encoder_lr_scale=$LR_SCALE, embed_dim=$EMBED_DIM, pyx_alt+CR, hand-labeled only) ==="
 
