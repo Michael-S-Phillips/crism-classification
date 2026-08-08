@@ -200,10 +200,29 @@ injection, and the excluded-polygon filter.
 
 ## Known consequences
 
-**Legacy lcp/hcp confirms carry olivine.** Those rows hold 211,173 olivine_t1
-positives (post-20k-cap), so admitting legacy for pyroxene re-admits legacy
-olivine as dual labels. Accepted, on the same reasoning as alteration dual
-labels.
+**Admitting legacy for pyroxene also admits a large block of legacy
+olivine — and it is NOT dual labels.** An earlier draft of this spec claimed
+these were olivine labels riding along on pyroxene rows, by analogy with
+alteration. That was wrong. Measured over the 1,244,075 legacy confirms:
+
+| | rows |
+|---|---:|
+| olivine-positive | 444,254 |
+| — of which **olivine-ONLY** (no lcp/hcp) | **440,793** (99.2%) |
+| — of which genuine oliv+pyx dual labels | 3,461 (0.8%) |
+| pyx-positive (lcp\|hcp) | 803,282 |
+| — of which pyx-ONLY | 799,821 |
+
+So the `confirmed` fragment being keyed to `'lcp'` in the policy table does not
+merely let a few olivine co-labels ride along — it admits ~440k **independent,
+ungraded legacy olivine-only rows** through a door opened for pyroxene. That is
+a different decision from the alteration dual-label case and must be made
+deliberately, not inherited by analogy.
+
+Options if this is not wanted: (a) accept it, (b) zero the olivine columns on
+legacy rows admitted for pyx, or (c) admit only legacy confirm rows that are
+actually pyx-positive. **Currently (a) — accepted as-is.** The 5k/polygon
+confirm cap still applies, so the realised volume is far below the raw 440k.
 
 **Review augmentation is a small effect for the mineral classes.** Even with the
 legacy supplement, lcp and hcp remain overwhelmingly hand-labeled. This build
