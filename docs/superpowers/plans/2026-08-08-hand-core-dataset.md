@@ -19,7 +19,8 @@
 - `MAX_PX_PER_POLYGON = 20_000` stays the default cap; legacy **confirms** get 5_000.
 - `--weight_scheme level` must reproduce today's effective weights exactly, including the deliberate `Reviewed-*` stamped-weight pass-through asserted by `tests/test_collapse_reviewed_tier.py`. That test must keep passing unmodified.
 - Output file: `data/mrral_pixels_7cls_handcore.parquet`. Never overwrite `data/mrral_pixels_7cls.parquet`.
-- Existing default behaviour of `build_7cls_dataset.py` must be unchanged when the new flags are left at their defaults.
+- Existing default behaviour of `build_7cls_dataset.py` must be unchanged when the new flags are left at their defaults. **AMENDED 2026-08-08 by user ruling:** the plan originally specified *filtering* defaults (`--review_grades High Moderate`, `--legacy_classes alteration lcp hcp`, `--legacy_confirm_cap 5000`), which contradicted this very constraint — a bare rebuild would have silently produced a policy-filtered dataset. All policy defaults are now **permissive/inert**; the hand-core recipe is opt-in via explicit flags. See the spec's flag table.
+- "Inert" means byte-identical output, not merely "drops no rows": `_apply_legacy_policy`'s confirm branch must preserve ROW ORDER when the cap binds nothing, because `_joint_resplit` is order-sensitive at ties (~250 rows moved train↔val otherwise).
 
 ## File Structure
 

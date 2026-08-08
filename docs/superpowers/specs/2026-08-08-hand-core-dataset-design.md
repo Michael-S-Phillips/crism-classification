@@ -162,17 +162,37 @@ A `SourcePolicy` dataclass in `build_7cls_dataset.py`, one entry per class:
 | bland | **dropped** | rejects | — | 20k/poly |
 | junk | absent | ambiguous | — | 20k/poly |
 
-New flags:
+New flags. **Every default is permissive — the hand-core recipe is opt-in.**
+A bare `python scripts/build_7cls_dataset.py` must reproduce the pre-hand-core
+dataset exactly (same counts, same splits, same tier histogram), so the
+champion's data lineage stays reproducible. The values below are what you pass
+to *get* the hand-core recipe; the defaults are in the right-hand column.
+
+| flag | hand-core value | default (inert) |
+|---|---|---|
+| `--review_grades` | `High Moderate` | `High Moderate Low` |
+| `--legacy_classes` | `alteration lcp hcp` | `_ALL_POLICY_CLASSES` (all) |
+| `--legacy_confirm_cap` | `5000` | `MAX_PX_PER_POLYGON` (20,000) |
+| `--bland_sources` | `review` | `all` |
+| `--ndviz_dir` | `''` (disabled) | the ndviz dir |
+| `--out` | `data/mrral_pixels_7cls_handcore.parquet` | `data/mrral_pixels_7cls.parquet` |
+
+Full hand-core invocation:
 
 ```
---review_grades High Moderate      # v3 grade filter
---legacy_classes alteration lcp hcp
---legacy_confirm_cap 5000          # legacy confirms (lcp/hcp) only; legacy
-                                   # alteration HN uses MAX_PX_PER_POLYGON
---bland_sources review             # {review, all}
---ndviz_dir ''                     # disabled
---out data/mrral_pixels_7cls_handcore.parquet
+python scripts/build_7cls_dataset.py \
+  --bland_sources review --review_grades High Moderate \
+  --legacy_classes alteration lcp hcp --legacy_confirm_cap 5000 \
+  --ndviz_dir '' --out data/mrral_pixels_7cls_handcore.parquet
 ```
+
+**Inertness is stricter than "drops no rows".** `_apply_legacy_policy`'s confirm
+branch rebuilds the frame with `pd.concat` even when the cap removes nothing,
+which changes row ORDER — and `_joint_resplit` is order-sensitive at ties, so
+that alone moved ~250 rows between train and val. The confirm branch therefore
+returns the original frame unchanged when the cap binds nothing. Verified: the
+bare run is identical to the pre-hand-core build on every count, split and tier
+histogram.
 
 Unchanged, deliberately: the joint unit-balanced re-split over the combined
 frame (`_joint_resplit` — the adjacent-tile leakage fix), the MTRDR plag synth
