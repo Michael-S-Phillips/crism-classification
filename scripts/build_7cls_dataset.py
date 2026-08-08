@@ -358,7 +358,8 @@ def _drop_excluded_polygons(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _build_base(path: str, n_bland_target: int,
-                hand_minerals: str = 'all') -> pd.DataFrame:
+                hand_minerals: str = 'all',
+                bland_sources: str = 'all') -> pd.DataFrame:
     print(f'Loading base parquet: {path}')
     df = pd.read_parquet(path)
     df = _drop_excluded_polygons(df)
@@ -383,7 +384,18 @@ def _build_base(path: str, n_bland_target: int,
         print(achieved_fractions(non_bland, non_bland['split'], BALANCE_COLS)
               .to_string())
 
-    # ── bland tile rows: subsample to n_bland_target ──
+    # ── bland tile rows: subsample to n_bland_target, or drop entirely ──
+    if bland_sources == 'review':
+        # Spec 2026-08-08: bland is review-only. These rows are DROPPED, not
+        # retained as all-negative background — keeping them with bland=0
+        # would assert that bland terrain is not bland, and the loss has no
+        # per-class row masking to prevent that false negative.
+        print(f'  bland_sources=review: dropping all '
+              f'{int(bland_mask.sum()):,} base bland rows')
+        out = non_bland.reset_index(drop=True)
+        print(f'  base after modification: {len(out):,} rows')
+        return out
+
     bland_df = df[bland_mask].copy()
     bland_df = _subsample(bland_df, n_bland_target, SEED)
     bland_df = _stamp_7cls_cols(bland_df, bland=1.0, junk=0.0, alteration=0.0)

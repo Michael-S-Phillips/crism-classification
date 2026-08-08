@@ -150,3 +150,37 @@ def test_legacy_hard_negatives_ignore_confirm_cap():
     out = _apply_legacy_policy(f, 'alteration', ['alteration'], confirm_cap=10,
                                seed=42, is_confirm=False)
     assert len(out) == 120
+
+
+from scripts.build_7cls_dataset import _build_base
+
+
+def _base_frame(tmp_path):
+    n = 40
+    d = {'tile_id': ['t1250'] * n,
+         'polygon_id': [i // 10 for i in range(n)],
+         'pixel_row': list(range(n)), 'pixel_col': list(range(n)),
+         'confidence_weight': [1.0] * n, 'confidence_tier': ['High'] * n,
+         'split': ['train'] * n}
+    for c in _LABEL:
+        d[c] = [0.0] * n
+    # First 20 rows are minerals, last 20 are bland ('other').
+    d['lcp'] = [1.0] * 20 + [0.0] * 20
+    d['other'] = [0.0] * 20 + [1.0] * 20
+    for i in range(59):
+        d[f'm{i}'] = [0.1] * n
+    p = tmp_path / 'base.parquet'
+    pd.DataFrame(d).to_parquet(p)
+    return str(p)
+
+
+def test_bland_sources_review_drops_base_other_rows(tmp_path):
+    out = _build_base(_base_frame(tmp_path), 300_000, bland_sources='review')
+    assert len(out) == 20
+    assert (out['bland'] > 0).sum() == 0
+
+
+def test_bland_sources_all_keeps_base_other_rows(tmp_path):
+    out = _build_base(_base_frame(tmp_path), 300_000, bland_sources='all')
+    assert len(out) == 40
+    assert (out['bland'] > 0).sum() == 20
