@@ -725,6 +725,21 @@ def main():
     ap.add_argument('--max_bland_raw', type=int, default=None,
                     help='Cap raw bland rows per tag read (debug/dry-run only; '
                          'do NOT use for real builds)')
+    ap.add_argument('--review_grades', nargs='+', default=['High', 'Moderate'],
+                    help='v3 reviewer grades to admit (default: High Moderate). '
+                         'Legacy rows are ungraded and unaffected.')
+    ap.add_argument('--legacy_classes', nargs='*',
+                    default=['alteration', 'lcp', 'hcp'],
+                    help='Classes for which the ungraded legacy session is '
+                         'admitted. Empty list excludes legacy entirely.')
+    ap.add_argument('--legacy_confirm_cap', type=int, default=5_000,
+                    help='Per-polygon cap on legacy CONFIRMS only (they '
+                         'concentrate into 10-18 polygons). Legacy hard '
+                         f'negatives keep MAX_PX_PER_POLYGON '
+                         f'({MAX_PX_PER_POLYGON:,}).')
+    ap.add_argument('--bland_sources', choices=['all', 'review'], default='all',
+                    help="'review': drop the base parquet's bland rows so bland "
+                         'comes only from review rejects.')
     args = ap.parse_args()
 
     if args.max_bland_raw is not None:
@@ -734,7 +749,9 @@ def main():
     n_bland = args.n_bland
 
     # ── 1. Base parquet (gpkgs + bland tiles, gpkg plag restored) ────────────
-    base = _build_base(args.base_parquet, n_bland, hand_minerals=args.hand_minerals)
+    base = _build_base(args.base_parquet, n_bland,
+                       hand_minerals=args.hand_minerals,
+                       bland_sources=args.bland_sources)
 
     # ── 2. MC13 confirmed mineral positives ───────────────────────────────────
     print('\nLoading confirmed mineral positives …')
@@ -756,6 +773,38 @@ def main():
     # ── 5. Alteration (mc11 review only) ─────────────────────────────────────
     print('\nLoading mc11 alteration review …')
     alt_df = load_alteration_mc11(args.hn_dir)
+
+    # ── 5b. Review policy: v3 grade bar + per-class legacy admission ─────────
+    # MUST run before the `frag[all_cols]` projection below — the base frame has
+    # no `review_session`, so that projection strips provenance and every filter
+    # here would silently become a no-op.
+    print('\nApplying review source policy '
+          f'(grades={args.review_grades}, legacy_classes={args.legacy_classes}) …')
+    _policy = [
+        ('confirmed',   'lcp',        True),
+        ('reassigned',  'lcp',        False),
+        ('mc13_bland',  'bland',      False),
+        ('mc11_bland',  'bland',      False),
+        ('junk',        'junk',       False),
+        ('alteration',  'alteration', False),
+    ]
+    _frames = {'confirmed': confirmed, 'reassigned': reassigned,
+               'mc13_bland': mc13_bland, 'mc11_bland': mc11_bland,
+               'junk': junk_df, 'alteration': alt_df}
+    for _name, _cls, _is_confirm in _policy:
+        _f = _frames[_name]
+        if _f is None or len(_f) == 0:
+            continue
+        _before = len(_f)
+        _f = _filter_review_grades(_f, args.review_grades)
+        _f = _apply_legacy_policy(_f, _cls, args.legacy_classes,
+                                  args.legacy_confirm_cap, SEED,
+                                  is_confirm=_is_confirm)
+        _frames[_name] = _f
+        print(f'  {_name}: {_before:,} -> {len(_f):,} rows')
+    confirmed, reassigned = _frames['confirmed'], _frames['reassigned']
+    mc13_bland, mc11_bland = _frames['mc13_bland'], _frames['mc11_bland']
+    junk_df, alt_df = _frames['junk'], _frames['alteration']
 
     # ── 6. Align schemas and concatenate ─────────────────────────────────────
     all_cols = base.columns.tolist()
@@ -835,6 +884,11 @@ def main():
         return
 
     # ── 8. Write ──────────────────────────────────────────────────────────────
+    # `review_session` is a build-time artifact, not a training column. The
+    # frag[all_cols] projection already strips it; this guards the base frame
+    # ever carrying it.
+    if 'review_session' in out.columns:
+        out = out.drop(columns=['review_session'])
     os.makedirs(os.path.dirname(args.out) or '.', exist_ok=True)
     out.to_parquet(args.out, index=False)
     size_mb = os.path.getsize(args.out) / 1e6
