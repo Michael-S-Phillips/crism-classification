@@ -137,6 +137,15 @@ def _as_dirs(dirs: str | list[str]) -> list[str]:
     return [dirs] if isinstance(dirs, str) else list(dirs)
 
 
+def _session_of(path: str) -> str:
+    """Classify a review dir as the ungraded legacy session or the graded v3.
+
+    Legacy rows are stamped confidence_tier='High', identical to hand-labeled
+    High rows, so tier cannot identify the session — the path must.
+    """
+    return 'v3' if '_7cls_v3' in os.path.normpath(path) else 'legacy'
+
+
 def _read_hn_tag(hn_dirs: str | list[str], tag: str | None) -> pd.DataFrame:
     """Read hard_negatives rows by negative_of tag via predicate pushdown.
     Accepts one dir or several (multi-session review data); schemas may
@@ -157,7 +166,9 @@ def _read_hn_tag(hn_dirs: str | list[str], tag: str | None) -> pd.DataFrame:
             table = ds.scanner(filter=expr).head(_MAX_BLAND_RAW)
         else:
             table = pq.read_table(hn_dir, filters=expr)
-        parts.append(table.to_pandas())
+        frag = table.to_pandas()
+        frag['review_session'] = _session_of(hn_dir)
+        parts.append(frag)
     if not parts:
         return pd.DataFrame()
     return pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0]
@@ -364,8 +375,11 @@ def load_confirmed_mineral_positives(confirmed_dirs: str | list[str],
             continue
         print(f'Loading confirmed mineral positives from {confirmed_dir} '
               f'({len(files)} files)')
-        parts.extend(pd.read_parquet(os.path.join(confirmed_dir, f))
-                     for f in files)
+        session = _session_of(confirmed_dir)
+        for f in files:
+            frag = pd.read_parquet(os.path.join(confirmed_dir, f))
+            frag['review_session'] = session
+            parts.append(frag)
     if not parts:
         return None
     df = pd.concat(parts, ignore_index=True)
@@ -395,7 +409,10 @@ def load_confirmed_mineral_positives(confirmed_dirs: str | list[str],
     for c in template.columns:
         if c not in df.columns:
             df[c] = np.float32(0.0) if c not in ('tile_id', 'split', 'confidence_tier') else ''
-    return df[template.columns.tolist()]
+    keep = template.columns.tolist()
+    if 'review_session' in df.columns and 'review_session' not in keep:
+        keep.append('review_session')
+    return df[keep]
 
 
 def load_bland_review(hn_dir: str, source_label: str,
