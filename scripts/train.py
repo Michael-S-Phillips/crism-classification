@@ -85,6 +85,11 @@ def _build_parser():
                              'exclusive with --seven_class/--with_alteration/--pyx.')
     parser.add_argument('--use_pos_weight', action='store_true',
                         help='Use pos_weight in loss to upweight rare classes')
+    import data.dataset
+    parser.add_argument('--weight_scheme', default='level',
+                        choices=sorted(data.dataset.WEIGHT_SCHEMES),
+                        help='Tier->sample-weight table (default: level, which '
+                             'reproduces pre-2026-08-08 weights). Sweepable.')
     parser.add_argument('--weight_decay', type=float, default=1e-4,
                         help='AdamW weight decay for torch models')
     parser.add_argument('--run_name', type=str, default=None,
@@ -278,6 +283,10 @@ def build_args():
         data.dataset.LABEL_COLS = list(data.dataset.LABEL_COLS_PYX_ALT)
         args.n_classes = 5
         logging.info('pyx_alt mode: LABEL_COLS = %s', data.dataset.LABEL_COLS)
+
+    import data.dataset
+    data.dataset.set_weight_scheme(args.weight_scheme)
+    logging.info('weight scheme: %s', data.dataset.active_weight_scheme())
 
     return args
 

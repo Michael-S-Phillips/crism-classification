@@ -65,7 +65,40 @@ def label_cols_for_ckpt(state_dict) -> list:
     return list(_LABEL_COLS_BY_N[n])
 
 
-_TIER_WEIGHTS = {'high': 1.0, 'moderate': 0.85, 'low': 0.70}
+# Tier → per-pixel sample weight. A scheme omits the 'reviewed-*' keys to let
+# the per-polygon reviewer weight stamped by scripts/review/persistence.py pass
+# through _collapse_labels verbatim (see tests/test_collapse_reviewed_tier.py).
+# 'level' therefore reproduces the pre-2026-08-08 behaviour exactly.
+WEIGHT_SCHEMES: dict[str, dict[str, float]] = {
+    'level':     {'high': 1.0, 'moderate': 0.85, 'low': 0.70},
+    'review_up': {'high': 1.0, 'moderate': 0.85, 'low': 0.70,
+                  'reviewed-high': 2.0, 'reviewed-moderate': 1.7,
+                  'reviewed-low': 1.4},
+    'hand_up':   {'high': 1.5, 'moderate': 1.3, 'low': 1.0,
+                  'reviewed-high': 1.0, 'reviewed-moderate': 0.85,
+                  'reviewed-low': 0.70},
+}
+
+_ACTIVE_SCHEME = 'level'
+_TIER_WEIGHTS = WEIGHT_SCHEMES[_ACTIVE_SCHEME]
+
+
+def set_weight_scheme(name: str) -> None:
+    """Select the tier→weight table used by _collapse_labels.
+
+    Must be called before any dataset is constructed. Schemes that omit the
+    'reviewed-*' keys leave the stamped per-polygon reviewer weight intact.
+    """
+    global _ACTIVE_SCHEME, _TIER_WEIGHTS  # noqa: PLW0603
+    if name not in WEIGHT_SCHEMES:
+        raise ValueError(
+            f'unknown weight scheme {name!r}; known: {sorted(WEIGHT_SCHEMES)}')
+    _ACTIVE_SCHEME = name
+    _TIER_WEIGHTS = WEIGHT_SCHEMES[name]
+
+
+def active_weight_scheme() -> str:
+    return _ACTIVE_SCHEME
 
 
 def _collapse_labels(df: pd.DataFrame) -> pd.DataFrame:
@@ -120,22 +153,23 @@ def _collapse_labels(df: pd.DataFrame) -> pd.DataFrame:
     if 'hcp' not in out.columns:
         out['hcp'] = np.float32(0.0)
     out['pyx'] = out[['lcp', 'hcp']].max(axis=1).astype(np.float32)
+    tier_weights = WEIGHT_SCHEMES[_ACTIVE_SCHEME]
     if 'confidence_tier' in out.columns:
         mapped = (
             out['confidence_tier']
             .astype(str).str.lower()
-            .map(_TIER_WEIGHTS)
+            .map(tier_weights)
         )
         if 'confidence_weight' in out.columns:
-            # Unknown tiers (Reviewed/Ambiguous) fall back to the stamped
+            # Unknown tiers (Reviewed-*, Ambiguous) fall back to the stamped
             # weight; only rows lacking both get the Moderate default.
             mapped = mapped.fillna(
                 pd.to_numeric(out['confidence_weight'], errors='coerce'))
         out['confidence_weight'] = (
-            mapped.fillna(_TIER_WEIGHTS['moderate']).astype(np.float32)
+            mapped.fillna(tier_weights['moderate']).astype(np.float32)
         )
     elif 'confidence_weight' not in out.columns:
-        out['confidence_weight'] = np.float32(_TIER_WEIGHTS['moderate'])
+        out['confidence_weight'] = np.float32(tier_weights['moderate'])
     return out
 BAND_COLS = [f'b{i}' for i in range(60)]
 MRRAL_BAND_COLS = [f'm{i}' for i in range(59)]  # 59 bands, 410-2457 nm (< 2500 nm cutoff)
