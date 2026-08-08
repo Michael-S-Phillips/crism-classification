@@ -50,6 +50,33 @@ def test_hand_up_scales_hand_tiers():
     assert _w('Reviewed-High', 1.0) == pytest.approx(1.0)
 
 
+def test_reviewed_legacy_resolves_across_schemes():
+    # 'Reviewed-Legacy' is the tier stamped on human-reviewed-but-ungraded
+    # ("legacy") rows (scripts/build_7cls_dataset.py's _stamp_legacy_tier),
+    # distinguishing them from hand-labeled rows that used to share the same
+    # 'High' tier string. It must resolve to a fixed value per scheme,
+    # independent of whatever weight happens to be stamped on the row.
+    ds.set_weight_scheme('level')
+    assert _w('Reviewed-Legacy', 0.1) == pytest.approx(1.0)
+    ds.set_weight_scheme('review_up')
+    assert _w('Reviewed-Legacy', 0.1) == pytest.approx(1.5)
+    ds.set_weight_scheme('hand_up')
+    assert _w('Reviewed-Legacy', 0.1) == pytest.approx(0.85)
+
+
+def test_hand_up_distinguishes_hand_high_from_legacy_review():
+    # This is the bug being fixed: before legacy review rows had their own
+    # tier, 'hand_up' (meant to boost ONLY hand-labeled High rows) also
+    # boosted legacy review rows tagged 'High' — backwards from its intent.
+    # Hand 'High' and 'Reviewed-Legacy' must now resolve DIFFERENTLY.
+    ds.set_weight_scheme('hand_up')
+    hand_high = _w('High', 0.1)
+    legacy_review = _w('Reviewed-Legacy', 0.1)
+    assert hand_high == pytest.approx(1.5)
+    assert legacy_review == pytest.approx(0.85)
+    assert hand_high != pytest.approx(legacy_review)
+
+
 def test_unknown_scheme_raises():
     with pytest.raises(ValueError, match='nonesuch'):
         ds.set_weight_scheme('nonesuch')

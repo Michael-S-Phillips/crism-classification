@@ -237,6 +237,37 @@ def _apply_legacy_policy(df: pd.DataFrame, target_class: str,
     return pd.concat([df[~is_legacy], legacy], ignore_index=True)
 
 
+def _stamp_legacy_tier(df: pd.DataFrame) -> pd.DataFrame:
+    """Restamp legacy-session rows' confidence_tier as 'Reviewed-Legacy'.
+
+    Legacy (ungraded) review rows arrive tagged confidence_tier='High' —
+    either from the source parquet or via _fill_confidence_defaults' fallback
+    — which makes them byte-identical, tier-wise, to hand-labeled High rows.
+    That collision means --weight_scheme cannot address the three real
+    provenance classes (hand-labeled / legacy-ungraded-review /
+    v3-graded-review) independently: 'review_up' upweights v3 review but
+    leaves legacy review sitting at the hand-labeled weight, and 'hand_up'
+    meant to boost ONLY hand-labeled High rows instead boosts legacy review
+    right along with them. Giving legacy review its own tier string here
+    (while `review_session` is still attached to the fragment, before the
+    `all_cols` projection in main() drops it) lets WEIGHT_SCHEMES resolve
+    each provenance class to its own weight.
+
+    Only rows with review_session == 'legacy' are touched; v3-graded rows
+    (already 'Reviewed-High'/'-Moderate'/'-Low') and any frame lacking
+    review_session (i.e. the hand-labeled base frame, which never carries
+    this column) pass through unchanged.
+    """
+    if df is None or len(df) == 0:
+        return df
+    if 'review_session' not in df.columns:
+        return df
+    out = df.copy()
+    is_legacy = out['review_session'] == 'legacy'
+    out.loc[is_legacy, 'confidence_tier'] = 'Reviewed-Legacy'
+    return out
+
+
 def _read_hn_tag(hn_dirs: str | list[str], tag: str | None) -> pd.DataFrame:
     """Read hard_negatives rows by negative_of tag via predicate pushdown.
     Accepts one dir or several (multi-session review data); schemas may
@@ -929,6 +960,12 @@ def main():
         _f = _apply_legacy_policy(_f, _cls, args.legacy_classes,
                                   args.legacy_confirm_cap, SEED,
                                   is_confirm=_is_confirm)
+        # Restamp legacy (ungraded) review rows to confidence_tier=
+        # 'Reviewed-Legacy' so they're distinguishable from hand-labeled
+        # 'High' rows downstream (--weight_scheme; see _stamp_legacy_tier).
+        # Must run here, before `all_cols = base.columns.tolist()` below
+        # drops `review_session` from every fragment.
+        _f = _stamp_legacy_tier(_f)
         _frames[_name] = _f
         print(f'  {_name}: {_before:,} -> {len(_f):,} rows')
     confirmed, reassigned = _frames['confirmed'], _frames['reassigned']

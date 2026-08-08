@@ -65,18 +65,35 @@ def label_cols_for_ckpt(state_dict) -> list:
     return list(_LABEL_COLS_BY_N[n])
 
 
-# Tier → per-pixel sample weight. A scheme omits the 'reviewed-*' keys to let
-# the per-polygon reviewer weight stamped by scripts/review/persistence.py pass
-# through _collapse_labels verbatim (see tests/test_collapse_reviewed_tier.py).
-# 'level' therefore reproduces the pre-2026-08-08 behaviour exactly.
+# Tier → per-pixel sample weight. A scheme omits the graded 'reviewed-high/
+# moderate/low' keys to let the per-polygon reviewer weight stamped by
+# scripts/review/persistence.py pass through _collapse_labels verbatim (see
+# tests/test_collapse_reviewed_tier.py). 'level' therefore reproduces the
+# pre-2026-08-08 behaviour exactly.
+#
+# 'reviewed-legacy' is always present (in all three schemes below), because it
+# is NOT a graded reviewer tier — it is scripts/build_7cls_dataset.py's stamp
+# for human-reviewed-but-ungraded ("legacy") rows, distinguishing them from
+# hand-labeled rows that used to share the same 'High' tier string (see
+# _stamp_legacy_tier). Its per-scheme value is a plain lookup, not a
+# stamped-weight passthrough.
 WEIGHT_SCHEMES: dict[str, dict[str, float]] = {
-    'level':     {'high': 1.0, 'moderate': 0.85, 'low': 0.70},
+    # 'reviewed-legacy' = 1.0: identical to what legacy resolved to TODAY (via
+    # the 'high' key, since legacy rows used to be stamped tier='High') —
+    # preserves default training behaviour exactly.
+    'level':     {'high': 1.0, 'moderate': 0.85, 'low': 0.70,
+                  'reviewed-legacy': 1.0},
+    # 'reviewed-legacy' = 1.5: human-reviewed, so upweighted like graded
+    # review, but below graded review's 2.0 because it was never graded.
     'review_up': {'high': 1.0, 'moderate': 0.85, 'low': 0.70,
                   'reviewed-high': 2.0, 'reviewed-moderate': 1.7,
-                  'reviewed-low': 1.4},
+                  'reviewed-low': 1.4, 'reviewed-legacy': 1.5},
+    # 'reviewed-legacy' = 0.85: least-trusted source here — review data that
+    # carries no reviewer grade — so it sits below both hand 'High' (1.5) and
+    # graded review's floor.
     'hand_up':   {'high': 1.5, 'moderate': 1.3, 'low': 1.0,
                   'reviewed-high': 1.0, 'reviewed-moderate': 0.85,
-                  'reviewed-low': 0.70},
+                  'reviewed-low': 0.70, 'reviewed-legacy': 0.85},
 }
 
 _ACTIVE_SCHEME = 'level'

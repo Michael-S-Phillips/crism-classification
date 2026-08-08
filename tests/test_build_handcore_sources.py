@@ -192,6 +192,41 @@ def test_legacy_policy_is_noop_on_empty():
                                 confirm_cap=5000, seed=42).empty
 
 
+from scripts.build_7cls_dataset import _stamp_legacy_tier
+
+
+def test_stamp_legacy_tier_restamps_legacy_only():
+    """The provenance fix: legacy (ungraded) rows get their own tier so they
+    stop colliding with hand-labeled 'High' rows in the weight-scheme tables;
+    v3-graded rows must keep their existing 'Reviewed-*' tiers unchanged."""
+    df = pd.concat([
+        _graded('legacy', 'High', 15, 0),
+        _graded('v3', 'Reviewed-High', 10, 100),
+        _graded('v3', 'Reviewed-Moderate', 5, 200),
+    ], ignore_index=True)
+    out = _stamp_legacy_tier(df)
+    legacy_tiers = set(out.loc[out['review_session'] == 'legacy', 'confidence_tier'])
+    v3_tiers = set(out.loc[out['review_session'] == 'v3', 'confidence_tier'])
+    assert legacy_tiers == {'Reviewed-Legacy'}
+    assert v3_tiers == {'Reviewed-High', 'Reviewed-Moderate'}
+    assert (out['review_session'] == 'legacy').sum() == 15
+    assert (out['review_session'] == 'v3').sum() == 15
+
+
+def test_stamp_legacy_tier_noop_without_review_session():
+    """Hand-labeled base rows never carry review_session and must pass
+    through untouched (this helper is only ever called on review
+    fragments, never on the base frame)."""
+    df = _hn_frame(10, 'High', '').drop(columns=['negative_of'])
+    assert 'review_session' not in df.columns
+    out = _stamp_legacy_tier(df)
+    assert set(out['confidence_tier']) == {'High'}
+
+
+def test_stamp_legacy_tier_noop_on_empty():
+    assert _stamp_legacy_tier(pd.DataFrame()).empty
+
+
 from scripts.build_7cls_dataset import _build_base
 
 
