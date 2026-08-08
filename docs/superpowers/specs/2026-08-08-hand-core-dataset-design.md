@@ -121,11 +121,33 @@ WEIGHT_SCHEMES = {
 Default `level`: hand-labeled is the core by volume, and review dominates
 bland/junk/alteration only because it is the sole source there.
 
-**Bug this fixes.** `_collapse_labels` lowercases `confidence_tier` and looks it
-up in a three-key table (`high`/`moderate`/`low`). The review tiers
-`Reviewed-High/-Moderate/-Low` miss that lookup entirely and fall through to
-whatever `confidence_weight` was stamped in the parquet. The scheme tables above
-key every tier explicitly.
+**The `Reviewed-*` pass-through is deliberate, not a bug.** `_collapse_labels`
+lowercases `confidence_tier` and looks it up in a three-key table
+(`high`/`moderate`/`low`); the v3 tiers `Reviewed-High/-Moderate/-Low` miss that
+lookup **by design**. `scripts/review/persistence.py` stamps them outside
+`_TIER_WEIGHTS` precisely so the per-polygon reviewer weight
+(`REVIEW_CONFIDENCE_WEIGHTS` = High 1.0 / Moderate 0.75 / Low 0.5) passes through
+verbatim, and `tests/test_collapse_reviewed_tier.py` locks that behaviour.
+
+`--weight_scheme level` must therefore **preserve** the pass-through, not
+override it. Measured current state:
+
+| source | `confidence_tier` | stamped weight |
+|---|---|---|
+| hand base | High / Moderate / Low | via `_TIER_WEIGHTS` → 1.0 / 0.85 / 0.70 |
+| legacy review (9.5M rows) | `High` | 1.0 |
+| v3 review | `Reviewed-High/-Moderate/-Low` | 1.0 / 0.75 / 0.5 |
+
+So the effective weighting today is already close to `level`. The flag exists to
+make the scheme *sweepable*, not to repair a defect. (The 2.0 / 3.0 review
+weights live in `build_review_augmented_train.py`, which builds the superseded
+`mrral_pixels_with_review*.parquet` and is not part of this pipeline.)
+
+**Provenance trap.** Legacy rows are stamped `confidence_tier='High'`. A grade
+filter keyed on `confidence_tier` alone cannot distinguish an ungraded legacy
+row from a reviewer-graded v3 `Reviewed-High` row, so the legacy exclusion would
+silently fail. Session provenance must be tracked explicitly at read time — see
+the `review_session` column in the plan.
 
 ## Source policy
 
@@ -192,7 +214,11 @@ consume this same parquet without a rebuild.
 - `--legacy_confirm_cap` is enforced per polygon on legacy confirms, and does
   **not** apply to legacy alteration hard-negatives (which use
   `MAX_PX_PER_POLYGON`).
-- Every weight scheme resolves every tier present in the parquet — in
-  particular the `Reviewed-*` tiers that currently miss the lookup.
+- Every weight scheme resolves every tier present in the parquet, and
+  `level` reproduces today's effective weights exactly — including the
+  deliberate `Reviewed-*` stamped-weight pass-through that
+  `tests/test_collapse_reviewed_tier.py` asserts.
+- Legacy rows (stamped `confidence_tier='High'`) are not admitted by the v3
+  grade filter; provenance, not tier, decides session membership.
 - Splits stay unit-balanced; no polygon straddles train/val.
 - Alteration hand rows are not dropped when they co-occur with mineral labels.
