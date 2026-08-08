@@ -109,3 +109,44 @@ def test_grade_filter_leaves_legacy_rows_untouched():
 
 def test_grade_filter_is_noop_on_empty():
     assert _filter_review_grades(pd.DataFrame(), ['High']).empty
+
+
+from scripts.build_7cls_dataset import _apply_legacy_policy
+
+
+def test_legacy_dropped_for_unlisted_class():
+    df = pd.concat([
+        _graded('legacy', 'High', 20, 0),
+        _graded('v3', 'Reviewed-High', 10, 100),
+    ], ignore_index=True)
+    out = _apply_legacy_policy(df, 'bland', ['alteration', 'lcp', 'hcp'],
+                               confirm_cap=5000, seed=42)
+    assert (out['review_session'] == 'legacy').sum() == 0
+    assert (out['review_session'] == 'v3').sum() == 10
+
+
+def test_legacy_kept_for_listed_class():
+    df = _graded('legacy', 'High', 20, 0)
+    out = _apply_legacy_policy(df, 'alteration', ['alteration', 'lcp', 'hcp'],
+                               confirm_cap=5000, seed=42)
+    assert len(out) == 20
+
+
+def test_legacy_confirm_cap_applies_per_polygon():
+    # 3 polygons x 40 rows, cap 10 -> 30 rows kept, legacy confirms only.
+    f = _hn_frame(120, 'High', '', poly_start=0)
+    f['polygon_id'] = [i // 40 for i in range(120)]
+    f['review_session'] = 'legacy'
+    out = _apply_legacy_policy(f, 'lcp', ['lcp'], confirm_cap=10, seed=42,
+                               is_confirm=True)
+    assert len(out) == 30
+    assert out.groupby('polygon_id').size().max() == 10
+
+
+def test_legacy_hard_negatives_ignore_confirm_cap():
+    f = _hn_frame(120, 'High', 'alteration', poly_start=0)
+    f['polygon_id'] = [i // 40 for i in range(120)]
+    f['review_session'] = 'legacy'
+    out = _apply_legacy_policy(f, 'alteration', ['alteration'], confirm_cap=10,
+                               seed=42, is_confirm=False)
+    assert len(out) == 120

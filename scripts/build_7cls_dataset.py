@@ -163,6 +163,27 @@ def _filter_review_grades(df: pd.DataFrame, grades: list[str]) -> pd.DataFrame:
     return df[keep].reset_index(drop=True)
 
 
+def _apply_legacy_policy(df: pd.DataFrame, target_class: str,
+                         legacy_classes: list[str], confirm_cap: int,
+                         seed: int, is_confirm: bool = False) -> pd.DataFrame:
+    """Drop legacy-session rows unless target_class is explicitly admitted.
+
+    The legacy MC13 session was never graded, so it is excluded by default.
+    The spec admits it only for alteration/lcp/hcp. Legacy CONFIRMS additionally
+    get a tighter per-polygon cap (they concentrate into 10-18 polygons);
+    legacy hard-negatives keep MAX_PX_PER_POLYGON.
+    """
+    if df is None or df.empty or 'review_session' not in df.columns:
+        return df if df is not None else pd.DataFrame()
+    is_legacy = df['review_session'] == 'legacy'
+    if target_class not in legacy_classes:
+        return df[~is_legacy].reset_index(drop=True)
+    if not is_confirm:
+        return df.reset_index(drop=True)
+    legacy = _per_polygon_cap(df[is_legacy], confirm_cap, seed)
+    return pd.concat([df[~is_legacy], legacy], ignore_index=True)
+
+
 def _read_hn_tag(hn_dirs: str | list[str], tag: str | None) -> pd.DataFrame:
     """Read hard_negatives rows by negative_of tag via predicate pushdown.
     Accepts one dir or several (multi-session review data); schemas may
