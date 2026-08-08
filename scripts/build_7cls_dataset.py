@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 
 import numpy as np
@@ -149,13 +150,43 @@ def _as_dirs(dirs: str | list[str]) -> list[str]:
     return [dirs] if isinstance(dirs, str) else list(dirs)
 
 
+_GRADED_SESSION_RE = re.compile(r'_7cls_v\d+')
+
+
 def _session_of(path: str) -> str:
-    """Classify a review dir as the ungraded legacy session or the graded v3.
+    """Classify a review dir as the ungraded legacy session or a graded one.
 
     Legacy rows are stamped confidence_tier='High', identical to hand-labeled
     High rows, so tier cannot identify the session — the path must.
+
+    ANY `_7cls_v<N>` directory counts as graded (returns 'v3', the label the
+    whole pipeline keys on). Matching only the literal '_7cls_v3' would make a
+    future mc13_review_7cls_v4 session silently register as ungraded legacy —
+    it would bypass the --review_grades bar entirely and instead be governed by
+    the per-class --legacy_classes admission, which is the wrong policy.
     """
-    return 'v3' if '_7cls_v3' in os.path.normpath(path) else 'legacy'
+    return 'v3' if _GRADED_SESSION_RE.search(os.path.normpath(path)) else 'legacy'
+
+
+def _require_provenance(df: pd.DataFrame, who: str) -> None:
+    """Fail loudly when a NON-EMPTY frame has lost its review_session column.
+
+    Returning the frame unchanged here would be the worst possible failure: the
+    grade bar and the per-class legacy admission would BOTH become silent
+    no-ops, the build would succeed, and the dataset would quietly contain the
+    ungraded rows the policy was written to exclude. An empty frame carries no
+    rows to misclassify, so it stays a clean no-op.
+    """
+    if 'review_session' not in df.columns:
+        raise ValueError(
+            f'{who}: non-empty frame is missing the `review_session` column — '
+            'review provenance was lost upstream, so this filter would '
+            'silently do nothing.\n  Likely cause: main()\'s review source '
+            'policy block ran AFTER the `frag[all_cols]` projection (all_cols '
+            'comes from the base frame, which has no review_session, so the '
+            'projection strips it).\n  The policy block MUST run before that '
+            'projection. Otherwise check that the loader stamping '
+            'review_session (_session_of) still runs for this source.')
 
 
 def _filter_review_grades(df: pd.DataFrame, grades: list[str]) -> pd.DataFrame:
@@ -167,8 +198,7 @@ def _filter_review_grades(df: pd.DataFrame, grades: list[str]) -> pd.DataFrame:
     """
     if df is None or df.empty:
         return df if df is not None else pd.DataFrame()
-    if 'review_session' not in df.columns:
-        return df
+    _require_provenance(df, '_filter_review_grades')
     keep_tiers = {f'Reviewed-{g}' for g in grades}
     is_v3 = df['review_session'] == 'v3'
     keep = (~is_v3) | df['confidence_tier'].isin(keep_tiers)
@@ -185,8 +215,9 @@ def _apply_legacy_policy(df: pd.DataFrame, target_class: str,
     get a tighter per-polygon cap (they concentrate into 10-18 polygons);
     legacy hard-negatives keep MAX_PX_PER_POLYGON.
     """
-    if df is None or df.empty or 'review_session' not in df.columns:
+    if df is None or df.empty:
         return df if df is not None else pd.DataFrame()
+    _require_provenance(df, '_apply_legacy_policy')
     is_legacy = df['review_session'] == 'legacy'
     if target_class not in legacy_classes:
         return df[~is_legacy].reset_index(drop=True)
@@ -722,11 +753,12 @@ _SPEC_PATH = 'docs/superpowers/specs/2026-08-08-hand-core-dataset-design.md'
 
 _EPILOG = f"""\
 Review source policy (--review_grades / --legacy_classes /
---legacy_confirm_cap / --bland_sources) defaults to FULLY PERMISSIVE: a bare
-invocation admits every reviewer grade, every session and every base bland row,
-reproducing the pre-hand-core build exactly (verified: identical row counts,
-per-class/split counts and tier histograms). The hand-core recipe is opt-in and
-must pass all four flags explicitly; see {_SPEC_PATH}.
+--legacy_confirm_cap / --bland_sources / --ndviz_dir) defaults to FULLY
+PERMISSIVE: a bare invocation admits every reviewer grade, every session and
+every base bland row, reproducing the pre-hand-core build exactly (verified:
+identical row counts, per-class/split counts and tier histograms). The
+hand-core recipe is opt-in and must pass its flags explicitly; any of them at a
+non-default value blocks writing to the default --out. See {_SPEC_PATH}.
 """
 
 
@@ -735,7 +767,10 @@ def _policy_is_permissive(args) -> bool:
     return (set(args.review_grades) == set(_PERMISSIVE_GRADES)
             and set(args.legacy_classes) == set(_ALL_POLICY_CLASSES)
             and args.legacy_confirm_cap == MAX_PX_PER_POLYGON
-            and args.bland_sources == 'all')
+            and args.bland_sources == 'all'
+            # --ndviz_dir '' disables the ndviz relabel session entirely, which
+            # changes the dataset just as much as the four flags above.
+            and args.ndviz_dir == DEFAULT_NDVIZ_DIR)
 
 
 def _out_clobber_error(args) -> str | None:

@@ -39,6 +39,20 @@ def test_session_of_classifies_dirs():
     assert _session_of('/x/data/mc13_review_7cls_v3/hard_negatives') == 'v3'
 
 
+def test_session_of_treats_any_versioned_session_as_graded():
+    """A FUTURE review session must not be mistaken for ungraded legacy data.
+
+    Matching only the literal '_7cls_v3' would classify a mc13_review_7cls_v4
+    directory as 'legacy' -- it would then bypass the --review_grades bar
+    entirely and be governed by the per-class --legacy_classes admission
+    instead. Any _7cls_v<N> dir is a graded session.
+    """
+    assert _session_of('/x/data/mc13_review_7cls_v4/hard_negatives') == 'v3'
+    assert _session_of('/x/data/mc13_review_7cls_v10/confirmed_pixels') == 'v3'
+    # ...and the ungraded legacy dir still classifies as legacy.
+    assert _session_of('/x/data/mc13_review/confirmed_pixels') == 'legacy'
+
+
 def test_read_hn_tag_stamps_session(tmp_path):
     legacy = _write_session(tmp_path, 'mc13_review',
                             _hn_frame(20, 'High', 'ambiguous'))
@@ -111,6 +125,18 @@ def test_grade_filter_is_noop_on_empty():
     assert _filter_review_grades(pd.DataFrame(), ['High']).empty
 
 
+def test_grade_filter_raises_when_provenance_is_missing():
+    """Losing review_session must be LOUD, not a silent no-op.
+
+    If provenance is stripped upstream the filter has nothing to key on, so
+    returning the frame unchanged would admit exactly the ungraded rows the
+    policy exists to exclude -- with no error and no warning.
+    """
+    df = _graded('v3', 'Reviewed-Low', 10, 0).drop(columns=['review_session'])
+    with pytest.raises(ValueError, match='review_session'):
+        _filter_review_grades(df, ['High'])
+
+
 from scripts.build_7cls_dataset import _apply_legacy_policy
 
 
@@ -150,6 +176,20 @@ def test_legacy_hard_negatives_ignore_confirm_cap():
     out = _apply_legacy_policy(f, 'alteration', ['alteration'], confirm_cap=10,
                                seed=42, is_confirm=False)
     assert len(out) == 120
+
+
+def test_legacy_policy_raises_when_provenance_is_missing():
+    """Same silent-failure guard for the per-class legacy admission."""
+    df = _graded('legacy', 'High', 10, 0).drop(columns=['review_session'])
+    with pytest.raises(ValueError, match='review_session'):
+        _apply_legacy_policy(df, 'bland', ['alteration'], confirm_cap=5000,
+                             seed=42)
+
+
+def test_legacy_policy_is_noop_on_empty():
+    """An empty frame carries no rows to misclassify -> clean no-op, no raise."""
+    assert _apply_legacy_policy(pd.DataFrame(), 'bland', ['alteration'],
+                                confirm_cap=5000, seed=42).empty
 
 
 from scripts.build_7cls_dataset import _build_base
@@ -314,8 +354,38 @@ def test_narrowed_policy_allowed_with_explicit_out():
     ['--legacy_classes', 'alteration', 'lcp', 'hcp'],
     ['--legacy_confirm_cap', '5000'],
     ['--bland_sources', 'review'],
+    ['--ndviz_dir', ''],
 ])
 def test_each_policy_flag_alone_trips_the_guard(argv):
-    """Every one of the four flags changes the dataset, so any of them alone
-    must be enough to refuse the default --out."""
+    """Every recipe flag changes the dataset, so any of them alone must be
+    enough to refuse the default --out. --ndviz_dir '' disables a whole
+    relabel session, so it counts too."""
     assert b._out_clobber_error(b._build_parser().parse_args(argv)) is not None
+
+
+# ── Policy block must precede the all_cols projection ────────────────────────
+
+def test_policy_block_runs_before_all_cols_projection():
+    """Invariant C: the review policy block MUST come before `all_cols`.
+
+    Failure mode: `all_cols = base.columns.tolist()` is taken from the BASE
+    frame, which has no `review_session` column, and every fragment is then
+    projected with `frag[all_cols]`. If the policy block were ever moved below
+    that projection, the provenance column would already be gone -- so the
+    grade bar and the legacy admission would BOTH become no-ops. The build
+    would still succeed with no error and no warning; the dataset would just
+    quietly contain the ungraded rows the policy exists to exclude. Nothing
+    else in the suite detects this, because every helper-level test constructs
+    its own frame.
+    """
+    import inspect
+
+    src = inspect.getsource(b.main)
+    policy_at = src.find('Applying review source policy')
+    projection_at = src.find('all_cols = base.columns')
+    assert policy_at != -1, 'policy block marker not found in main()'
+    assert projection_at != -1, 'all_cols projection not found in main()'
+    assert policy_at < projection_at, (
+        'the review source policy block must run BEFORE '
+        '`all_cols = base.columns` -- the projection strips review_session, '
+        'which would turn every policy filter into a silent no-op')
