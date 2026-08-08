@@ -121,6 +121,29 @@ WEIGHT_SCHEMES = {
 Default `level`: hand-labeled is the core by volume, and review dominates
 bland/junk/alteration only because it is the sole source there.
 
+**Sweep limitation — legacy review is invisible to the weight schemes.** Legacy
+rows are stamped `confidence_tier='High'`, identical to a hand-labeled High row,
+so no scheme can address them separately. Verified resolution:
+
+| tier (source) | `level` | `review_up` | `hand_up` |
+|---|---:|---:|---:|
+| `High` (hand) | 1.00 | 1.00 | 1.50 |
+| `Moderate` (hand) | 0.85 | 0.85 | 1.30 |
+| `Low` (hand) | 0.70 | 0.70 | 1.00 |
+| `High` (**legacy review**) | 1.00 | **1.00** | **1.50** |
+| `Reviewed-High` (v3) | 1.00 | 2.00 | 1.00 |
+| `Reviewed-Moderate` (v3) | 0.75 | 1.70 | 0.85 |
+
+Consequences: `review_up` upweights only *graded* review, not legacy — arguably
+correct, since legacy was never graded. But `hand_up` boosts legacy review by
+the **hand-label** factor, which is backwards from its intent. **`hand_up` is
+therefore not a meaningful arm while legacy data is admitted.** `level` (the
+default) is unaffected — every source resolves to the same scale.
+
+To make the sweep fully meaningful, the builder would need to stamp legacy rows
+with a distinguishable tier (e.g. `Reviewed-Legacy`) so the schemes can address
+them. Not done; recorded as a known limitation.
+
 **The `Reviewed-*` pass-through is deliberate, not a bug.** `_collapse_labels`
 lowercases `confidence_tier` and looks it up in a three-key table
 (`high`/`moderate`/`low`); the v3 tiers `Reviewed-High/-Moderate/-Low` miss that
