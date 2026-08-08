@@ -221,3 +221,101 @@ def test_all_policy_classes_covers_every_policy_key():
     on, or the permissive default would still drop a fragment."""
     for cls in ('lcp', 'bland', 'junk', 'alteration'):
         assert cls in b._ALL_POLICY_CLASSES
+
+
+# ── Order preservation when the confirm cap binds nothing ────────────────────
+
+from pandas.testing import assert_frame_equal
+
+
+def _mixed_session_confirms():
+    """40 confirm rows over 4 polygons, legacy and v3 INTERLEAVED row by row."""
+    f = _hn_frame(40, 'High', '', poly_start=0)
+    f['polygon_id'] = [i // 10 for i in range(40)]
+    f['review_session'] = ['legacy' if i % 2 == 0 else 'v3' for i in range(40)]
+    return f
+
+
+def test_legacy_confirm_noop_cap_preserves_row_order():
+    """A non-binding confirm cap must return the frame UNCHANGED, in order.
+
+    Failure mode this locks down: _apply_legacy_policy's is_confirm branch ends
+    in pd.concat([df[~is_legacy], legacy]), which hoists all v3 rows to the
+    front and pushes legacy rows to the back even when the cap drops nothing.
+    _joint_resplit's greedy unit assignment is order-sensitive at ties, so that
+    reordering alone silently moves ~250 rows between train and val on every
+    bare rebuild -- breaking the guarantee that unflagged runs reproduce the
+    pre-hand-core dataset. Row counts stay identical, so a length assertion
+    cannot catch it; compare the whole frame including order.
+    """
+    f = _mixed_session_confirms()
+    # cap 1000 >> 10 rows/polygon, so it binds nothing.
+    out = _apply_legacy_policy(f, 'lcp', ['lcp'], confirm_cap=1000, seed=42,
+                               is_confirm=True)
+    assert_frame_equal(out, f.reset_index(drop=True))
+
+
+def test_legacy_confirm_noop_cap_keeps_both_sessions_intact():
+    """The admitted + is_confirm=True path on a MIXED frame: v3 rows must be
+    neither dropped nor duplicated, and legacy rows must all survive."""
+    f = _mixed_session_confirms()
+    out = _apply_legacy_policy(f, 'lcp', ['lcp'], confirm_cap=1000, seed=42,
+                               is_confirm=True)
+    assert len(out) == 40
+    assert (out['review_session'] == 'v3').sum() == 20
+    assert (out['review_session'] == 'legacy').sum() == 20
+    # no duplication: pixel_row was unique per input row
+    assert out['pixel_row'].is_unique
+
+
+def test_legacy_confirm_binding_cap_still_caps_on_mixed_frame():
+    """The guard must not disarm a cap that genuinely binds: v3 rows pass
+    through whole while legacy rows are capped per polygon."""
+    f = _mixed_session_confirms()
+    out = _apply_legacy_policy(f, 'lcp', ['lcp'], confirm_cap=2, seed=42,
+                               is_confirm=True)
+    # 20 v3 rows untouched + 4 polygons x 2 legacy rows kept
+    assert (out['review_session'] == 'v3').sum() == 20
+    assert (out['review_session'] == 'legacy').sum() == 8
+    legacy = out[out['review_session'] == 'legacy']
+    assert legacy.groupby('polygon_id').size().max() == 2
+
+
+# ── Champion parquet clobber guard ───────────────────────────────────────────
+
+def test_default_out_rejected_when_policy_is_narrowed():
+    """The spec requires data/mrral_pixels_7cls.parquet not be clobbered. A
+    narrowed policy writing to the default path would destroy the champion's
+    data lineage, so it must be refused."""
+    args = b._build_parser().parse_args(['--bland_sources', 'review'])
+    err = b._out_clobber_error(args)
+    assert err is not None
+    assert '--out' in err
+
+
+def test_default_out_allowed_when_policy_is_permissive():
+    """A bare invocation reproduces the champion's dataset, so writing to the
+    default path is exactly right."""
+    assert b._out_clobber_error(b._build_parser().parse_args([])) is None
+
+
+def test_narrowed_policy_allowed_with_explicit_out():
+    """The hand-core recipe passes --out, so it must sail through."""
+    args = b._build_parser().parse_args(
+        ['--bland_sources', 'review', '--review_grades', 'High', 'Moderate',
+         '--legacy_classes', 'alteration', 'lcp', 'hcp',
+         '--legacy_confirm_cap', '5000',
+         '--out', 'data/mrral_pixels_7cls_handcore.parquet'])
+    assert b._out_clobber_error(args) is None
+
+
+@pytest.mark.parametrize('argv', [
+    ['--review_grades', 'High', 'Moderate'],
+    ['--legacy_classes', 'alteration', 'lcp', 'hcp'],
+    ['--legacy_confirm_cap', '5000'],
+    ['--bland_sources', 'review'],
+])
+def test_each_policy_flag_alone_trips_the_guard(argv):
+    """Every one of the four flags changes the dataset, so any of them alone
+    must be enough to refuse the default --out."""
+    assert b._out_clobber_error(b._build_parser().parse_args(argv)) is not None

@@ -118,6 +118,10 @@ JOINT_BALANCE_COLS = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase',
 _ALL_POLICY_CLASSES = ['olivine', 'lcp', 'hcp', 'plagioclase', 'bland',
                        'alteration', 'junk']
 
+# Every v3 reviewer grade. Admitting all of them makes _filter_review_grades a
+# no-op; this is the permissive default for --review_grades.
+_PERMISSIVE_GRADES = ['High', 'Moderate', 'Low']
+
 # MC13 tiles: t1028..t1396 (rows where tile_id matches this range)
 _MC13_TILE_NUMS = set(range(1028, 1397))
 
@@ -197,6 +201,7 @@ def _apply_legacy_policy(df: pd.DataFrame, target_class: str,
         # so reordering here would shift a few hundred rows between train and
         # val even though no row is dropped. That would break the guarantee
         # that a bare rebuild reproduces the pre-hand-core dataset.
+        # Locked by test_legacy_confirm_noop_cap_preserves_row_order.
         return df.reset_index(drop=True)
     return pd.concat([df[~is_legacy], legacy], ignore_index=True)
 
@@ -725,6 +730,37 @@ must pass all four flags explicitly; see {_SPEC_PATH}.
 """
 
 
+def _policy_is_permissive(args) -> bool:
+    """True when every review-policy flag is at its inert default."""
+    return (set(args.review_grades) == set(_PERMISSIVE_GRADES)
+            and set(args.legacy_classes) == set(_ALL_POLICY_CLASSES)
+            and args.legacy_confirm_cap == MAX_PX_PER_POLYGON
+            and args.bland_sources == 'all')
+
+
+def _out_clobber_error(args) -> str | None:
+    """Refuse to overwrite the champion's parquet with a policy-filtered build.
+
+    The spec requires data/mrral_pixels_7cls.parquet stay untouched so the
+    current champion's data lineage remains reproducible. A narrowed policy
+    produces a DIFFERENT dataset, so writing it to the default path would
+    silently destroy that lineage. Returns an error message, or None if the
+    combination is safe.
+    """
+    if _policy_is_permissive(args):
+        return None
+    if os.path.abspath(args.out) != os.path.abspath(DEFAULT_OUT):
+        return None
+    return (
+        'refusing to overwrite the default output with a policy-filtered '
+        f'build.\n  --out is still the default: {DEFAULT_OUT}\n'
+        '  but a non-default review policy is set, which produces a '
+        'DIFFERENT dataset\n  than the one the current champion was trained '
+        "on. Pass an explicit --out\n  (e.g. --out "
+        "data/mrral_pixels_7cls_handcore.parquet).\n"
+        f'  See {_SPEC_PATH}')
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Construct the CLI parser.
 
@@ -762,7 +798,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     help='Cap raw bland rows per tag read (debug/dry-run only; '
                          'do NOT use for real builds)')
     ap.add_argument('--review_grades', nargs='+',
-                    default=['High', 'Moderate', 'Low'],
+                    default=list(_PERMISSIVE_GRADES),
                     help='v3 reviewer grades to admit. Default admits ALL '
                          'grades (High Moderate Low) so the filter is inert; '
                          "the hand-core recipe passes 'High Moderate' "
@@ -792,6 +828,13 @@ def _build_parser() -> argparse.ArgumentParser:
 def main():
     ap = _build_parser()
     args = ap.parse_args()
+
+    # Guard the champion's parquet before doing any expensive work. Applied to
+    # dry runs too: a dry run rehearses the real command, so it should surface
+    # the same error rather than let the operator discover it 40 minutes later.
+    _err = _out_clobber_error(args)
+    if _err:
+        ap.error(_err)
 
     if args.max_bland_raw is not None:
         global _MAX_BLAND_RAW  # noqa: PLW0603
