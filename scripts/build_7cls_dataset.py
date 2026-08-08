@@ -110,6 +110,14 @@ BALANCE_COLS = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase',
 JOINT_BALANCE_COLS = ['olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase',
                       'bland', 'alteration', 'junk']
 
+# Every class the review source policy (--legacy_classes) can key on. Used as
+# the PERMISSIVE default: admitting all of them makes _apply_legacy_policy a
+# no-op, so a bare invocation reproduces the pre-hand-core build. The hand-core
+# recipe narrows this explicitly — see
+# docs/superpowers/specs/2026-08-08-hand-core-dataset-design.md
+_ALL_POLICY_CLASSES = ['olivine', 'lcp', 'hcp', 'plagioclase', 'bland',
+                       'alteration', 'junk']
+
 # MC13 tiles: t1028..t1396 (rows where tile_id matches this range)
 _MC13_TILE_NUMS = set(range(1028, 1397))
 
@@ -181,6 +189,15 @@ def _apply_legacy_policy(df: pd.DataFrame, target_class: str,
     if not is_confirm:
         return df.reset_index(drop=True)
     legacy = _per_polygon_cap(df[is_legacy], confirm_cap, seed)
+    if len(legacy) == int(is_legacy.sum()):
+        # Cap bound nothing (the loaders already capped at MAX_PX_PER_POLYGON,
+        # which is the permissive default). Return the frame in its ORIGINAL
+        # row order: the concat below moves legacy rows to the end, and the
+        # joint re-split's greedy unit assignment is order-sensitive at ties,
+        # so reordering here would shift a few hundred rows between train and
+        # val even though no row is dropped. That would break the guarantee
+        # that a bare rebuild reproduces the pre-hand-core dataset.
+        return df.reset_index(drop=True)
     return pd.concat([df[~is_legacy], legacy], ignore_index=True)
 
 
@@ -696,8 +713,27 @@ def _joint_resplit(out: pd.DataFrame, seed: int = SEED) -> pd.DataFrame:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__)
+_SPEC_PATH = 'docs/superpowers/specs/2026-08-08-hand-core-dataset-design.md'
+
+_EPILOG = f"""\
+Review source policy (--review_grades / --legacy_classes /
+--legacy_confirm_cap / --bland_sources) defaults to FULLY PERMISSIVE: a bare
+invocation admits every reviewer grade, every session and every base bland row,
+reproducing the pre-hand-core build exactly (verified: identical row counts,
+per-class/split counts and tier histograms). The hand-core recipe is opt-in and
+must pass all four flags explicitly; see {_SPEC_PATH}.
+"""
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """Construct the CLI parser.
+
+    Split out of main() so tests can assert on flag defaults without running a
+    build (see tests/test_build_handcore_sources.py).
+    """
+    ap = argparse.ArgumentParser(
+        description=__doc__, epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--base_parquet',  default=DEFAULT_BASE_PARQUET)
     ap.add_argument('--confirmed_dir', nargs='+', default=DEFAULT_CONFIRMED_DIRS,
                     help='One or more confirmed_pixels dirs (review sessions '
@@ -725,21 +761,36 @@ def main():
     ap.add_argument('--max_bland_raw', type=int, default=None,
                     help='Cap raw bland rows per tag read (debug/dry-run only; '
                          'do NOT use for real builds)')
-    ap.add_argument('--review_grades', nargs='+', default=['High', 'Moderate'],
-                    help='v3 reviewer grades to admit (default: High Moderate). '
-                         'Legacy rows are ungraded and unaffected.')
+    ap.add_argument('--review_grades', nargs='+',
+                    default=['High', 'Moderate', 'Low'],
+                    help='v3 reviewer grades to admit. Default admits ALL '
+                         'grades (High Moderate Low) so the filter is inert; '
+                         "the hand-core recipe passes 'High Moderate' "
+                         'explicitly. Legacy rows are ungraded and unaffected.')
     ap.add_argument('--legacy_classes', nargs='*',
-                    default=['alteration', 'lcp', 'hcp'],
+                    default=list(_ALL_POLICY_CLASSES),
                     help='Classes for which the ungraded legacy session is '
-                         'admitted. Empty list excludes legacy entirely.')
-    ap.add_argument('--legacy_confirm_cap', type=int, default=5_000,
+                         'admitted. Default admits EVERY class, so legacy is '
+                         'never dropped; the hand-core recipe passes '
+                         "'alteration lcp hcp' explicitly. Empty list excludes "
+                         'legacy entirely.')
+    ap.add_argument('--legacy_confirm_cap', type=int,
+                    default=MAX_PX_PER_POLYGON,
                     help='Per-polygon cap on legacy CONFIRMS only (they '
-                         'concentrate into 10-18 polygons). Legacy hard '
-                         f'negatives keep MAX_PX_PER_POLYGON '
-                         f'({MAX_PX_PER_POLYGON:,}).')
+                         'concentrate into 10-18 polygons). Defaults to '
+                         f'MAX_PX_PER_POLYGON ({MAX_PX_PER_POLYGON:,}), i.e. no '
+                         'tighter than today; the hand-core recipe passes 5000 '
+                         'explicitly. Legacy hard negatives always keep '
+                         'MAX_PX_PER_POLYGON.')
     ap.add_argument('--bland_sources', choices=['all', 'review'], default='all',
-                    help="'review': drop the base parquet's bland rows so bland "
-                         'comes only from review rejects.')
+                    help="Default 'all' keeps the base parquet's bland rows "
+                         "(inert). 'review': drop them so bland comes only from "
+                         'review rejects, as the hand-core recipe requires.')
+    return ap
+
+
+def main():
+    ap = _build_parser()
     args = ap.parse_args()
 
     if args.max_bland_raw is not None:

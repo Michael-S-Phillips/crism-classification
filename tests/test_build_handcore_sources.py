@@ -184,3 +184,40 @@ def test_bland_sources_all_keeps_base_other_rows(tmp_path):
     out = _build_base(_base_frame(tmp_path), 300_000, bland_sources='all')
     assert len(out) == 40
     assert (out['bland'] > 0).sum() == 20
+
+
+# ── CLI policy-flag defaults must stay inert ─────────────────────────────────
+
+import scripts.build_7cls_dataset as b
+
+
+def test_policy_flag_defaults_are_inert():
+    """A bare invocation must reproduce the pre-hand-core build.
+
+    The hand-core source policy is opt-in: every flag defaults to the fully
+    permissive value so no filtering happens unless explicitly asked for. If
+    you change a default here, you silently change every unflagged rebuild of
+    data/mrral_pixels_7cls.parquet -- and the champion's data lineage stops
+    being reproducible. Narrow the policy on the command line instead.
+    """
+    args = b._build_parser().parse_args([])
+
+    # Every v3 reviewer grade admitted -> _filter_review_grades drops nothing.
+    assert set(args.review_grades) == {'High', 'Moderate', 'Low'}
+
+    # Every class admitted -> _apply_legacy_policy never drops the legacy
+    # session, whichever fragment it is keyed to.
+    assert set(args.legacy_classes) == set(b._ALL_POLICY_CLASSES)
+
+    # No cap tighter than the one the loaders already applied upstream.
+    assert args.legacy_confirm_cap == b.MAX_PX_PER_POLYGON
+
+    # Base parquet's bland rows retained.
+    assert args.bland_sources == 'all'
+
+
+def test_all_policy_classes_covers_every_policy_key():
+    """_ALL_POLICY_CLASSES must cover every class main()'s policy table keys
+    on, or the permissive default would still drop a fragment."""
+    for cls in ('lcp', 'bland', 'junk', 'alteration'):
+        assert cls in b._ALL_POLICY_CLASSES
