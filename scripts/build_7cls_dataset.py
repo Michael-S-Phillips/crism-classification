@@ -146,6 +146,23 @@ def _session_of(path: str) -> str:
     return 'v3' if '_7cls_v3' in os.path.normpath(path) else 'legacy'
 
 
+def _filter_review_grades(df: pd.DataFrame, grades: list[str]) -> pd.DataFrame:
+    """Keep only v3 rows whose reviewer grade is in `grades`.
+
+    Legacy rows pass through untouched — they were never graded, and their
+    stamped confidence_tier='High' would otherwise be misread as a reviewer
+    grade. Legacy admission is decided per-class in _apply_legacy_policy.
+    """
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame()
+    if 'review_session' not in df.columns:
+        return df
+    keep_tiers = {f'Reviewed-{g}' for g in grades}
+    is_v3 = df['review_session'] == 'v3'
+    keep = (~is_v3) | df['confidence_tier'].isin(keep_tiers)
+    return df[keep].reset_index(drop=True)
+
+
 def _read_hn_tag(hn_dirs: str | list[str], tag: str | None) -> pd.DataFrame:
     """Read hard_negatives rows by negative_of tag via predicate pushdown.
     Accepts one dir or several (multi-session review data); schemas may

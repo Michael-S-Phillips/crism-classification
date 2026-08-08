@@ -74,3 +74,38 @@ def test_confirmed_loader_preserves_session_through_template_align(tmp_path):
         template)
     assert 'review_session' in out.columns
     assert set(out['review_session']) == {'legacy', 'v3'}
+
+
+from scripts.build_7cls_dataset import _filter_review_grades
+
+
+def _graded(session, tier, n, poly_start):
+    f = _hn_frame(n, tier, 'ambiguous', poly_start=poly_start)
+    f['review_session'] = session
+    return f
+
+
+def test_grade_filter_keeps_only_named_v3_grades():
+    df = pd.concat([
+        _graded('v3', 'Reviewed-High', 10, 0),
+        _graded('v3', 'Reviewed-Moderate', 10, 10),
+        _graded('v3', 'Reviewed-Low', 10, 20),
+    ], ignore_index=True)
+    out = _filter_review_grades(df, ['High', 'Moderate'])
+    assert set(out['confidence_tier']) == {'Reviewed-High', 'Reviewed-Moderate'}
+    assert len(out) == 20
+
+
+def test_grade_filter_leaves_legacy_rows_untouched():
+    # Legacy is stamped tier='High'; the v3 grade filter must not judge it.
+    df = pd.concat([
+        _graded('legacy', 'High', 15, 0),
+        _graded('v3', 'Reviewed-Low', 10, 100),
+    ], ignore_index=True)
+    out = _filter_review_grades(df, ['High', 'Moderate'])
+    assert (out['review_session'] == 'legacy').sum() == 15
+    assert (out['review_session'] == 'v3').sum() == 0
+
+
+def test_grade_filter_is_noop_on_empty():
+    assert _filter_review_grades(pd.DataFrame(), ['High']).empty
