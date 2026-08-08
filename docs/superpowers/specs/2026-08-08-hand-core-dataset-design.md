@@ -219,10 +219,17 @@ ungraded legacy olivine-only rows** through a door opened for pyroxene. That is
 a different decision from the alteration dual-label case and must be made
 deliberately, not inherited by analogy.
 
-Options if this is not wanted: (a) accept it, (b) zero the olivine columns on
-legacy rows admitted for pyx, or (c) admit only legacy confirm rows that are
-actually pyx-positive. **Currently (a) — accepted as-is.** The 5k/polygon
-confirm cap still applies, so the realised volume is far below the raw 440k.
+Options considered: (a) accept it, (b) zero the olivine columns on legacy rows
+admitted for pyx, or (c) admit only legacy confirm rows that are actually
+pyx-positive.
+
+**RULING 2026-08-08: (a) accept as-is**, after the correction above was put to
+the user explicitly. Rationale: olivine is the strongest class in every floor
+test, the 5k/polygon confirm cap keeps realised volume far below the raw 440k,
+and additional olivine coverage is unlikely to hurt. Option (b) was rejected
+because zeroing would create false negatives on the 3,461 genuine dual-label
+rows — teaching "this olivine pixel is not olivine", the same failure mode that
+made bland review-only rather than zeroed.
 
 **Review augmentation is a small effect for the mineral classes.** Even with the
 legacy supplement, lcp and hcp remain overwhelmingly hand-labeled. This build

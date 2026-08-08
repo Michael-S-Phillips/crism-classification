@@ -104,6 +104,34 @@ backbone, encoder_lr_scale 0.01. A name should tell you what the model *is*.
   non-comparable; do not rank it against raw runs on val. (pyx-merge line under evaluation — see
   floor tests `pyx_lrscale001`/`pyx_lrscale0001`, not yet promoted.)
 
+### ft_5cls_pyxalt_cr_*  — **REJECTED on floor test** (5-class, pyx merge + CR)
+- files: `ft_5cls_pyxalt_cr_lrscale01_best.pt` (0.5923) · `_lrscale0001_best.pt` (0.5848)
+  · `_lrscale001_best.pt` (0.5524).  Classify with
+  `--continuum_removed --brightness_aux --embed_dim 256 --pyx_alt`.
+- backbone: `spatial_mae_cr_denoising_256d_6l` (MAE on unlabeled tiles — no label leakage)
+- classes (5, `--pyx_alt`): olivine · **pyx** (lcp+hcp merged) · plagioclase · other · alteration
+- data: **base parquet only** (`mrral_pixels.parquet`) — hand labels, no review concat, no
+  relabels, no MTRDR plag. Single-variable test of "does pyx+CR hold on hand labels alone?"
+- val_mAP_core 0.5923 (best arm, encoder_lr_scale 0.1) — non-comparable across eras, and moot.
+- floor (`pyxalt_cr_lrscale01`, 2026-08-08): **FAIL.** vs `ft_6cls_pyxcr_lrscale001_best`,
+  four metrics moved >2× the wrong way — Argyre alteration 226→899 (4.0×), Argyre plag @0.99
+  39→206 (5.3×), Nili alteration 635→1,399, Nili plag 1,564→2,943. Pyx floods Nili at
+  2,824 @0.50 / 21.6 MB (known-bad "v2 flood" is 2,772 / 10.5 MB). Argyre plag should be ≈0,
+  is 1,733. Argyre olivine peaks at 0.97 instead of 0.85–0.90.
+- **diagnosis — probability saturation:** Argyre pyx polygon count *rises* with threshold
+  (414 @0.50 → 1,505 @0.99). Thresholds should merge/remove regions, never create them; rising
+  counts mean a near-1.0 probability field fragmenting. **Present in `ft_6cls_pyxcr` too** — a
+  CR-pyx-family trait, not something `--pyx_alt` introduced.
+- status: **rejected, do not promote.** Kept only as the negative result for the pyx+CR
+  hand-labels-only hypothesis. Diagnose family-level saturation before running more pyx arms;
+  lr_scale is not the variable that matters. Other two arms not floor-tested (val_mAP_core
+  spread <0.04; this was not a near-miss). Report:
+  `reports/floor_tests/pyxalt_cr_lrscale01/summary.md`.
+- **caveat on this lineage:** all three arms first crashed on an incomplete
+  `patch_cache_base_cr` (train-only). The dataset silently fell back to on-the-fly reads while
+  `cache_is_cr` suppressed CR — see `c6e12fd`. Any earlier run pairing `--cache_is_cr` with an
+  incomplete cache and *no* `--brightness_aux` would have trained on raw patches **silently**.
+
 ### ft_6cls_mc11val_denoise  — best MC11-alteration model (6-class)
 - file: `ft_6cls_mc11val_denoise_best.pt`
 - backbone: **fresh** `spatial_mae_denoising_128d_6l` (--pretrain_ckpt, new head)

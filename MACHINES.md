@@ -18,7 +18,8 @@ All derived paths (`output_dir`, `checkpoints_dir`, `gpkg_dir`, etc.) are recomp
 
 | Machine | `data_root` |
 |---------|------------|
-| Primary workstation (Linux/WSL) | `/mnt/mrdr` |
+| Primary workstation (Linux/WSL) | `/mnt/mars-gis/CRISM/MRDR` |
+| Primary workstation (older mount) | `/mnt/mrdr` |
 | Older workstation | `/mnt/gigas/CRISM/MRDR` |
 | Server | `/mnt/crism/MRDR` |
 | Mac workstation (Apple Silicon) | `/Volumes/Mars_GIS/CRISM/MRDR` |
