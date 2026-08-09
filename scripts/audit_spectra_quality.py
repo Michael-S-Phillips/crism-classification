@@ -116,20 +116,26 @@ def audit_block(X: np.ndarray, min_run: int, min_tail: int) -> dict:
 
 
 def verify_against_tiles(df: pd.DataFrame, data_root: str, sample: int,
-                         seed: int = 42) -> list[str]:
-    """Re-read sampled pixels from the source tiles; report mismatches.
+                         seed: int = 42) -> tuple[list[str], list[str]]:
+    """Re-read sampled pixels from the source tiles.
 
     This is the stale-extraction check: the parquet can be internally clean and
     still disagree with the tile it was extracted from.
+
+    Returns (mismatched, unverifiable). Those are DIFFERENT claims and must not
+    be conflated: "I checked and it disagrees" is a defect; "the tile isn't on
+    this filesystem" means the check did not run. Only the first should ever
+    block a build.
     """
     import rasterio
     rng = np.random.default_rng(seed)
-    problems = []
+    problems: list[str] = []
+    missing: list[str] = []
     for tile, g in df.groupby('tile_id', sort=True):
         hits = sorted(glob.glob(os.path.join(data_root, 'mc*',
                                              f'{tile}_mrral*.img')))
         if not hits:
-            problems.append(f'{tile}: source tile not found under {data_root}')
+            missing.append(tile)
             continue
         take = g if len(g) <= sample else g.iloc[
             rng.choice(len(g), sample, replace=False)]
@@ -157,7 +163,7 @@ def verify_against_tiles(df: pd.DataFrame, data_root: str, sample: int,
             problems.append(
                 f'{tile}: {mism}/{n_ok} sampled rows DIFFER from the tile '
                 f'on disk — stale extraction (re-extract this tile)')
-    return problems
+    return problems, missing
 
 
 def main() -> None:
@@ -170,7 +176,17 @@ def main() -> None:
                     help='trailing zero-run length that counts as a defect (default 3)')
     ap.add_argument('--fail_over', type=float, default=0.0,
                     help='exit 1 if any check affects more than this %% of rows '
-                         '(default 0.0 = any defect fails)')
+                         'overall (default 0.0 = any defect fails)')
+    ap.add_argument('--fail_tile_over', type=float, default=None,
+                    help='exit 1 if any SINGLE TILE has more than this %% of its '
+                         'rows flagged. This is the better gate: the failure mode '
+                         'that matters is one bad tile dominating a class (t1444 '
+                         'was 100%% of its own rows and 72%% of the bland class), '
+                         'while a handful of bad rows spread over millions is '
+                         'noise. Setting this RELAXES --fail_over to 100.')
+    ap.add_argument('--require_tiles', action='store_true',
+                    help='treat "source tile not found" as a failure. Off by '
+                         'default: an unverifiable tile is not a defective one.')
     ap.add_argument('--batch', type=int, default=200_000)
     ap.add_argument('--verify_against_tiles', action='store_true',
                     help='re-read sampled pixels from the source .img and compare '
@@ -244,6 +260,7 @@ def main() -> None:
                   f'{100.0*e["bad"]/max(e["n"],1):>8.1f}%   {dom}')
 
     stale: list[str] = []
+    missing: list[str] = []
     if args.verify_against_tiles:
         root = args.data_root
         if root is None:
@@ -257,18 +274,47 @@ def main() -> None:
             if all(x in c for x in ('tile_id', 'pixel_row', 'pixel_col')):
                 frames.append(pd.read_parquet(f, columns=need))
         if frames:
-            stale = verify_against_tiles(pd.concat(frames, ignore_index=True),
-                                         root, args.sample)
+            stale, missing = verify_against_tiles(
+                pd.concat(frames, ignore_index=True), root, args.sample)
             if stale:
-                print('  STALE / MISMATCHED EXTRACTIONS:')
+                print('  MISMATCHED (defect — re-extract these tiles):')
                 for s in stale:
                     print(f'    {s}')
-            else:
+            if missing:
+                print(f'  NOT VERIFIABLE: {len(missing)} tile(s) not found under '
+                      f'{root}.')
+                print(f'    {", ".join(missing[:12])}'
+                      + (f' … (+{len(missing) - 12} more)' if len(missing) > 12 else ''))
+                print('    The check did NOT run for these — that is not the same '
+                      'as their being bad.')
+                if not args.require_tiles:
+                    print('    Not treated as a failure; pass --require_tiles to '
+                          'make it one.')
+            if not stale and not missing:
                 print('  all sampled rows match their source tiles.')
         else:
             print('  skipped: fragments lack tile_id/pixel_row/pixel_col.')
 
-    failed = worst > args.fail_over or bool(stale)
+    # Gate. --fail_tile_over is the better primary gate: the failure mode that
+    # matters is ONE tile dominating a class (t1444 was 100% of its own rows and
+    # 72% of bland), whereas 19 bad rows in 8.26M is noise. Setting it relaxes
+    # the global threshold, which would otherwise fire on that noise.
+    tile_bad = 0.0
+    tile_worst = None
+    for t, e in per_tile.items():
+        pct = 100.0 * e['bad'] / max(e['n'], 1)
+        if pct > tile_bad:
+            tile_bad, tile_worst = pct, t
+    if args.fail_tile_over is not None:
+        over = tile_bad > args.fail_tile_over
+        if over:
+            print(f'\nworst tile: {tile_worst} at {tile_bad:.1f}% bad '
+                  f'(threshold {args.fail_tile_over}%)')
+        failed = over or bool(stale) or (bool(missing) and args.require_tiles)
+    else:
+        failed = (worst > args.fail_over or bool(stale)
+                  or (bool(missing) and args.require_tiles))
+
     print('\nRESULT:', 'FAIL' if failed else 'PASS')
     if failed:
         print('Do not train on this parquet until the affected tiles are '

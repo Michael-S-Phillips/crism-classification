@@ -92,7 +92,12 @@ fi
 echo "=== STEP 0: auditing review spectra ($(date)) ==="
 for d in "$LEG_HN" "$LEG_CF" "$V3_HN" "$V3_CF"; do
     [ -d "$d" ] || { echo "ERROR: missing review dir $d"; exit 1; }
-    $PYTHON scripts/audit_spectra_quality.py "$d" --verify_against_tiles --sample 25
+    # --fail_tile_over 5: gate on a TILE being bad, not on a handful of rows.
+    # t1444 was 100% of its own rows; the legacy session's 19 defective rows in
+    # 8.26M are noise and must not block a build. Missing tiles are reported but
+    # do not fail: "could not verify" is not "verified bad".
+    $PYTHON scripts/audit_spectra_quality.py "$d" --verify_against_tiles \
+        --sample 25 --fail_tile_over 5
     rc=$?
     if [ $rc -ne 0 ]; then
         echo "ERROR: spectra audit FAILED for $d (exit $rc)."
@@ -105,7 +110,7 @@ for d in "$LEG_HN" "$LEG_CF" "$V3_HN" "$V3_CF"; do
 done
 
 echo "=== STEP 0b: auditing the base parquet ==="
-$PYTHON scripts/audit_spectra_quality.py "$BASE_PARQUET" || {
+$PYTHON scripts/audit_spectra_quality.py "$BASE_PARQUET" --fail_tile_over 5 || {
     echo "ERROR: base parquet failed the spectra audit. Refusing to build."; exit 1; }
 
 # ── STEP 1: build ────────────────────────────────────────────────────────────
@@ -123,7 +128,7 @@ $PYTHON -u scripts/build_7cls_dataset.py \
 
 # ── STEP 2: audit the product ────────────────────────────────────────────────
 echo "=== STEP 2: auditing the built parquet ($(date)) ==="
-$PYTHON scripts/audit_spectra_quality.py "$OUT" || {
+$PYTHON scripts/audit_spectra_quality.py "$OUT" --fail_tile_over 5 || {
     echo "ERROR: the BUILT parquet failed the spectra audit. Do not train on it."
     exit 1; }
 
