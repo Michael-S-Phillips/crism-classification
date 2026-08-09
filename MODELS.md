@@ -34,6 +34,37 @@ backbone, encoder_lr_scale 0.01. A name should tell you what the model *is*.
 
 ---
 
+> ## ⚠ Plagioclase val AP is INFLATED for every run using MTRDR patches
+>
+> **Audit 2026-08-08.** `train_torch` built the synthetic-patch TRAIN set with no
+> `split` filter, so it served *every* row of the synth parquet — including the
+> val and test rows that `--synth_val_*` simultaneously put into VAL. The model
+> was validated on plagioclase patches it had trained on. Logs show
+> `Concatenating 1817 synthetic plag patches into train set` against
+> `Concatenating 109 synthetic plag val patches`, and the 109 are a subset of
+> the 1,817.
+>
+> **Affected:** any run passing both `--synth_train_*` and `--synth_val_*` —
+> `hpc_finetune_7cls_v3bland.slurm` (the 7-class champion's lineage),
+> `hpc_finetune_7cls_reviewonly.slurm`, `hpc_finetune_pyx.slurm`, and the
+> ablations that copy them. Read their `val_AP_plagioclase` as an **upper
+> bound**, not a measurement — and note it still only reached ~0.148, so true
+> plagioclase performance is *worse* than these numbers, not better.
+>
+> Fixed in `e83a827` (synth train now filters `split=='train'`), with a
+> regression test in `tests/test_synthetic_plag.py`. Checkpoints were NOT
+> re-run; the caveat stands rather than the numbers being corrected.
+>
+> **Related, and the likelier root problem:** a spectral-angle confusion matrix
+> (`scripts/sam_confusion_matrix.py`) puts hand-labelled plagioclase at recall
+> 0.29 (k=1) / 0.41 (k=5), confused with alteration and lcp at 0.22 each, while
+> MTRDR plagioclase reaches 0.87 / **0.97** with a 1.09° self-angle. Allowing
+> 5 endmembers rescues `junk` (0.50 → 0.81), so the method detects multi-modality
+> when present — hand plagioclase does not recover, meaning it is genuinely
+> entangled with other classes rather than several clean modes. Plag AP has sat
+> at 0.069–0.152 across every architecture tried; mislabelled hand polygons
+> explain that better than class imbalance or model capacity.
+
 ## Tier 1 — Milestone classifiers
 
 ### ft_review_mtrdr  — champion (5-class)
