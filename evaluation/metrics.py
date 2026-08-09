@@ -65,6 +65,12 @@ def compute_per_class_ap(
     return result
 
 
+# The base parquet's own tiers. Always reported so metric keys stay stable
+# even when a data build contains none of a given tier; review-derived tiers
+# ('Reviewed-*') are discovered from the data instead of being enumerated here.
+_BASE_TIERS = ['High', 'Moderate', 'Low']
+
+
 def compute_metrics_by_confidence_tier(
     y_true: np.ndarray,
     y_score: np.ndarray,
@@ -77,11 +83,18 @@ def compute_metrics_by_confidence_tier(
     ----------
     y_true : (n, 6)
     y_score : (n, 6)
-    confidence_tiers : list of str, length n, values in {'High','Moderate','Low'}
+    confidence_tiers : list of str, length n. The three base-parquet tiers
+        ('High'/'Moderate'/'Low') are always reported — NaN when absent — so
+        downstream metric keys stay stable across runs. Any OTHER tier present
+        in the data is reported as well, rather than being silently dropped:
+        review-derived rows carry 'Reviewed-High'/'-Moderate'/'-Low' and
+        'Reviewed-Legacy', and hardcoding the three base tiers meant those rows
+        (over a third of the 7-class build) appeared in no bucket at all.
     """
     tiers = np.array(confidence_tiers)
+    extra = [t for t in np.unique(tiers).tolist() if t not in _BASE_TIERS]
     result = {}
-    for tier in ['High', 'Moderate', 'Low']:
+    for tier in _BASE_TIERS + extra:
         mask = tiers == tier
         if mask.sum() == 0:
             result[tier] = {'mAP': float('nan')}

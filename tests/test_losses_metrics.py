@@ -55,3 +55,30 @@ def test_metrics_by_confidence_tier():
     for tier_metrics in result.values():
         assert 'mAP' in tier_metrics
         assert 0.0 <= tier_metrics['mAP'] <= 1.0
+
+
+def test_metrics_by_confidence_tier_reports_review_tiers():
+    """Review-derived tiers must appear in their own bucket, not vanish.
+
+    The tier list used to be hardcoded to the three base-parquet tiers, so
+    every 'Reviewed-*' row — over a third of the 7-class build once
+    Reviewed-Legacy was introduced — was reported in no bucket at all.
+    """
+    import numpy as np
+    from evaluation.metrics import compute_metrics_by_confidence_tier
+
+    y_true = np.random.randint(0, 2, (80, 6)).astype(np.float32)
+    y_score = np.random.rand(80, 6).astype(np.float32)
+    tiers = (['High'] * 20 + ['Moderate'] * 20
+             + ['Reviewed-Legacy'] * 20 + ['Reviewed-High'] * 20)
+    result = compute_metrics_by_confidence_tier(y_true, y_score, tiers)
+
+    # Base tiers always present, even 'Low' which has no rows here.
+    assert {'High', 'Moderate', 'Low'} <= set(result)
+    assert np.isnan(result['Low']['mAP'])
+    # Review tiers discovered from the data.
+    assert 'Reviewed-Legacy' in result and 'Reviewed-High' in result
+    assert result['Reviewed-Legacy']['n_pixels'] == 20
+    assert result['Reviewed-High']['n_pixels'] == 20
+    # Every row lands in exactly one bucket.
+    assert sum(v['n_pixels'] for v in result.values() if 'n_pixels' in v) == 80
