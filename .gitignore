@@ -42,3 +42,4 @@ hpc_tile_list.txt
 
 # Exceptions: small label/metadata files that must stay tracked
 !data/*relabels*.csv
+data/mc13_review_7cls_v3.backup-pre-t1444-repair/
