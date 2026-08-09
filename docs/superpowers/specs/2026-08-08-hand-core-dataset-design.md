@@ -121,28 +121,46 @@ WEIGHT_SCHEMES = {
 Default `level`: hand-labeled is the core by volume, and review dominates
 bland/junk/alteration only because it is the sole source there.
 
-**Sweep limitation — legacy review is invisible to the weight schemes.** Legacy
-rows are stamped `confidence_tier='High'`, identical to a hand-labeled High row,
-so no scheme can address them separately. Verified resolution:
+**Three provenance classes, three tier families.** Legacy review rows were
+originally stamped `confidence_tier='High'` — identical to a hand-labeled High
+row — so no weight scheme could address them. `review_up` left legacy at 1.0,
+and `hand_up` boosted legacy *review* by the hand-label factor, backwards from
+its intent. **Fixed 2026-08-08:** the builder now stamps legacy review rows
+`Reviewed-Legacy`, which is provenance-accurate (human-reviewed, but never
+graded). Resolution, verified by test:
 
 | tier (source) | `level` | `review_up` | `hand_up` |
 |---|---:|---:|---:|
 | `High` (hand) | 1.00 | 1.00 | 1.50 |
 | `Moderate` (hand) | 0.85 | 0.85 | 1.30 |
 | `Low` (hand) | 0.70 | 0.70 | 1.00 |
-| `High` (**legacy review**) | 1.00 | **1.00** | **1.50** |
-| `Reviewed-High` (v3) | 1.00 | 2.00 | 1.00 |
-| `Reviewed-Moderate` (v3) | 0.75 | 1.70 | 0.85 |
+| `Reviewed-Legacy` (**legacy review, ungraded**) | **1.00** | **1.50** | **0.85** |
+| `Reviewed-High` (v3, graded) | 1.00 | 2.00 | 1.00 |
+| `Reviewed-Moderate` (v3, graded) | 0.75 | 1.70 | 0.85 |
 
-Consequences: `review_up` upweights only *graded* review, not legacy — arguably
-correct, since legacy was never graded. But `hand_up` boosts legacy review by
-the **hand-label** factor, which is backwards from its intent. **`hand_up` is
-therefore not a meaningful arm while legacy data is admitted.** `level` (the
-default) is unaffected — every source resolves to the same scale.
+Rationale: `review_up` puts legacy (1.5) below graded review (2.0) because it
+carries no reviewer grade; `hand_up` puts it lowest (0.85) as the least-attested
+source. **`level` is unchanged in effect** — legacy resolved to 1.0 via the
+`high` key before and resolves to 1.0 via `reviewed-legacy` now, so default
+training weights are identical.
 
-To make the sweep fully meaningful, the builder would need to stamp legacy rows
-with a distinguishable tier (e.g. `Reviewed-Legacy`) so the schemes can address
-them. Not done; recorded as a known limitation.
+**How much data this was hiding:** 542,473 review rows across all splits
+(386,974 in train) were counted as hand-labeled `High`. That is 55% of the
+994,256 review rows in the build — i.e. a third of every `High`-tier row was
+actually ungraded legacy review.
+
+**Two downstream consequences of the new tier value** (neither is a defect in
+this change; both are latent):
+
+- `training/train_torch.py` `--high_conf_only` filters `confidence_tier ==
+  'High'`, so it now drops ~387k more train rows than before. Not used by any
+  slurm today, but any future `--high_conf_only` run is non-comparable to
+  historical ones.
+- `evaluation/metrics.py` hardcodes `['High','Moderate','Low']` for its
+  `by_confidence` breakdown, so `Reviewed-Legacy` val rows (94,629) are not
+  reported in any bucket. `Reviewed-*` tiers were already excluded, so this is a
+  pre-existing reporting gap that the new tier widens. Deriving the tier list
+  from the data would close it.
 
 **The `Reviewed-*` pass-through is deliberate, not a bug.** `_collapse_labels`
 lowercases `confidence_tier` and looks it up in a three-key table
