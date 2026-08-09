@@ -68,12 +68,42 @@ def prep(a: np.ndarray, good: np.ndarray) -> np.ndarray:
     return cr[:, good]
 
 
+def _endmembers(X: np.ndarray, k: int, seed: int) -> np.ndarray:
+    """k representative spectra for a class.
+
+    k=1 -> the median. k>1 -> k-medoids: cluster on L2-normalised spectra (on
+    the unit sphere, Euclidean distance is monotone in the spectral angle, so
+    this clusters by band shape rather than brightness), then take the ACTUAL
+    spectrum nearest each centre. A medoid is a real observed spectrum; a
+    centroid is an average that may correspond to no real material.
+    """
+    if k <= 1 or len(X) <= k:
+        return np.nanmedian(X, axis=0)[None, :]
+    from sklearn.cluster import KMeans
+    norm = np.linalg.norm(X, axis=1, keepdims=True)
+    U = X / np.where(norm == 0, 1.0, norm)
+    lab = KMeans(n_clusters=k, n_init=10, random_state=seed).fit_predict(U)
+    out = []
+    for c in range(k):
+        m = lab == c
+        if not m.any():
+            continue
+        centre = U[m].mean(axis=0)
+        out.append(X[m][int(np.argmax(U[m] @ centre))])
+    return np.stack(out)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--npz', required=True, help='output of sample_class_spectra.py')
     ap.add_argument('--out', default='reports/sam_confusion.png')
     ap.add_argument('--seed', type=int, default=42)
+    ap.add_argument('--k', type=int, default=1,
+                    help='endmembers per class (default 1 = median). k>1 uses '
+                         'k-medoids, which separates "multi-modal class" from '
+                         '"genuinely inseparable class" — a single median cannot '
+                         'represent a class whose spectra form several groups.')
     args = ap.parse_args()
 
     d = np.load(args.npz)
@@ -95,15 +125,26 @@ def main() -> None:
         fit.append(X[idx[:h]])
         test.append(X[idx[h:]])
 
-    ends = np.stack([np.nanmedian(f, axis=0) for f in fit])          # (C, B)
     C = len(names)
+    ends, owner = [], []          # endmember spectra, and which class each belongs to
+    for i, f in enumerate(fit):
+        for e in _endmembers(f, args.k, args.seed + i):
+            ends.append(e)
+            owner.append(i)
+    ends = np.stack(ends)
+    owner = np.asarray(owner)
+    if args.k > 1:
+        print(f'\n{args.k} endmembers per class ({len(ends)} total)')
 
     conf = np.zeros((C, C), dtype=np.int64)
     mean_ang = np.zeros((C, C), dtype=np.float64)
     for i, X in enumerate(test):
-        angs = np.stack([spectral_angle(X, ends[j]) for j in range(C)], axis=1)
-        mean_ang[i] = np.nanmean(np.degrees(angs), axis=0)
-        pred = np.nanargmin(angs, axis=1)
+        angs = np.stack([spectral_angle(X, e) for e in ends], axis=1)  # (n, K*C)
+        # Per class: the BEST-matching of that class's endmembers.
+        best = np.stack([np.nanmin(angs[:, owner == j], axis=1)
+                         for j in range(C)], axis=1)
+        mean_ang[i] = np.nanmean(np.degrees(best), axis=0)
+        pred = np.nanargmin(best, axis=1)
         for j in range(C):
             conf[i, j] = int((pred == j).sum())
 
