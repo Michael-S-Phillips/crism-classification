@@ -115,6 +115,24 @@ def audit_block(X: np.ndarray, min_run: int, min_tail: int) -> dict:
     }
 
 
+def _find_tile_img(tile: str, data_root: str) -> list[str]:
+    """Locate a tile's mrral .img, trying every layout the pipeline uses.
+
+    scripts/train.py globs BOTH `data_root/mc*/t*mrral*.hdr` and
+    `data_root/t*mrral*.hdr`, so tiles may sit in per-quadrant subdirectories or
+    flat at the root depending on the machine. Searching only one layout makes
+    present tiles look missing, which is how a whole session got reported as
+    unverifiable on HPC.
+    """
+    for pattern in (os.path.join(data_root, 'mc*', f'{tile}_mrral*.img'),
+                    os.path.join(data_root, f'{tile}_mrral*.img'),
+                    os.path.join(data_root, '*', '*', f'{tile}_mrral*.img')):
+        hits = sorted(glob.glob(pattern))
+        if hits:
+            return hits
+    return []
+
+
 def verify_against_tiles(df: pd.DataFrame, data_root: str, sample: int,
                          seed: int = 42) -> tuple[list[str], list[str]]:
     """Re-read sampled pixels from the source tiles.
@@ -132,8 +150,7 @@ def verify_against_tiles(df: pd.DataFrame, data_root: str, sample: int,
     problems: list[str] = []
     missing: list[str] = []
     for tile, g in df.groupby('tile_id', sort=True):
-        hits = sorted(glob.glob(os.path.join(data_root, 'mc*',
-                                             f'{tile}_mrral*.img')))
+        hits = _find_tile_img(tile, data_root)
         if not hits:
             missing.append(tile)
             continue

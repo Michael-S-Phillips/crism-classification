@@ -43,11 +43,33 @@ NODATA = 65535.0
 BANDS = [f'm{i}' for i in range(N_BANDS)]
 
 
+def find_tile_img(tile: str, data_root: str) -> list[str]:
+    """Locate a tile's mrral .img, trying every layout the pipeline uses.
+
+    scripts/train.py globs BOTH `data_root/mc*/t*mrral*.hdr` and
+    `data_root/t*mrral*.hdr`, so tiles may sit in per-quadrant subdirectories or
+    flat at the root depending on the machine. Searching only the first layout
+    silently reports a present tile as missing.
+    """
+    for pattern in (os.path.join(data_root, 'mc*', f'{tile}_mrral*.img'),
+                    os.path.join(data_root, f'{tile}_mrral*.img'),
+                    os.path.join(data_root, '*', '*', f'{tile}_mrral*.img')):
+        hits = sorted(glob.glob(pattern))
+        if hits:
+            return hits
+    return []
+
+
 def load_tile_cube(tile: str, data_root: str) -> np.ndarray:
     import rasterio
-    hits = sorted(glob.glob(os.path.join(data_root, 'mc*', f'{tile}_mrral*.img')))
+    hits = find_tile_img(tile, data_root)
     if not hits:
-        raise SystemExit(f'ERROR: no mrral .img for {tile} under {data_root}')
+        raise SystemExit(
+            f'ERROR: no mrral .img for {tile} under {data_root}\n'
+            f'  Searched: {data_root}/mc*/{tile}_mrral*.img\n'
+            f'            {data_root}/{tile}_mrral*.img\n'
+            f'            {data_root}/*/*/{tile}_mrral*.img\n'
+            f'  Pass --data_root explicitly if the tiles live elsewhere.')
     if len(hits) > 1:
         print(f'  NOTE: {len(hits)} candidates, using {hits[0]}')
     with rasterio.open(hits[0]) as src:
