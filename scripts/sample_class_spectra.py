@@ -52,6 +52,17 @@ out['bland'] = [('v3 review', take(hn, hn['negative_of']==''))]
 out['junk']  = [('v3 review', take(hn, hn['negative_of']=='ambiguous'))]
 del hn
 
+# ---- MTRDR plag (real, targeted observations) + synthetic plag library ----
+for lbl, path in [('MTRDR', 'data/patch_cache/mtrdr_plag_rows.parquet'),
+                  ('synth', 'data/patch_cache/synth_plag_rows.parquet')]:
+    try:
+        r = pd.read_parquet(path, columns=BANDS+['plagioclase'])
+    except Exception as e:
+        print(f'  skip {lbl}: {e}'); continue
+    arr = take(r, r['plagioclase'] > 0)
+    if arr is not None:
+        out['plagioclase'].append((lbl, arr))
+
 np.savez_compressed(
     '/tmp/claude-1000/-mnt-mars-gis-CRISM-MRDR/932813d4-7224-4166-ad78-a68e5521e8fe/scratchpad/spectra.npz',
     wav=WAV, good=good_band_mask_59(),

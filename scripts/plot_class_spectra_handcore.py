@@ -8,13 +8,15 @@ S='/tmp/claude-1000/-mnt-mars-gis-CRISM-MRDR/932813d4-7224-4166-ad78-a68e5521e8f
 d=np.load(f'{S}/spectra.npz'); WAV=d['wav']
 GOOD=good_band_mask_59()   # bands 16-19 (1021-1056nm) are the detector-overlap
                           # window: CR sets them to 1.0 by construction, not measured
-HAND, REVIEW = '#0072B2', '#D55E00'          # CVD-validated pair (worst ΔE 28.8)
+HAND, REVIEW, SYNTH = '#0072B2', '#D55E00', '#CC79A7'   # CVD-validated trio
+                                                      # (worst CVD ΔE 11.2, floor 8)
 INK, MUTED, GRID = '#1a1a1a', '#5c5c5c', '#d8d8d8'
 
 CLASSES=[('olivine','olivine'),('lcp','lcp'),('hcp','hcp'),
          ('plagioclase','plagioclase'),('alteration','alteration'),
          ('bland','bland / dust'),('junk','junk')]
-SRC=[('hand','hand-labeled',HAND),('v3 review','v3 review',REVIEW)]
+SRC=[('hand','hand-labeled',HAND),('v3 review','v3 review',REVIEW),
+     ('MTRDR','MTRDR (real, targeted)',REVIEW),('synth','synth library (30 spectra)',SYNTH)]
 
 def prep(a):
     """Mask nodata exactly as the training reader does, then CR."""
@@ -34,8 +36,9 @@ for ax,(key,title) in zip(axes.ravel(),CLASSES):
         raw,cr=prep(d[k]); n_tot+=len(raw)
         med=np.nanmedian(cr,0); lo=np.nanpercentile(cr,25,0); hi=np.nanpercentile(cr,75,0)
         med=np.where(GOOD,med,np.nan); lo=np.where(GOOD,lo,np.nan); hi=np.where(GOOD,hi,np.nan)
+        ls='--' if skey=='synth' else '-'   # secondary encoding: synth is not real data
         ax.fill_between(WAV,lo,hi,color=col,alpha=0.16,linewidth=0)
-        ax.plot(WAV,med,color=col,lw=2.0,label=f'{slabel}  (n={len(raw):,})',
+        ax.plot(WAV,med,color=col,lw=2.0,ls=ls,label=f'{slabel}  (n={len(raw):,})',
                 solid_capstyle='round')
     ax.set_title(title,fontsize=13,color=INK,fontweight='600',loc='left',pad=7)
     ax.axhline(1.0,color=GRID,lw=1,zorder=0)
@@ -48,7 +51,7 @@ for ax,(key,title) in zip(axes.ravel(),CLASSES):
 
 ax=axes.ravel()[7]; ax.axis('off')
 ax.text(0,0.95,'How to read this',fontsize=12,fontweight='600',color=INK,va='top')
-ax.text(0,0.86,'Continuum-removed reflectance — what the model\nsees. 1.0 = continuum; dips are absorptions.\nLine = median, shading = IQR (25–75%).\n\nBlue vs orange is the SAME class from two\nsources. Divergence = review is teaching\nsomething different from the hand labels.\n\nGap at ~1030 nm: the detector-overlap window,\nwhich CR sets to 1.0 by construction.\n\nplagioclase has no review line — zero plag\nconfirms exist in either review session.\n\nbland is POST-REPAIR: t1444 (72% of the class)\nhad a zero-filled 2.25–2.46 µm tail until it\nwas re-extracted from the source tile today.',
+ax.text(0,0.86,'Continuum-removed reflectance — what the model\nsees. 1.0 = continuum; dips are absorptions.\nLine = median, shading = IQR (25–75%).\n\nBlue vs orange is the SAME class from two\nsources. Divergence = review is teaching\nsomething different from the hand labels.\n\nGap at ~1030 nm: the detector-overlap window,\nwhich CR sets to 1.0 by construction.\n\nplagioclase has no review line — zero plag\nconfirms exist in either review session.\n\nplagioclase now shows three sources. MTRDR is\nreal targeted data (6,108 unique spectra). The\ndashed synth line is 30 library spectra tiled\ninto 9,000 rows — replication, not diversity.\n\nbland is POST-REPAIR: t1444 (72% of the class)\nhad a zero-filled tail until re-extraction today.',
         fontsize=9.5,color=MUTED,va='top',linespacing=1.55)
 for ax in axes.ravel()[4:7]: ax.set_xlabel('wavelength (nm)',fontsize=10,color=MUTED)
 axes[0,0].set_ylabel('CR reflectance',fontsize=10,color=MUTED)
