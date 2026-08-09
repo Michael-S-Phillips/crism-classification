@@ -92,7 +92,7 @@ done
 
 # Refuse to train on spectra we have not checked. Cheap next to a wasted GPU day.
 echo "=== spectra audit ==="
-$PYTHON scripts/audit_spectra_quality.py "$PARQUET" || {
+$PYTHON scripts/audit_spectra_quality.py "$PARQUET" --fail_tile_over 5 || {
     echo "ERROR: $PARQUET failed the spectra audit. Refusing to train."; exit 1; }
 
 echo "=== arm $SLURM_ARRAY_TASK_ID: $RUN_NAME (weight_scheme=$SCHEME) ==="

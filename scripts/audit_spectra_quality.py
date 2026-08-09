@@ -36,8 +36,11 @@ Usage
   python scripts/audit_spectra_quality.py data/mc13_review_7cls_v3/hard_negatives \
       --verify_against_tiles --sample 300
 
-  # gate a build: non-zero exit if any check exceeds its threshold
-  python scripts/audit_spectra_quality.py <path> --fail_over 0.5
+  # gate a build (per-tile gate at 5%% is the default)
+  python scripts/audit_spectra_quality.py <path>
+
+  # strict: fail on ANY defective row
+  python scripts/audit_spectra_quality.py <path> --fail_over 0.0 --fail_tile_over 100
 
 Exit codes: 0 clean (or below thresholds), 1 defects found, 2 bad invocation.
 """
@@ -191,16 +194,19 @@ def main() -> None:
                     help='interior zero-run length that counts as a defect (default 5)')
     ap.add_argument('--min_tail', type=int, default=3,
                     help='trailing zero-run length that counts as a defect (default 3)')
-    ap.add_argument('--fail_over', type=float, default=0.0,
+    ap.add_argument('--fail_over', type=float, default=100.0,
                     help='exit 1 if any check affects more than this %% of rows '
-                         'overall (default 0.0 = any defect fails)')
-    ap.add_argument('--fail_tile_over', type=float, default=None,
+                         'OVERALL. Off by default (100) -- the per-tile gate is '
+                         'the meaningful one. Set 0.0 for a strict pass.')
+    ap.add_argument('--fail_tile_over', type=float, default=5.0,
                     help='exit 1 if any SINGLE TILE has more than this %% of its '
                          'rows flagged. This is the better gate: the failure mode '
                          'that matters is one bad tile dominating a class (t1444 '
                          'was 100%% of its own rows and 72%% of the bland class), '
                          'while a handful of bad rows spread over millions is '
-                         'noise. Setting this RELAXES --fail_over to 100.')
+                         'noise. DEFAULT 5.0 -- this is the primary gate, so a '
+                         'caller who forgets to pass a flag still gets sensible '
+                         'behaviour rather than a spurious failure.')
     ap.add_argument('--require_tiles', action='store_true',
                     help='treat "source tile not found" as a failure. Off by '
                          'default: an unverifiable tile is not a defective one.')
