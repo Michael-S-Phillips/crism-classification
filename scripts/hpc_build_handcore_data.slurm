@@ -36,12 +36,46 @@ PYTHON=/groups/sbyrne/phillipsm/micromamba/envs/crism/bin/python
 
 DATA_DIR=${DATA_ROOT}/crism_classification/data
 BASE_PARQUET=${DATA_DIR}/mrral_pixels.parquet
-V3_HN=${DATA_DIR}/mc13_review_7cls_v3/hard_negatives
-V3_CF=${DATA_DIR}/mc13_review_7cls_v3/confirmed_pixels
 OUT=${DATA_DIR}/mrral_pixels_7cls_handcore.parquet
 
 cd "$WORK_DIR"
 mkdir -p logs
+
+# The review sessions were NOT migrated to xdisk: migrate_bulk_to_xdisk.sh moved
+# checkpoints, parquets, patch_cache* and contrastive, and its own closing notes
+# flag the review inputs as un-harmonized. So resolve the session wherever it
+# actually lives instead of assuming the xdisk layout — and pass the resolved
+# path to BOTH the audit and the build, so they can never read different data.
+resolve_session () {   # $1 = session dir name -> echoes the path, or empty
+    local name="$1"
+    for cand in "${DATA_DIR}/${name}" "${WORK_DIR}/data/${name}"; do
+        if [ -d "$cand/hard_negatives" ]; then echo "$cand"; return; fi
+    done
+}
+V3_SESSION=$(resolve_session mc13_review_7cls_v3)
+LEGACY_SESSION=$(resolve_session mc13_review)
+
+if [ -z "$V3_SESSION" ]; then
+    echo "ERROR: cannot locate the mc13_review_7cls_v3 session. Looked in:"
+    echo "  ${DATA_DIR}/mc13_review_7cls_v3"
+    echo "  ${WORK_DIR}/data/mc13_review_7cls_v3"
+    exit 1
+fi
+# BOTH sessions must be read. The recipe admits the ungraded legacy session for
+# alteration/lcp/hcp; if only v3 were passed, --legacy_classes would silently
+# become a no-op and alteration would lose its largest source (103,895 px).
+if [ -z "$LEGACY_SESSION" ]; then
+    echo "ERROR: cannot locate the legacy mc13_review session, which the recipe"
+    echo "  admits for alteration/lcp/hcp. Refusing to build a recipe that"
+    echo "  silently differs from the spec."
+    exit 1
+fi
+echo "v3 session:     $V3_SESSION"
+echo "legacy session: $LEGACY_SESSION"
+V3_HN=${V3_SESSION}/hard_negatives
+V3_CF=${V3_SESSION}/confirmed_pixels
+LEG_HN=${LEGACY_SESSION}/hard_negatives
+LEG_CF=${LEGACY_SESSION}/confirmed_pixels
 
 if [ ! -f config.local.yaml ]; then
     printf 'data_root: %s\n' "${DATA_ROOT}" > config.local.yaml
@@ -56,7 +90,7 @@ fi
 # re-reads the source .img, which is the only thing that catches a stale
 # extraction. Gate the build on it rather than discovering it in a floor test.
 echo "=== STEP 0: auditing review spectra ($(date)) ==="
-for d in "$V3_HN" "$V3_CF"; do
+for d in "$LEG_HN" "$LEG_CF" "$V3_HN" "$V3_CF"; do
     [ -d "$d" ] || { echo "ERROR: missing review dir $d"; exit 1; }
     $PYTHON scripts/audit_spectra_quality.py "$d" --verify_against_tiles --sample 25
     rc=$?
@@ -64,7 +98,7 @@ for d in "$V3_HN" "$V3_CF"; do
         echo "ERROR: spectra audit FAILED for $d (exit $rc)."
         echo "  A named tile is stale or corrupt. Repair it with:"
         echo "    $PYTHON scripts/reextract_stale_review_tile.py --tile <tile> \\"
-        echo "        --session ${DATA_DIR}/mc13_review_7cls_v3"
+        echo "        --session $(dirname "$d")"
         echo "  then re-submit. Refusing to build on bad spectra."
         exit 1
     fi
@@ -78,6 +112,8 @@ $PYTHON scripts/audit_spectra_quality.py "$BASE_PARQUET" || {
 echo "=== STEP 1: hand-core build ($(date)) ==="
 $PYTHON -u scripts/build_7cls_dataset.py \
     --base_parquet   "$BASE_PARQUET" \
+    --confirmed_dir  "$LEG_CF" "$V3_CF" \
+    --hn_dir         "$LEG_HN" "$V3_HN" \
     --bland_sources  review \
     --review_grades  High Moderate \
     --legacy_classes alteration lcp hcp \
