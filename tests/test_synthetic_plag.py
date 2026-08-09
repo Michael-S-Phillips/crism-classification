@@ -85,3 +85,42 @@ def test_build_synth_rows_schema():
     assert (df["split"] == "train").all()              # train-only, never val/test
     assert df["tile_id"].str.startswith("SYNTH_PLAG_").all()
     assert [f"m{i}" for i in range(59)] == [c for c in df.columns if c.startswith("m")]
+
+
+def test_synth_train_injection_excludes_val_and_test_rows(tmp_path):
+    """The synth TRAIN set must not contain the synth VAL/TEST rows.
+
+    Regression for the 2026-08-08 plagioclase leak: train_torch built the synth
+    train dataset with no `split` argument, so SyntheticPatchDataset served every
+    row — including the val and test rows that --synth_val_* then put into VAL.
+    The model was validated on plagioclase patches it had trained on, which
+    inflated plag val AP in every run using both flags.
+    """
+    import numpy as np
+    import pandas as pd
+    from data.dataset import SyntheticPatchDataset
+
+    n = 30
+    splits = ['train'] * 18 + ['val'] * 6 + ['test'] * 6
+    rows = {'tile_id': [f't{i:04d}' for i in range(n)],
+            'polygon_id': list(range(n)),
+            'pixel_row': list(range(n)), 'pixel_col': list(range(n)),
+            'olivine_t1': [0.0] * n, 'olivine_t2': [0.0] * n, 'lcp': [0.0] * n,
+            'hcp': [0.0] * n, 'plagioclase': [1.0] * n, 'other': [0.0] * n,
+            'confidence_weight': [1.0] * n, 'confidence_tier': ['High'] * n,
+            'split': splits}
+    pq = tmp_path / 'rows.parquet'
+    pd.DataFrame(rows).to_parquet(pq, index=False)
+    npy = tmp_path / 'patches.npy'
+    np.save(npy, np.random.rand(n, 7, 7, 59).astype(np.float32))
+
+    train_ds = SyntheticPatchDataset(str(npy), str(pq), split='train')
+    val_ds = SyntheticPatchDataset(str(npy), str(pq), split='val')
+    unsplit = SyntheticPatchDataset(str(npy), str(pq))
+
+    assert len(train_ds) == 18
+    assert len(val_ds) == 6
+    # The bug: no split argument serves everything, so val rows land in train.
+    assert len(unsplit) == n, 'unfiltered behaviour changed'
+    assert len(train_ds) + len(val_ds) < len(unsplit), (
+        'train and val must be disjoint subsets, not overlapping views')

@@ -199,7 +199,14 @@ def train_torch_model(
         if synth_train_cache and synth_train_parquet:
             from data.dataset import SyntheticPatchDataset
             from torch.utils.data import ConcatDataset
-            synth_ds = SyntheticPatchDataset(synth_train_cache, synth_train_parquet)
+            # split='train' is LOAD-BEARING. Without it SyntheticPatchDataset
+            # serves every row in the parquet, so a synth set carrying its own
+            # val/test rows put them in TRAIN while --synth_val_* simultaneously
+            # put the val rows in VAL — the model was validated on plagioclase
+            # patches it had trained on. Logs show 1,817 into train against 109
+            # into val, and the 109 were a subset of the 1,817. Audit 2026-08-08.
+            synth_ds = SyntheticPatchDataset(synth_train_cache, synth_train_parquet,
+                                             split='train')
             logger.info(f"Concatenating {len(synth_ds)} synthetic plag patches into train set")
             train_ds = ConcatDataset([train_ds, synth_ds])
         val_ds = make_dataset(val_df, 'val')
