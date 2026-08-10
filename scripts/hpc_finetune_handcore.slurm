@@ -119,5 +119,9 @@ $PYTHON -u scripts/train.py \
 
 echo "=== $RUN_NAME done ==="
 echo "Floor-test with:"
-echo "  CLASSIFY_EXTRA_ARGS=\"--continuum_removed --brightness_aux --embed_dim ${EMBED_DIM} --seven_class\" \\"
+# NOTE: no vocab flag. classify_tile_supervised._set_n_classes reads
+# head.weight and a 7-wide head auto-selects the 7-class vocab. --seven_class
+# does not exist there (only --pyx / --pyx_alt do, to disambiguate 5/6-wide
+# heads), so passing it would abort with an unrecognised-argument error.
+echo "  CLASSIFY_EXTRA_ARGS=\"--continuum_removed --brightness_aux --embed_dim ${EMBED_DIM}\" \\"
 echo "    bash scripts/floor_test.sh ${CKPT_DIR}/${RUN_NAME}_best.pt ${RUN_NAME}"
