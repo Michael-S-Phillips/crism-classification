@@ -84,3 +84,25 @@ def test_batch_shape_and_nan_safety():
 def test_wrong_band_count_raises():
     with pytest.raises(ValueError, match='59'):
         linear_continuum_removed(np.zeros(40, dtype=np.float32))
+
+
+def test_batched_call_matches_per_row_calls():
+    """A batched call must equal calling the function on each row separately.
+
+    Guards against a batch-shared continuum fit, which would silently break
+    level invariance: np.linalg.lstsq with a multi-column RHS solves each column
+    independently, but a refactor that reduced y across rows before fitting
+    would pass every other test in this file.
+    """
+    rows = np.stack([
+        _line(0.10, 0.05),                      # dim, gentle positive slope
+        _arch(_line(0.30, -0.10), 0.04),        # 3x brighter, NEGATIVE slope, arch
+        _arch(_line(0.15, 0.0), -0.03),         # concave (negative amplitude)
+        _line(0.22, 0.0),                       # flat line
+    ])
+    batched = linear_continuum_removed(rows)
+    for i in range(len(rows)):
+        np.testing.assert_allclose(
+            batched[i], linear_continuum_removed(rows[i]), rtol=0, atol=1e-6,
+            err_msg=f'row {i} differs between batched and single-row call — '
+                    f'the continuum fit is being shared across rows')
