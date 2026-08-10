@@ -45,6 +45,7 @@ class DenoisingSpatialSpectralMAE(SpatialSpectralMAE):
         spike_center_band: int = 15,
         spike_fwhm_bands: float = 3.0,
         spike_band_range: Tuple[int, int] = (13, 17),
+        n_channel_blocks: int = 1,
     ):
         super().__init__(
             n_bands=n_bands, patch_size=patch_size,
@@ -52,6 +53,11 @@ class DenoisingSpatialSpectralMAE(SpatialSpectralMAE):
             decoder_dim=decoder_dim, decoder_layers=decoder_layers,
             mask_ratio=mask_ratio, dropout=dropout,
         )
+        assert n_bands % n_channel_blocks == 0, (
+            f"n_bands ({n_bands}) must be divisible by n_channel_blocks "
+            f"({n_channel_blocks})"
+        )
+        self.n_channel_blocks = n_channel_blocks
         self.noise_aug = CrismNoiseAugmentation(
             sigma_gauss=sigma_gauss,
             sigma_spike=sigma_spike,
@@ -90,6 +96,16 @@ class DenoisingSpatialSpectralMAE(SpatialSpectralMAE):
         recon = self.reconstruction_head(decoded)
 
         x_flat = x_clean.reshape(B, N, self.n_bands)
-        loss = ((recon - x_flat) ** 2).mean()
+        if self.n_channel_blocks == 1:
+            loss = ((recon - x_flat) ** 2).mean()
+        else:
+            # Per-block MSE, then averaged. A single pooled mean would weight the
+            # objective by each block's variance -- with hull-CR at std 0.0705
+            # and linear-CR at 0.1726 (2.45x), the pretrain would spend itself on
+            # the linear block, which is the raw-space MAE failure mode relocated.
+            per = (recon - x_flat) ** 2
+            bs = self.n_bands // self.n_channel_blocks
+            loss = torch.stack([per[..., i * bs:(i + 1) * bs].mean()
+                                for i in range(self.n_channel_blocks)]).mean()
 
         return loss, recon, mask

@@ -95,3 +95,96 @@ def test_encoder_state_dict_loads_into_classifier(model):
     assert unexpected == []
     assert not any(k.startswith('encoder.encoder') for k in missing), \
         f"core encoder weights missing: {[k for k in missing if k.startswith('encoder.encoder')]}"
+
+
+def test_per_channel_block_loss_is_balanced():
+    """A pooled MSE over blocks of unequal variance silently reweights the
+    objective. With n_channel_blocks=2 the loss must be the MEAN of the two
+    per-block MSEs, so a high-variance block cannot dominate the pretrain."""
+    import torch
+    from models.denoising_spatial_mae import DenoisingSpatialSpectralMAE
+
+    torch.manual_seed(0)
+    m = DenoisingSpatialSpectralMAE(n_bands=118, patch_size=7, embed_dim=32,
+                                    n_heads=4, n_layers=2, decoder_dim=16,
+                                    decoder_layers=1, n_channel_blocks=2)
+    assert m.n_channel_blocks == 2
+
+    # Block B has 10x the amplitude of block A.
+    x = torch.randn(2, 7, 7, 118) * 0.1
+    x[..., 59:] *= 10.0
+    loss, recon, _ = m(x)
+    assert torch.isfinite(loss)
+    assert recon.shape[-1] == 118
+
+    # Reference: a pooled MSE over the same residual is dominated by block B,
+    # so the balanced loss must not simply equal it.
+    m1 = DenoisingSpatialSpectralMAE(n_bands=118, patch_size=7, embed_dim=32,
+                                     n_heads=4, n_layers=2, decoder_dim=16,
+                                     decoder_layers=1, n_channel_blocks=1)
+    assert m1.n_channel_blocks == 1
+
+
+def test_single_block_default_matches_old_behaviour():
+    """The 59-band hull-only path must be untouched: one block, pooled mean."""
+    import torch
+    from models.denoising_spatial_mae import DenoisingSpatialSpectralMAE
+    m = DenoisingSpatialSpectralMAE(n_bands=59, patch_size=7, embed_dim=32,
+                                    n_heads=4, n_layers=2, decoder_dim=16,
+                                    decoder_layers=1)
+    assert m.n_channel_blocks == 1
+    loss, recon, _ = m(torch.randn(2, 7, 7, 59) * 0.1)
+    assert torch.isfinite(loss) and recon.shape[-1] == 59
+
+
+def test_per_channel_block_loss_matches_manual_balanced_formula():
+    """Not from the brief: added because the two tests above (verbatim from the
+    task brief) never actually compute a pooled reference on the SAME forward
+    pass and diff it against the returned loss -- the brief's own comment says
+    the balanced loss "must not simply equal" the pooled one but no assertion
+    checks that.
+
+    This test recomputes the balanced MSE from the same (recon, x_flat) pair
+    and confirms the returned loss matches the mean-of-per-block-means formula
+    exactly (float-identical), i.e. the implementation is Step 3's formula.
+
+    IMPORTANT / KNOWN LIMITATION documented here rather than hidden: for
+    n_bands=118 with n_channel_blocks=2, the two blocks are EXACTLY equal
+    size (59 + 59). For equal-size blocks, "mean of per-block means" is a
+    mathematical identity equal to the plain pooled mean over all elements --
+    e.g. mean([mean(A), mean(B)]) == mean(A ++ B) whenever len(A) == len(B),
+    regardless of A and B's variances. That makes the balanced loss and the
+    gradient it produces IDENTICAL, element-for-element, to the pooled-mean
+    loss this task set out to replace -- see verification below and the
+    task-3-report.md "Concerns" section. Actually fixing the variance-skew
+    defect described in the brief would require weighting inversely to each
+    block's own variance (or standardizing the targets), not just averaging
+    two equal-size group means.
+    """
+    import torch
+    from models.denoising_spatial_mae import DenoisingSpatialSpectralMAE
+
+    torch.manual_seed(0)
+    m = DenoisingSpatialSpectralMAE(n_bands=118, patch_size=7, embed_dim=32,
+                                    n_heads=4, n_layers=2, decoder_dim=16,
+                                    decoder_layers=1, n_channel_blocks=2)
+    m.eval()
+    m.noise_aug.sigma_gauss = 0.0
+    m.noise_aug.sigma_spike = 0.0
+    m.noise_aug.sigma_column = 0.0
+
+    torch.manual_seed(0)
+    x = torch.randn(2, 7, 7, 118) * 0.1
+    x[..., 59:] *= 10.0
+    loss, recon, _ = m(x)
+
+    x_flat = x.reshape(2, 49, 118)
+    per = (recon - x_flat) ** 2
+    expected_balanced = torch.stack([per[..., :59].mean(), per[..., 59:].mean()]).mean()
+    pooled = per.mean()
+
+    torch.testing.assert_close(loss, expected_balanced, rtol=1e-5, atol=1e-6)
+    # Documents the mathematical identity above: for these EQUAL-size blocks
+    # (59 + 59 = 118), balanced == pooled to full float precision. This is
+    # expected given the formula, not a test bug -- see docstring.
+    torch.testing.assert_close(loss, pooled, rtol=1e-5, atol=1e-6)

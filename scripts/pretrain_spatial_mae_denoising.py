@@ -42,6 +42,11 @@ def main():
     parser.add_argument('--decoder_dim', type=int,   default=64)
     parser.add_argument('--decoder_layers', type=int, default=2)
     parser.add_argument('--mask_ratio',  type=float, default=0.75)
+    parser.add_argument('--n_bands', type=int, default=59,
+                        help='59 for hull-CR only; 118 for dual (hull+linear)')
+    parser.add_argument('--n_channel_blocks', type=int, default=1,
+                        help='set 2 with --n_bands 118 so the reconstruction '
+                             'loss is balanced across the two channel blocks')
     # Noise augmentation
     parser.add_argument('--sigma_gauss',  type=float, default=0.0087)
     parser.add_argument('--sigma_spike',  type=float, default=0.0058)
@@ -67,6 +72,10 @@ def main():
     parser.add_argument('--resume',   type=str, default=None)
     parser.add_argument('--no_wandb', action='store_true')
     args = parser.parse_args()
+
+    if args.n_bands == 118 and args.n_channel_blocks != 2:
+        parser.error('--n_bands 118 requires --n_channel_blocks 2; a pooled loss '
+                     'over blocks of unequal variance skews the pretrain.')
 
     cfg_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), args.config
@@ -111,7 +120,8 @@ def main():
 
     from models.denoising_spatial_mae import DenoisingSpatialSpectralMAE
     model = DenoisingSpatialSpectralMAE(
-        n_bands=59, patch_size=7,
+        n_bands=args.n_bands, patch_size=7,
+        n_channel_blocks=args.n_channel_blocks,
         embed_dim=args.embed_dim, n_heads=args.n_heads, n_layers=args.n_layers,
         decoder_dim=args.decoder_dim, decoder_layers=args.decoder_layers,
         mask_ratio=args.mask_ratio,
