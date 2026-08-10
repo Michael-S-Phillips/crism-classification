@@ -1,0 +1,209 @@
+# Dual continuum representation (hull-CR ⊕ linear-CR) — design
+
+**Date:** 2026-08-10
+**Status:** approved, pending implementation plan
+**Touches:** `data/continuum_removal.py`, `data/dataset.py`, the patch-cache
+builders, `models/spatial_spectral_*`, the MAE pretrain, `scripts/train.py`,
+`scripts/classify_tile_supervised.py`
+
+---
+
+## Problem
+
+Upper-hull continuum removal destroys the diagnostic feature of the two classes
+that have never worked.
+
+Alteration's diagnostic is a broad **convex arch over 1–2 µm**. Upper-hull CR
+divides by the convex hull — and a broad convex arch *is* approximately the hull,
+so CR divides the feature out. Measured on the hand-core training data:
+
+| class | RAW arch | hull-CR arch | retained |
+|---|---:|---:|---:|
+| **alteration (v3 review)** | **0.1678** | 0.0683 | **41%** |
+| plagioclase | 0.0397 | 0.0226 | 57% |
+| olivine | 0.0617 | 0.0416 | 67% |
+| lcp | 0.0454 | 0.0373 | 82% |
+| bland | 0.0266 | 0.0225 | 84% |
+
+(arch = convexity at 1625 nm against the 984–2205 nm chord; positive = convex.
+The RAW column is normalised by the reflectance level so it is comparable across
+classes of different albedo, while the ratio-spectrum columns are absolute — so
+"retained" is indicative of the magnitude lost, not an exact ratio. The
+per-pixel AUC table below is the rigorous version and does not depend on this
+normalisation.)
+
+Alteration has **the largest raw arch of any class**, 6× bland's, and hull-CR
+removes 59% of it. The consequence is that alteration's hull-CR endmember becomes
+the **flattest class in the vocabulary** (mean CR depth 0.0381, flatter than
+bland's 0.0412) and therefore acts as an attractor for featureless ground.
+
+That is observable in the deployed model. `scripts/audit_confident_predictions.py`
+on `ft_7cls_handcore_level`, Nili t1250, own-class spectral agreement from
+≥0.50 → ≥0.99:
+
+| model class | own agreement | drifts toward |
+|---|---|---|
+| olivine | 0.12 → 0.17 | alteration 0.30 → **0.54** |
+| lcp | 0.32 → 0.31 | hcp 0.32 → 0.45 |
+| plagioclase | **0.45 → 0.02** | alteration 0.24 → **0.97** |
+
+Controls confirm the diagnostic works: model-bland improves 0.66 → 0.95 and
+model-alteration 0.69 → 0.97 over the same bands. So when confident predictions
+have spectral support, it shows.
+
+**Why the network cannot simply learn CR itself.** Three reasons, and the third
+is the operative one:
+
+1. The hull is a combinatorial operation — which bands are hull vertices — so it
+   is discontinuous in the input and a poor fit for gradient descent.
+2. An MAE reconstructing *raw* spectra spends its capacity on level and slope,
+   because that is where the variance is; band depths of a few percent barely
+   register in the loss. **The pretraining objective decides what gets
+   represented.**
+3. The model has no incentive to be albedo-invariant, because albedo is
+   predictive in-distribution. Median brightness spans **1.76×** across classes
+   and orders them almost monotonically. On Mars albedo tracks dust, illumination
+   and atmospheric path — all correlated with *location* — so a raw-fed model
+   learns a shortcut that fails out-of-distribution.
+
+So hull-CR does not add information; it **removes a shortcut and imposes an
+invariance the model would never adopt voluntarily**. That is why it changes
+results despite being a deterministic function of its input — and why it is a
+*trade*, not an upgrade.
+
+## The fix
+
+**118 channels: hull-CR (59) ⊕ linear-CR (59).**
+
+`linear_continuum_removed(spec)` divides each spectrum by a **per-spectrum
+least-squares line** fitted over the 55 good bands (the 1021–1056 nm
+detector-overlap window excluded, as elsewhere). This removes level and slope —
+the albedo nuisance — but **cannot** remove curvature, because a line has none.
+
+Measured, per pixel, using the 1–2 µm arch alone to separate alteration from
+every other class:
+
+| transform | AUC vs all others | worst per-class |
+|---|---:|---|
+| raw arch | 0.991 | 0.978 (junk) |
+| **linear-CR arch** | **0.990** | **0.974 (junk)** |
+| hull-CR arch | 0.856 | **0.719 (hcp)** |
+| brightness alone (the shortcut) | 0.764 | 0.531 (plagioclase) |
+
+Linear-CR matches raw (0.990 vs 0.991) while hull-CR loses a third of the
+discriminating power, and sags worst exactly against hcp and lcp — the confusions
+the model actually makes.
+
+The mechanism is that linear-CR makes curvature a **signed** feature: alteration
+comes out **+0.174** (convex, above the chord) while bland is **−0.118**
+(concave, absorption-dominated). Opposite sides of zero, not merely far apart.
+Most classes go negative; alteration and junk go positive.
+
+**Least-squares, not endpoint-anchored.** Both were tested: identical
+discriminating power (AUC 0.990 each), but lsq removes albedo slightly better
+(residual spread 1.00× vs 1.05×) and cannot be tilted by a single artifact band —
+which matters because band 0 (410 nm) carries the known blue-edge spike up to
+~1180 I/F.
+
+**Why keep hull-CR rather than replace it.** Hull-CR's stronger invariance is the
+most plausible cause of the one unambiguous win this project has: Nili LCP
+surviving out-of-distribution in `ft_7cls_cr_lrscale0001`, where every raw-mrral
+model collapsed it to zero. Nothing proves that causally, so this design keeps it
+instead of trading it away on an assumption.
+
+## Scale handling
+
+This is the part that would otherwise be discovered too late. The two channels
+are not on the same scale:
+
+| | range | std |
+|---|---|---:|
+| hull-CR | [0, 1] bounded by construction | 0.0705 |
+| linear-CR | −8.65 … +10.20 (p1–p99: 0.24 … 1.25) | **0.1726** |
+
+Linear-CR carries **2.45× the variance**. Under pooled reconstruction MSE the
+pretrain would spend most of its capacity on the linear channel — the same
+failure mode as a raw-space MAE, merely relocated. Therefore:
+
+1. **Clip linear-CR to [0, 2]** before caching. p99.99 is 1.415, so this keeps
+   all real signal with headroom and removes the tails that would dominate
+   gradients.
+2. **Standardize per channel block** (divide each 59-band block by its global
+   std) before the encoder.
+3. **Compute the MAE denoising loss per channel and average**, never pooled.
+   Pooling silently reweights the objective by the variance ratio.
+
+## Held constant — exactly one variable
+
+| | value | why |
+|---|---|---|
+| vocab | **7-class** | the pyx merge is evidence-backed but gets its own spec |
+| loss | `--asl_loss`, unchanged | calibration gets its own spec |
+| encoder | 256d, 6 layers | matches `spatial_mae_cr_denoising_256d_6l` |
+| data | `mrral_pixels_7cls_handcore.parquet` | unchanged |
+| lr / schedule | unchanged | |
+
+Comparison target: **`ft_7cls_handcore_level`** — same data, same vocab, same
+loss, differing only in representation.
+
+## Components
+
+| component | change |
+|---|---|
+| `data/continuum_removal.py` | add `linear_continuum_removed(spec) -> (..., 59)`, lsq over good bands, clip [0, 2] |
+| global pretrain cache | new 118-channel builder (or a `--dual` mode on `build_global_patch_cache.py`) |
+| labeled cache | 118-channel mode on `build_cr_labeled_cache.py`, brightness sidecar retained |
+| `data/dataset.py` | a `dual_cr` mode serving (7, 7, 118); the existing `cache_is_cr` fail-fast guard must cover it |
+| MAE pretrain | `n_bands=118`, per-channel loss |
+| model | `n_bands=118` on the encoder and classifier |
+| `scripts/train.py` | flag to select the representation |
+| `scripts/classify_tile_supervised.py` | build the 118-channel input at inference |
+
+## Validation, defined before the run
+
+The design makes a **falsifiable prediction**: if hull-CR's flattening of the
+arch is what makes alteration an attractor, then restoring curvature should stop
+other classes drifting toward alteration.
+
+1. **`audit_confident_predictions.py` on Nili t1250** — olivine's drift to
+   alteration should fall from 0.54, plagioclase's from 0.97, and plagioclase's
+   own-agreement inversion (0.45 → 0.02) should at minimum flatten. This is the
+   mechanism check, and it is the one that can falsify the design.
+2. **Floor test** vs `ft_7cls_handcore_level` on the same 8 tiles.
+3. **Nili LCP must survive.** If it collapses, hull-CR's invariance was doing
+   more than the linear channel can replace — which would be a real finding, not
+   a failure to hide.
+4. `val_mAP_core` is reported but **not** the arbiter: it is not comparable
+   across representation changes, and this project's record is that val
+   repeatedly overruled reality.
+
+## Cost
+
+| step | cost |
+|---|---|
+| global 118-ch pretrain cache | ~1h20m (measured: 1h20m for 59-ch, 50 shards, ~5M patches) |
+| MAE pretrain | ~1h10m (measured for 256d, 200 epochs) |
+| labeled 118-ch cache | 4–8h (I/O bound) |
+| fine-tune | ~1 day |
+| **disk** | **~90 GB extra** — global 58 → 116 GB, labeled 32 → 64 GB |
+
+Disk lands on xdisk. Note `/groups` filling up previously killed two CR-cache
+builds with `Errno 28`, so the target must be xdisk explicitly.
+
+## Risks and open questions
+
+- **The MAE may still favour one channel** even after standardization, if the
+  denoising noise model interacts differently with a bounded vs unbounded
+  channel. Watch the per-channel losses; they should be comparable.
+- **118 channels doubles patch memory.** At batch 256 that is ~11.6 MB/batch,
+  which is not a constraint, but the labeled cache doubling to 64 GB is.
+- **Band 0 is corrupt in both channels.** The reader already masks I/F > 1.0 to
+  nodata, and lsq is robust to it, but the band contributes nothing either way.
+- **The raw global pretrain cache (May 18) predates the July 8 tile refresh** and
+  may carry zero-fill corruption. The new 118-ch cache must be built from tiles
+  directly, post-refresh — do not derive it from that cache. Run
+  `scripts/audit_spectra_quality.py` on the product.
+- **Alteration's two sources disagree.** Hand alteration's raw arch is 0.0341
+  against review's 0.1678 — 5× apart, so they are not the same material. This
+  design preserves whatever alteration signal exists but does not settle which
+  definition is correct; that is a labelling question.
