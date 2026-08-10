@@ -151,3 +151,146 @@ def test_main_builds_a_complete_cache_end_to_end(tmp_path):
     assert idx['seed'] == 42
     assert idx['tiles_used'] == 3
     assert isinstance(idx['shards'], list) and len(idx['shards']) == 3
+
+
+def test_dual_mode_emits_118_channels(tmp_path):
+    """extract_patches_from_tile(dual=True) must return (n,7,7,118).
+
+    This calls the BUILDER, not dual_continuum -- Task 2 already covers the
+    transform. Writes a small ENVI tile with rasterio, the same pattern
+    tests/test_dataset_cr.py uses, so the real read path is exercised.
+
+    NOTE on the brief's version of this test: it passed the .img path as the
+    first positional arg (which the function calls `hdr_path` and treats
+    with `hdr_path.replace('.hdr', '.img')`). That happens to work only by
+    accident -- a string with no '.hdr' substring passes through
+    .replace('.hdr', '.img') unchanged, so the .img path survives as-is. It
+    would silently break for any tile whose directory or filename contains
+    the literal substring '.hdr'. Passing the real .hdr path (as documented
+    in the function's own docstring/signature) is what's actually correct,
+    so that's what this version does. Also unpacks explicitly per the
+    arity documented in extract_patches_from_tile's docstring, rather than
+    the brief's `out[0] if isinstance(out, tuple) else out`, which is always
+    a tuple here and would swallow a wrong arity silently.
+    """
+    import numpy as np
+    import rasterio
+    from build_global_patch_cache import extract_patches_from_tile
+
+    H = W = 40
+    n_bands = 59
+    rng = np.random.default_rng(0)
+    data = rng.uniform(0.05, 0.35, size=(n_bands, H, W)).astype(np.float32)
+    prefix = str(tmp_path / 't9999_mrral_00n000_0327_4')
+    img_path = prefix + '.img'
+    hdr_path = prefix + '.hdr'
+    with rasterio.open(img_path, 'w', driver='ENVI', dtype='float32',
+                       count=n_bands, height=H, width=W, interleave='bsq') as dst:
+        for b in range(n_bands):
+            dst.write(data[b], b + 1)
+    assert os.path.exists(hdr_path), 'rasterio should have written a sibling .hdr'
+
+    patches, brightness, n_skipped_short = extract_patches_from_tile(
+        hdr_path, n_target=12, patch_size=7, seed=0,
+        continuum_removed=True, dual=True)
+    assert patches.ndim == 4 and patches.shape[1:3] == (7, 7)
+    assert patches.shape[-1] == 118, f'expected 118 channels, got {patches.shape}'
+    assert np.isfinite(patches).all()
+    assert brightness.shape == (patches.shape[0], 7, 7)
+
+
+def test_non_dual_still_emits_59(tmp_path):
+    """The existing hull-only path must be untouched."""
+    import numpy as np
+    import rasterio
+    from build_global_patch_cache import extract_patches_from_tile
+
+    H = W = 40
+    rng = np.random.default_rng(1)
+    data = rng.uniform(0.05, 0.35, size=(59, H, W)).astype(np.float32)
+    prefix = str(tmp_path / 't9998_mrral_00n000_0327_4')
+    img_path = prefix + '.img'
+    hdr_path = prefix + '.hdr'
+    with rasterio.open(img_path, 'w', driver='ENVI', dtype='float32', count=59,
+                       height=H, width=W, interleave='bsq') as dst:
+        for b in range(59):
+            dst.write(data[b], b + 1)
+    patches, brightness, n_skipped_short = extract_patches_from_tile(
+        hdr_path, n_target=8, patch_size=7, seed=0,
+        continuum_removed=True)
+    assert patches.shape[-1] == 59
+    assert brightness.shape == (patches.shape[0], 7, 7)
+
+
+def test_dual_requires_continuum_removed_at_cli(tmp_path):
+    """--dual without --continuum_removed must be rejected before any work
+    happens, not fail deep inside a worker on some tile.
+
+    NOTE: a first draft of this test asserted `'--dual' in stderr and
+    'continuum_removed' in stderr`, which passes *today*, before --dual even
+    exists as a recognized flag -- argparse's own "unrecognized arguments:
+    --dual" error contains '--dual', and its auto-generated usage line lists
+    every other flag including the pre-existing '--continuum_removed', so
+    both substrings are present for reasons that have nothing to do with the
+    guard this test is supposed to exercise. It could not fail for the
+    claimed reason. Asserting the exact `parser.error()` message the brief
+    specifies avoids that: this string cannot appear unless --dual is a
+    recognized argument AND the guard fired.
+    """
+    import subprocess
+    result = subprocess.run(
+        [
+            sys.executable, '-u',
+            os.path.join(os.path.dirname(__file__), '..', 'scripts',
+                         'build_global_patch_cache.py'),
+            '--output', str(tmp_path / 'out'),
+            '--data_root', str(tmp_path),
+            '--dual',
+        ],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode != 0
+    assert '--dual requires --continuum_removed' in result.stderr, result.stderr
+
+
+def test_non_dual_cr_output_is_byte_identical_to_pre_dual_baseline(tmp_path):
+    """Regression guard for the Task 4 constraint that adding --dual must not
+    change a single byte of the existing hull-only CR path.
+
+    The expected hash below was captured by running
+    extract_patches_from_tile() with these exact arguments against
+    tools/build_global_patch_cache.py BEFORE the --dual branch was added
+    (i.e. against the code as committed at the start of Task 4). Comparing a
+    sha256 of the raw output bytes (rather than just shape/dtype, which the
+    other tests already cover) means any change to the non-dual numeric
+    path -- CR formula, clipping order, RNG draw sequence, dtype -- flips
+    this test, not just a shape change.
+    """
+    import hashlib
+    import numpy as np
+    import rasterio
+    from build_global_patch_cache import extract_patches_from_tile
+
+    H = W = 40
+    rng = np.random.default_rng(7)
+    data = rng.uniform(0.05, 0.35, size=(59, H, W)).astype(np.float32)
+    prefix = str(tmp_path / 'tile_golden')
+    img_path = prefix + '.img'
+    hdr_path = prefix + '.hdr'
+    with rasterio.open(img_path, 'w', driver='ENVI', dtype='float32', count=59,
+                       height=H, width=W, interleave='bsq') as dst:
+        for b in range(59):
+            dst.write(data[b], b + 1)
+
+    patches, brightness, n_skipped_short = extract_patches_from_tile(
+        hdr_path=hdr_path, n_target=15, patch_size=7, min_valid_frac=0.8,
+        clip_max=0.5, nodata_value=65535, seed=123, continuum_removed=True)
+
+    assert patches.shape == (15, 7, 7, 59)
+    assert n_skipped_short == 0
+    EXPECTED_PATCHES_SHA256 = (
+        '8dd7d27e1e5cee9af3b8b5daaed07cc5007194ad68f3ea505f71640d388dd075')
+    EXPECTED_BRIGHTNESS_SHA256 = (
+        'b861bdbb0d913db35619bbe28146eeb570a0c320a1f020ae336604cc83513226')
+    assert hashlib.sha256(patches.tobytes()).hexdigest() == EXPECTED_PATCHES_SHA256
+    assert hashlib.sha256(brightness.tobytes()).hexdigest() == EXPECTED_BRIGHTNESS_SHA256

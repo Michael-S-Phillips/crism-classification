@@ -30,10 +30,11 @@ import rasterio.windows
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.cached_patch_dataset import compute_valid_centers
-from data.continuum_removal import cr_patch
+from data.continuum_removal import cr_patch, dual_continuum, brightness_scalar
 
 
 N_BANDS = 59          # mrral bands 1–59 (matches data/global_patch_dataset.py)
+N_CHANNELS_DUAL = 118  # dual_continuum: hull-CR (0-58) ⊕ linear-CR (59-117)
 CLIP_MAX = 0.5
 MIN_VALID_FRAC = 0.8
 NODATA_VALUE = 65535
@@ -52,6 +53,7 @@ def extract_patches_from_tile(
     nodata_value: float = NODATA_VALUE,
     seed: int = 0,
     continuum_removed: bool = False,
+    dual: bool = False,
 ):
     """Sample up to n_target valid patches from one mrral tile.
 
@@ -60,16 +62,25 @@ def extract_patches_from_tile(
         n_skipped_short: max(0, n_target - n) — how many fewer than requested
 
     Returns (continuum_removed=True):
-        patches:    (n, patch_size, patch_size, n_bands) float32, continuum-removed
+        patches:    (n, patch_size, patch_size, n_ch) float32, continuum-removed.
+                    n_ch is 59 (hull-CR only) normally, or 118 (hull-CR ⊕
+                    linear-CR, channel order 0-58 hull / 59-117 linear) when
+                    dual=True.
         brightness: (n, patch_size, patch_size) float32, mean good-band reflectance
                     (pre-CR) per pixel
         n_skipped_short
 
+    `dual` is only meaningful when continuum_removed=True; it selects
+    dual_continuum() (118 ch) in place of cr_patch()'s upper-hull CR (59 ch).
+
     CR is applied per patch AFTER the [0, clip_max] clip (i.e. on the same raw
     reflectance the raw cache would store), so a CR cache is a drop-in CR
-    transform of the raw cache. CR-off returns bytes identical to before.
+    transform of the raw cache. CR-off returns bytes identical to before, and
+    so does CR-on/dual-off — the dual branch is additive, not a rewrite of
+    the existing hull-only path.
     """
     img_path = hdr_path.replace('.hdr', '.img')
+    n_ch = N_CHANNELS_DUAL if dual else N_BANDS
 
     with rasterio.open(img_path) as src:
         H, W = src.height, src.width
@@ -83,7 +94,7 @@ def extract_patches_from_tile(
         n_valid = len(valid_rs)
         rng = np.random.default_rng(seed)
         if n_valid == 0:
-            empty = np.zeros((0, patch_size, patch_size, N_BANDS), dtype=np.float32)
+            empty = np.zeros((0, patch_size, patch_size, n_ch), dtype=np.float32)
             if continuum_removed:
                 return (empty,
                         np.zeros((0, patch_size, patch_size), dtype=np.float32),
@@ -95,7 +106,7 @@ def extract_patches_from_tile(
         sampled_cs = valid_cs[choice]
 
         half = patch_size // 2
-        out = np.zeros((n_take, patch_size, patch_size, N_BANDS), dtype=np.float32)
+        out = np.zeros((n_take, patch_size, patch_size, n_ch), dtype=np.float32)
         bright = (np.zeros((n_take, patch_size, patch_size), dtype=np.float32)
                   if continuum_removed else None)
         for i in range(n_take):
@@ -110,7 +121,11 @@ def extract_patches_from_tile(
             np.clip(patch, 0.0, clip_max, out=patch)
             if continuum_removed:
                 # CR the clipped raw patch; keep the pre-CR brightness scalar.
-                cr, b = cr_patch(patch)
+                if dual:
+                    b = brightness_scalar(patch)
+                    cr = dual_continuum(patch)
+                else:
+                    cr, b = cr_patch(patch)
                 out[i] = cr
                 bright[i] = b
             else:
@@ -142,7 +157,7 @@ def _worker(args_tuple):
     Defined at module level (not nested) so it's picklable by mp.Pool.
     """
     (hdr_path, n_target, patch_size, min_valid_frac, clip_max, nodata_value,
-     seed, continuum_removed) = args_tuple
+     seed, continuum_removed, dual) = args_tuple
     try:
         result = extract_patches_from_tile(
             hdr_path=hdr_path,
@@ -153,6 +168,7 @@ def _worker(args_tuple):
             nodata_value=nodata_value,
             seed=seed,
             continuum_removed=continuum_removed,
+            dual=dual,
         )
         if continuum_removed:
             patches, brightness, n_skipped_short = result
@@ -181,7 +197,14 @@ def main():
                              'parallel global_patches_NNN_brightness.npy (mean '
                              'good-band reflectance, pre-CR) per shard. The CR cache '
                              'is a drop-in CR transform of the raw cache.')
+    parser.add_argument('--dual', action='store_true',
+                        help='emit 118 channels: hull-CR ⊕ linear-CR')
     args = parser.parse_args()
+
+    if args.dual and not args.continuum_removed:
+        parser.error('--dual requires --continuum_removed')
+
+    n_channels = N_CHANNELS_DUAL if args.dual else N_BANDS
 
     # Resolve data_root from --data_root or config.
     data_root = args.data_root
@@ -196,6 +219,8 @@ def main():
     os.makedirs(args.output, exist_ok=True)
     log.info(f"Output: {args.output}")
     log.info(f"Workers: {args.workers}, seed: {args.seed}")
+    log.info(f"continuum_removed={args.continuum_removed}, dual={args.dual}, "
+             f"channels per patch: {n_channels}")
 
     hdrs = _discover_tiles(data_root)
     if not hdrs:
@@ -207,7 +232,7 @@ def main():
         (
             hdrs[i], args.patches_per_tile_target, PATCH_SIZE,
             MIN_VALID_FRAC, CLIP_MAX, NODATA_VALUE,
-            args.seed * 1000003 + i, args.continuum_removed,
+            args.seed * 1000003 + i, args.continuum_removed, args.dual,
         )
         for i in range(len(hdrs))
     ]
@@ -234,7 +259,7 @@ def main():
         n_total = sum(len(a) for a in buf_arrays)
         take = min(args.patches_per_shard, n_total)
         # Concatenate enough arrays to cover `take`.
-        out = np.zeros((take, PATCH_SIZE, PATCH_SIZE, N_BANDS), dtype=np.float32)
+        out = np.zeros((take, PATCH_SIZE, PATCH_SIZE, n_channels), dtype=np.float32)
         out_b = (np.zeros((take, PATCH_SIZE, PATCH_SIZE), dtype=np.float32)
                  if cr else None)
         idx = 0
@@ -274,7 +299,8 @@ def main():
 
         path = os.path.join(args.output, f'global_patches_{shard_id:03d}.npy')
         np.save(path, out)
-        log.info(f"Wrote {path} ({len(out)} patches)")
+        log.info(f"Wrote {path} ({len(out)} patches, shape {out.shape}, "
+                 f"{out.shape[-1]} channels)")
         if cr:
             out_b = out_b[perm]
             bpath = os.path.join(
@@ -316,11 +342,13 @@ def main():
         'patches_per_shard': args.patches_per_shard,
         'patch_size': PATCH_SIZE,
         'n_bands': N_BANDS,
+        'n_channels': n_channels,
         'min_valid_frac': MIN_VALID_FRAC,
         'clip_max': CLIP_MAX,
         'nodata_value': NODATA_VALUE,
         'seed': args.seed,
         'continuum_removed': args.continuum_removed,
+        'dual': args.dual,
         'patches_per_tile_target': args.patches_per_tile_target,
         'tiles_used': tiles_used,
         'tiles_skipped': tiles_skipped,
