@@ -636,9 +636,11 @@ def test_dual_mode_emits_118_channels(tmp_path):
         for b in range(n_bands):
             dst.write(data[b], b + 1)
 
-    out = extract_patches_from_tile(img, patch_size=7, n_target=12,
-                                    seed=0, continuum_removed=True, dual=True)
-    patches = out[0] if isinstance(out, tuple) else out
+    hdr = img.replace('.img', '.hdr')   # the function takes an HDR path and
+    # internally does hdr_path.replace('.hdr', '.img'), so passing .img only
+    # works by accident. n_target is the SECOND positional argument.
+    patches, brightness, _ = extract_patches_from_tile(
+        hdr, n_target=12, patch_size=7, seed=0, continuum_removed=True, dual=True)
     assert patches.ndim == 4 and patches.shape[1:3] == (7, 7)
     assert patches.shape[-1] == 118, f'expected 118 channels, got {patches.shape}'
     assert np.isfinite(patches).all()
@@ -658,19 +660,21 @@ def test_non_dual_still_emits_59(tmp_path):
                        height=H, width=W, interleave='bsq') as dst:
         for b in range(59):
             dst.write(data[b], b + 1)
-    out = extract_patches_from_tile(img, patch_size=7, n_target=8, seed=0,
-                                    continuum_removed=True)
-    patches = out[0] if isinstance(out, tuple) else out
+    hdr = img.replace('.img', '.hdr')   # the function takes an HDR path
+    patches, brightness, _ = extract_patches_from_tile(
+        hdr, n_target=8, patch_size=7, seed=0, continuum_removed=True)
     assert patches.shape[-1] == 59
-
+```
 
 - [ ] **Step 2: Run it**
 
 Run: `conda run -n crism python -m pytest tests/test_build_global_patch_cache.py -k "dual or non_dual" -v`
-Expected: FAIL — `extract_patches_from_tile()` has no `dual` argument. Confirm the
-signature of the real function first: it may return a tuple when
-`continuum_removed=True` (patches + brightness), which is why the test unpacks
-defensively.
+Expected: FAIL — `extract_patches_from_tile()` has no `dual` argument.
+Signature confirmed against the real code: `extract_patches_from_tile(hdr_path,
+n_target, patch_size=..., ..., continuum_removed=False)`. It returns a 3-tuple
+`(patches, brightness, n_skipped_short)` when `continuum_removed=True` and a
+2-tuple otherwise, so unpack EXPLICITLY — defensive `out[0] if isinstance(...)`
+would hide an arity regression.
 
 - [ ] **Step 3: Add `--dual` to the builder**
 
