@@ -60,6 +60,30 @@ def test_standardisation_equalises_channel_variance():
         f'CR_SCALES may be stale relative to the transform definition')
 
 
+def test_standardize_divides_each_block_by_its_own_constant():
+    """standardize=True must divide hull by hull_std and linear by linear_std.
+
+    A swap would amplify the 2.45x imbalance this task exists to remove, and
+    every other test in this file would still pass -- the variance test skips
+    without CRISM_SPECTRA_NPZ, and the ordering test uses standardize=False.
+    This runs on synthetic data so it executes on every CI run.
+    """
+    s = _spec(n=16)
+    plain = dual_continuum(s, standardize=False)
+    scaled = dual_continuum(s, standardize=True)
+
+    np.testing.assert_allclose(scaled[:, :N_BANDS],
+                               plain[:, :N_BANDS] / CR_SCALES['hull_std'],
+                               rtol=1e-5, atol=0)
+    np.testing.assert_allclose(scaled[:, N_BANDS:],
+                               plain[:, N_BANDS:] / CR_SCALES['linear_std'],
+                               rtol=1e-5, atol=0)
+
+    # And prove the constants are distinct enough that a swap is detectable --
+    # if they were equal the assertions above would not constrain the mapping.
+    assert abs(CR_SCALES['hull_std'] - CR_SCALES['linear_std']) > 0.05
+
+
 def test_scales_are_loaded_not_hardcoded():
     assert set(CR_SCALES) >= {'hull_std', 'linear_std'}
     assert CR_SCALES['hull_std'] > 0 and CR_SCALES['linear_std'] > 0
