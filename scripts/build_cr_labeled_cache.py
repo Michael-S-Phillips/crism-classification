@@ -27,7 +27,10 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from data.continuum_removal import continuum_removed, brightness_scalar  # noqa: E402
+from data.continuum_removal import continuum_removed, brightness_scalar, dual_continuum  # noqa: E402
+
+N_CHANNELS_DUAL = 118  # hull-CR (0:59) concatenated with linear-CR (59:118); see
+                       # data/continuum_removal.py:dual_continuum for the contract.
 
 
 # ── parallel worker state ─────────────────────────────────────────────────────
@@ -38,16 +41,17 @@ from data.continuum_removal import continuum_removed, brightness_scalar  # noqa:
 _W: dict = {}
 
 
-def _init_worker(raw_path, cr_path, br_path, n, P):
+def _init_worker(raw_path, cr_path, br_path, n, P, n_ch):
     _W['raw'] = np.memmap(raw_path, dtype='float32', mode='r', shape=(n, P, P, 59))
-    _W['cr'] = np.memmap(cr_path, dtype='float32', mode='r+', shape=(n, P, P, 59))
+    _W['cr'] = np.memmap(cr_path, dtype='float32', mode='r+', shape=(n, P, P, n_ch))
     _W['br'] = np.load(br_path, mmap_mode='r+')
+    _W['dual'] = (n_ch == N_CHANNELS_DUAL)
 
 
 def _cr_range(se) -> int:
     s, e = se
     block = np.asarray(_W['raw'][s:e], dtype=np.float32)
-    _W['cr'][s:e] = continuum_removed(block)
+    _W['cr'][s:e] = dual_continuum(block) if _W['dual'] else continuum_removed(block)
     _W['br'][s:e] = brightness_scalar(block)
     _W['cr'].flush()
     _W['br'].flush()
@@ -55,7 +59,7 @@ def _cr_range(se) -> int:
 
 
 def convert_split(raw_dir: str, out_dir: str, split: str, patch_size: int,
-                  chunk: int, jobs: int = 1) -> int:
+                  chunk: int, jobs: int = 1, dual: bool = False) -> int:
     fname = f'mrral_{split}_patches_p{patch_size}.npy'
     raw_path = os.path.join(raw_dir, fname)
     if not os.path.exists(raw_path):
@@ -76,10 +80,11 @@ def convert_split(raw_dir: str, out_dir: str, split: str, patch_size: int,
     raw = np.memmap(raw_path, dtype='float32', mode='r',
                     shape=(n, patch_size, patch_size, 59))
     os.makedirs(out_dir, exist_ok=True)
+    n_ch = N_CHANNELS_DUAL if dual else 59
     # CR patches: RAW headerless memmap (fine-tune np.memmaps them with an exact
     # byte-count guard — a .npy header would misalign and fail that guard).
     cr_out = np.memmap(os.path.join(out_dir, fname), dtype='float32', mode='w+',
-                       shape=(n, patch_size, patch_size, 59))
+                       shape=(n, patch_size, patch_size, n_ch))
     # Brightness sidecar: a real .npy (fine-tune reads it via np.load).
     br_path = os.path.join(out_dir, f'mrral_{split}_patches_p{patch_size}_brightness.npy')
     br_out = np.lib.format.open_memmap(
@@ -94,14 +99,14 @@ def convert_split(raw_dir: str, out_dir: str, split: str, patch_size: int,
         del cr_out, br_out, raw
         done = 0
         with mp.Pool(jobs, initializer=_init_worker,
-                     initargs=(raw_path, cr_path, br_path, n, patch_size)) as pool:
+                     initargs=(raw_path, cr_path, br_path, n, patch_size, n_ch)) as pool:
             for c in pool.imap_unordered(_cr_range, ranges):
                 done += c
                 print(f'  {split}: {done:,}/{n:,} ({jobs} workers)', flush=True)
     else:
         for i, (s, e) in enumerate(ranges):
             block = np.asarray(raw[s:e], dtype=np.float32)      # (b, P, P, 59)
-            cr_out[s:e] = continuum_removed(block)              # (b, P, P, 59)
+            cr_out[s:e] = dual_continuum(block) if dual else continuum_removed(block)  # (b, P, P, n_ch)
             br_out[s:e] = brightness_scalar(block)              # (b, P, P)
             if i % 20 == 0:
                 print(f'  {split}: {e:,}/{n:,}', flush=True)
@@ -120,13 +125,17 @@ def main() -> None:
     ap.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 1) - 1),
                     help='parallel worker processes for the CR hull loop '
                          '(default: cpu_count-1; 1 = serial).')
+    ap.add_argument('--dual', action='store_true',
+                    help='emit 118 channels: hull-CR (0:59) ⊕ linear-CR (59:118), '
+                         'instead of the default 59-channel hull-CR-only cache.')
     args = ap.parse_args()
-    print(f'CR cache build: jobs={args.jobs}, chunk={args.chunk}')
+    print(f'CR cache build: jobs={args.jobs}, chunk={args.chunk}, dual={args.dual}')
     total = 0
     skipped = []
     for split in args.splits:
         n = convert_split(args.raw_dir, args.out_dir, split,
-                          args.patch_size, args.chunk, jobs=args.jobs)
+                          args.patch_size, args.chunk, jobs=args.jobs,
+                          dual=args.dual)
         if n == 0:
             skipped.append(split)
         total += n
