@@ -179,6 +179,7 @@ def main():
     for epoch in range(start_epoch, args.epochs + 1):
         model.train()
         losses = []
+        block_losses = []  # per-batch [block0, block1, ...] when n_channel_blocks > 1
         for _ in range(batches_per_epoch):
             try:
                 patches = next(data_iter)
@@ -193,11 +194,20 @@ def main():
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             losses.append(loss.item())
+            if model.last_block_losses is not None:
+                block_losses.append(model.last_block_losses)
 
         scheduler.step()
         mean_loss = float(np.mean(losses))
         lr_now = optimizer.param_groups[0]['lr']
-        log.info(f"Epoch {epoch}/{args.epochs} | denoising_loss={mean_loss:.6f} | lr={lr_now:.2e}")
+        log_line = f"Epoch {epoch}/{args.epochs} | denoising_loss={mean_loss:.6f} | lr={lr_now:.2e}"
+        if block_losses:
+            # Diagnostic only (see DenoisingSpatialSpectralMAE.last_block_losses
+            # docstring) -- reveals a stale/un-standardised block, does not
+            # itself rebalance the objective.
+            mean_block_losses = np.mean(np.array(block_losses), axis=0).tolist()
+            log_line += f" | blocks={[round(v, 4) for v in mean_block_losses]}"
+        log.info(log_line)
 
         if use_wandb:
             import wandb

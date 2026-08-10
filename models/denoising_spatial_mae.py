@@ -58,6 +58,20 @@ class DenoisingSpatialSpectralMAE(SpatialSpectralMAE):
             f"({n_channel_blocks})"
         )
         self.n_channel_blocks = n_channel_blocks
+        # Per-block losses from the most recent forward() call, as plain
+        # floats (detached, CPU-side -- never part of the autograd graph).
+        # None when n_channel_blocks == 1 (nothing to report).
+        #
+        # Why this exists: for equal-sized blocks, averaging per-block means
+        # is mathematically identical to the plain pooled mean (see
+        # task-3-report.md "Critical finding") -- the branch is inert with
+        # respect to the loss VALUE and its gradient. Its only remaining
+        # purpose is diagnostic observability: if the two block losses ever
+        # diverge sharply (e.g. one block's cache was written un-standardised,
+        # or data/mrral_cr_scales.json has gone stale relative to the
+        # transform actually applied upstream), that divergence is visible
+        # here even though it does not change what the optimizer sees.
+        self.last_block_losses: "list[float] | None" = None
         self.noise_aug = CrismNoiseAugmentation(
             sigma_gauss=sigma_gauss,
             sigma_spike=sigma_spike,
@@ -98,14 +112,26 @@ class DenoisingSpatialSpectralMAE(SpatialSpectralMAE):
         x_flat = x_clean.reshape(B, N, self.n_bands)
         if self.n_channel_blocks == 1:
             loss = ((recon - x_flat) ** 2).mean()
+            self.last_block_losses = None
         else:
             # Per-block MSE, then averaged. A single pooled mean would weight the
             # objective by each block's variance -- with hull-CR at std 0.0705
             # and linear-CR at 0.1726 (2.45x), the pretrain would spend itself on
             # the linear block, which is the raw-space MAE failure mode relocated.
+            #
+            # NOTE: for equal-sized blocks this averaging is mathematically
+            # identical to the plain pooled mean (see task-3-report.md), so it
+            # changes neither the loss value nor its gradient. The per-block
+            # split is kept only as a diagnostic (self.last_block_losses,
+            # logged by the pretrain script) -- divergence between block
+            # losses can reveal a cache written un-standardised or a stale
+            # data/mrral_cr_scales.json, even though it doesn't rebalance
+            # the objective itself.
             per = (recon - x_flat) ** 2
             bs = self.n_bands // self.n_channel_blocks
-            loss = torch.stack([per[..., i * bs:(i + 1) * bs].mean()
-                                for i in range(self.n_channel_blocks)]).mean()
+            block_losses = [per[..., i * bs:(i + 1) * bs].mean()
+                            for i in range(self.n_channel_blocks)]
+            loss = torch.stack(block_losses).mean()
+            self.last_block_losses = [bl.detach().cpu().item() for bl in block_losses]
 
         return loss, recon, mask

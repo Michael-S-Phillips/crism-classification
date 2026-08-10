@@ -188,3 +188,43 @@ def test_per_channel_block_loss_matches_manual_balanced_formula():
     # (59 + 59 = 118), balanced == pooled to full float precision. This is
     # expected given the formula, not a test bug -- see docstring.
     torch.testing.assert_close(loss, pooled, rtol=1e-5, atol=1e-6)
+
+
+def test_last_block_losses_observable_and_consistent_with_returned_loss():
+    """Fix round 1: the per-block split was previously inert machinery with no
+    observable output (computed, then immediately collapsed). This asserts
+    the diagnostic is real: with n_channel_blocks=2, last_block_losses is a
+    2-element list of finite floats after forward(), and those exact numbers
+    average back to the scalar loss that was returned -- so the logged values
+    are provably the real ones, not stale or fabricated. With
+    n_channel_blocks=1 there is nothing to report, so it must be None.
+    """
+    import torch
+    from models.denoising_spatial_mae import DenoisingSpatialSpectralMAE
+
+    torch.manual_seed(0)
+    m2 = DenoisingSpatialSpectralMAE(n_bands=118, patch_size=7, embed_dim=32,
+                                     n_heads=4, n_layers=2, decoder_dim=16,
+                                     decoder_layers=1, n_channel_blocks=2)
+    assert m2.last_block_losses is None  # nothing reported before any forward()
+
+    x = torch.randn(2, 7, 7, 118) * 0.1
+    loss, _, _ = m2(x)
+
+    assert isinstance(m2.last_block_losses, list)
+    assert len(m2.last_block_losses) == 2
+    for v in m2.last_block_losses:
+        assert isinstance(v, float)
+        assert torch.isfinite(torch.tensor(v))
+
+    # The reported numbers must be the real ones: their mean reproduces the
+    # returned scalar loss to float precision.
+    reconstructed = sum(m2.last_block_losses) / len(m2.last_block_losses)
+    assert abs(reconstructed - loss.item()) < 1e-5
+
+    torch.manual_seed(0)
+    m1 = DenoisingSpatialSpectralMAE(n_bands=59, patch_size=7, embed_dim=32,
+                                     n_heads=4, n_layers=2, decoder_dim=16,
+                                     decoder_layers=1, n_channel_blocks=1)
+    _ = m1(torch.randn(2, 7, 7, 59) * 0.1)
+    assert m1.last_block_losses is None
