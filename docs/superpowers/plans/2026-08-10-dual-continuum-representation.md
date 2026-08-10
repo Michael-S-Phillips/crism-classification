@@ -245,9 +245,14 @@ consumer in the pipeline assumes it, so it is locked by test.
 import numpy as np
 import pytest
 
+import os
+
 from data.continuum_removal import (
     dual_continuum, continuum_removed, linear_continuum_removed,
     CR_SCALES, N_BANDS)
+
+# The variance invariant only holds on real spectra (see that test's docstring).
+SPECTRA_NPZ = os.environ.get('CRISM_SPECTRA_NPZ', '')
 
 
 def _spec(seed=0, n=32):
@@ -269,13 +274,29 @@ def test_channel_order_is_hull_then_linear():
                                atol=1e-6)
 
 
+@pytest.mark.skipif(not os.path.exists(SPECTRA_NPZ),
+                    reason='needs the sampled-spectra npz; run '
+                           'scripts/sample_class_spectra.py')
 def test_standardisation_equalises_channel_variance():
-    """The 2.45x variance ratio is what would skew a pooled MAE loss."""
-    out = dual_continuum(_spec(n=4000), standardize=True)
-    s_hull = out[:, :N_BANDS].std()
-    s_lin = out[:, N_BANDS:].std()
-    assert 0.5 < s_hull / s_lin < 2.0, (
-        f'channels still differ by {s_hull / s_lin:.2f}x after standardisation')
+    """The 2.45x variance ratio is what would skew a pooled MAE loss.
+
+    Asserted on the REAL sampled spectra, not synthetic noise: CR_SCALES is
+    computed from real data, so only real data is guaranteed to standardise to
+    ~1.0. Synthetic uniform noise has different hull/linear stds and a correct
+    implementation could fail such a test.
+    """
+    d = np.load(SPECTRA_NPZ)
+    keys = [k for k in d.files if k not in ('wav', 'good')]
+    raw = np.concatenate([d[k] for k in keys]).astype(np.float32)
+    raw[(raw > 1.0) | (raw == 65535) | (~np.isfinite(raw))] = np.nan
+    raw = np.clip(raw, 0.0, 0.5)
+    raw = raw[np.isfinite(raw).all(axis=1)]
+
+    out = dual_continuum(raw, standardize=True)
+    ratio = out[:, :N_BANDS].std() / out[:, N_BANDS:].std()
+    assert 0.8 < ratio < 1.25, (
+        f'channels still differ by {ratio:.2f}x after standardisation; '
+        f'CR_SCALES may be stale relative to the transform definition')
 
 
 def test_scales_are_loaded_not_hardcoded():
@@ -586,30 +607,62 @@ git commit -m "feat: per-channel-block MAE loss and parameterised n_bands"
 Append to `tests/test_build_global_patch_cache.py`:
 
 ```python
-def test_dual_mode_emits_118_channels(tmp_path, monkeypatch):
-    """--dual must produce (n,7,7,118) with hull in 0:59 and linear in 59:118."""
+def test_dual_mode_emits_118_channels(tmp_path):
+    """extract_patches_from_tile(dual=True) must return (n,7,7,118).
+
+    This calls the BUILDER, not dual_continuum -- Task 2 already covers the
+    transform. Writes a small ENVI tile with rasterio, the same pattern
+    tests/test_dataset_cr.py uses, so the real read path is exercised.
+    """
     import numpy as np
-    from data.continuum_removal import continuum_removed, linear_continuum_removed
+    import rasterio
     from scripts.build_global_patch_cache import extract_patches_from_tile
 
-    # Synthetic tile stand-in: exercise the transform path, not rasterio.
+    H = W = 40
+    n_bands = 59
     rng = np.random.default_rng(0)
-    raw = rng.uniform(0.05, 0.35, size=(12, 7, 7, 59)).astype(np.float32)
+    data = rng.uniform(0.05, 0.35, size=(n_bands, H, W)).astype(np.float32)
+    img = str(tmp_path / 't9999_mrral_00n000_0327_4.img')
+    with rasterio.open(img, 'w', driver='ENVI', dtype='float32',
+                       count=n_bands, height=H, width=W, interleave='bsq') as dst:
+        for b in range(n_bands):
+            dst.write(data[b], b + 1)
 
-    from data.continuum_removal import dual_continuum
-    out = dual_continuum(raw, standardize=True)
-    assert out.shape == (12, 7, 7, 118)
-    # Ordering, unstandardised, is the contract the encoder relies on.
-    plain = dual_continuum(raw, standardize=False)
-    np.testing.assert_allclose(plain[..., :59], continuum_removed(raw), atol=1e-6)
-    np.testing.assert_allclose(plain[..., 59:], linear_continuum_removed(raw),
-                               atol=1e-6)
-```
+    out = extract_patches_from_tile(img, patch_size=7, n_target=12,
+                                    seed=0, continuum_removed=True, dual=True)
+    patches = out[0] if isinstance(out, tuple) else out
+    assert patches.ndim == 4 and patches.shape[1:3] == (7, 7)
+    assert patches.shape[-1] == 118, f'expected 118 channels, got {patches.shape}'
+    assert np.isfinite(patches).all()
+
+
+def test_non_dual_still_emits_59(tmp_path):
+    """The existing hull-only path must be untouched."""
+    import numpy as np
+    import rasterio
+    from scripts.build_global_patch_cache import extract_patches_from_tile
+
+    H = W = 40
+    rng = np.random.default_rng(1)
+    data = rng.uniform(0.05, 0.35, size=(59, H, W)).astype(np.float32)
+    img = str(tmp_path / 't9998_mrral_00n000_0327_4.img')
+    with rasterio.open(img, 'w', driver='ENVI', dtype='float32', count=59,
+                       height=H, width=W, interleave='bsq') as dst:
+        for b in range(59):
+            dst.write(data[b], b + 1)
+    out = extract_patches_from_tile(img, patch_size=7, n_target=8, seed=0,
+                                    continuum_removed=True)
+    patches = out[0] if isinstance(out, tuple) else out
+    assert patches.shape[-1] == 59
+
 
 - [ ] **Step 2: Run it**
 
-Run: `conda run -n crism python -m pytest tests/test_build_global_patch_cache.py -k dual -v`
-Expected: FAIL on the `dual_continuum` import until Task 2 is merged; PASS after.
+Run: `conda run -n crism python -m pytest tests/test_build_global_patch_cache.py -k "dual or non_dual" -v`
+Expected: FAIL — `extract_patches_from_tile()` has no `dual` argument. Confirm the
+signature of the real function first: it may return a tuple when
+`continuum_removed=True` (patches + brightness), which is why the test unpacks
+defensively.
 
 - [ ] **Step 3: Add `--dual` to the builder**
 
