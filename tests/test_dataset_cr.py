@@ -183,3 +183,137 @@ def test_cache_is_cr_without_cache_still_applies_cr(tmp_path):
         patch_t.numpy(), continuum_removed(raw_patch), rtol=0, atol=1e-6)
     np.testing.assert_allclose(
         bright_t.item(), brightness_scalar(raw_patch)[3, 3], rtol=0, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# dual_cr: 118-channel hull-CR + linear-CR dataset mode (Task 6)
+# ---------------------------------------------------------------------------
+
+def test_dual_cr_serves_118_channels(tmp_path):
+    """A 118-channel cache must load, and the byte-size guard must accept it."""
+    n, P = 6, 7
+    rng = np.random.default_rng(3)
+    cache = rng.uniform(0.0, 1.5, size=(n, P, P, 118)).astype(np.float32)
+    fp = np.memmap(str(tmp_path / f'mrral_train_patches_p{P}.npy'),
+                   dtype='float32', mode='w+', shape=(n, P, P, 118))
+    fp[:] = cache; fp.flush(); del fp
+    np.save(tmp_path / f'mrral_train_patches_p{P}_brightness.npy',
+            rng.uniform(0.0, 0.4, size=(n, P, P)).astype(np.float32))
+
+    df = _make_df('t0001', rows=[0] * n, cols=[0] * n, n=n)
+    ds = CRISMSpectralPatchDataset(
+        df, {}, patch_size=P, cache_dir=str(tmp_path), split='train',
+        continuum_removed=True, return_brightness=True, cache_is_cr=True,
+        dual_cr=True)
+    assert ds.n_channels == 118
+    patch, bright, _, _ = ds[0]
+    assert patch.shape == (P, P, 118)
+    assert bright.shape == (1,)
+    # cache_is_cr=True means the cache is served as-is (no re-transform) --
+    # the returned patch must equal the stored cache content exactly, not
+    # just have the right shape.
+    np.testing.assert_allclose(patch.numpy(), cache[0], rtol=0, atol=1e-6)
+
+
+def test_dual_cr_rejects_a_59_channel_cache(tmp_path):
+    """Loading a hull-only cache in dual mode would silently halve the input."""
+    n, P = 6, 7
+    fp = np.memmap(str(tmp_path / f'mrral_train_patches_p{P}.npy'),
+                   dtype='float32', mode='w+', shape=(n, P, P, 59))
+    fp[:] = 0.5; fp.flush(); del fp
+    np.save(tmp_path / f'mrral_train_patches_p{P}_brightness.npy',
+            np.zeros((n, P, P), dtype=np.float32))
+    df = _make_df('t0001', rows=[0] * n, cols=[0] * n, n=n)
+    with pytest.raises(ValueError, match='bytes'):
+        CRISMSpectralPatchDataset(
+            df, {}, patch_size=P, cache_dir=str(tmp_path), split='train',
+            continuum_removed=True, return_brightness=True, cache_is_cr=True,
+            dual_cr=True)
+
+
+def test_dual_cr_on_the_fly_matches_dual_continuum(tmp_path):
+    """No cache: the reader must produce exactly dual_continuum() of the patch."""
+    from data.continuum_removal import dual_continuum
+    img = _make_mrral_tile(str(tmp_path / 't0001_mrral_00n000_0327_4'), H=30, W=30,
+                           seed=11)
+    df = _make_df('t0001', rows=[15], cols=[15], n=1)
+    raw_ds = CRISMSpectralPatchDataset(df, {'t0001': img}, patch_size=7)
+    dual_ds = CRISMSpectralPatchDataset(df, {'t0001': img}, patch_size=7,
+                                        continuum_removed=True,
+                                        return_brightness=True, dual_cr=True)
+    raw = raw_ds[0][0].numpy()
+    got = dual_ds[0][0].numpy()
+    np.testing.assert_allclose(got, dual_continuum(raw), rtol=0, atol=1e-5)
+
+
+def test_dual_cr_on_the_fly_brightness_from_raw(tmp_path):
+    """The on-the-fly dual path must compute brightness from the RAW patch
+    BEFORE dual_continuum transforms it.
+
+    This is the check the brief's own on-the-fly test omits: that test reads
+    only dual_ds[0][0] (the patch) and never inspects the brightness element,
+    so a brightness bug (e.g. computed from the already-118-channel patch, or
+    from just the hull block) would pass it silently. Feeding a post-transform
+    array into brightness_scalar (which asserts last-dim==59) would raise, so
+    this test would also catch that failure mode as a construction/getitem
+    error rather than a silent wrong value.
+    """
+    img = _make_mrral_tile(str(tmp_path / 't0001_mrral_00n000_0327_4'), H=30, W=30,
+                           seed=13)
+    df = _make_df('t0001', rows=[15], cols=[15], n=1)
+    raw_ds = CRISMSpectralPatchDataset(df, {'t0001': img}, patch_size=7)
+    dual_ds = CRISMSpectralPatchDataset(df, {'t0001': img}, patch_size=7,
+                                        continuum_removed=True,
+                                        return_brightness=True, dual_cr=True)
+    raw_patch = raw_ds[0][0].numpy()
+    _, bright_t, _, _ = dual_ds[0]
+    expected = brightness_scalar(raw_patch)[3, 3]
+    np.testing.assert_allclose(bright_t.item(), expected, rtol=0, atol=1e-6)
+
+
+def test_dual_cr_requires_continuum_removed():
+    """dual_cr=True with continuum_removed=False (its default) must raise at
+    construction rather than silently serving something other than the
+    118-channel dual representation."""
+    df = _make_df('t0001', rows=[0], cols=[0], n=1)
+    with pytest.raises(ValueError, match='continuum_removed'):
+        CRISMSpectralPatchDataset(df, {}, patch_size=7, dual_cr=True)
+
+
+def test_dual_cr_cache_is_cr_missing_split_raises(tmp_path):
+    """Guard 2 (cache_is_cr + missing split -> fail fast) must still fire in
+    dual mode. Regression: this is exactly the incomplete-cache failure mode
+    that silently trained on raw patches for the 59-channel case (see
+    test_cache_is_cr_missing_split_cache_raises above) -- it must not
+    reappear for 118-channel caches."""
+    n, P = 4, 7
+    rng = np.random.default_rng(21)
+    cache = rng.uniform(0.0, 1.5, size=(n, P, P, 118)).astype(np.float32)
+    fp = np.memmap(str(tmp_path / f'mrral_train_patches_p{P}.npy'),
+                   dtype='float32', mode='w+', shape=(n, P, P, 118))
+    fp[:] = cache; fp.flush(); del fp
+    np.save(tmp_path / f'mrral_train_patches_p{P}_brightness.npy',
+            rng.uniform(0.0, 0.4, size=(n, P, P)).astype(np.float32))
+    # 'val' was never built -- only 'train' exists in this cache dir.
+
+    img = _make_mrral_tile(str(tmp_path / 't0001_mrral_00n000_0327_4'), H=30, W=30,
+                           seed=23)
+    df = _make_df('t0001', rows=[15] * n, cols=[15] * n, n=n)
+
+    with pytest.raises(FileNotFoundError, match='val'):
+        CRISMSpectralPatchDataset(df, {'t0001': img}, patch_size=P,
+                                  cache_dir=str(tmp_path), split='val',
+                                  continuum_removed=True, return_brightness=True,
+                                  cache_is_cr=True, dual_cr=True)
+
+
+def test_n_channels_exposed(tmp_path):
+    """ds.n_channels reports 59 for the default path and 118 for dual_cr."""
+    img = _make_mrral_tile(str(tmp_path / 't0001_mrral_00n000_0327_4'), H=30, W=30,
+                           seed=1)
+    df = _make_df('t0001', rows=[0], cols=[0], n=1)
+    ds59 = CRISMSpectralPatchDataset(df, {'t0001': img}, patch_size=7)
+    assert ds59.n_channels == 59
+    ds118 = CRISMSpectralPatchDataset(df, {'t0001': img}, patch_size=7,
+                                      continuum_removed=True, dual_cr=True)
+    assert ds118.n_channels == 118

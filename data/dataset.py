@@ -451,8 +451,10 @@ class CRISMSpectralPatchDataset(Dataset):
         continuum_removed: bool = False,
         return_brightness: bool = False,
         cache_is_cr: bool = False,
+        dual_cr: bool = False,
     ):
-        """Read 7x7x59 mrral patches around labeled centers.
+        """Read 7x7x59 (or 7x7x118 with dual_cr) mrral patches around labeled
+        centers.
 
         Continuum-removal options (all off by default → unchanged raw behaviour):
           continuum_removed: apply upper-hull CR (data.continuum_removal.cr_patch)
@@ -468,10 +470,20 @@ class CRISMSpectralPatchDataset(Dataset):
               scripts/build_global_patch_cache.py --continuum_removed or the
               labeled equivalent). Brightness is then read from the parallel
               mrral_{split}_patches_p{P}_brightness.npy sidecar.
+          dual_cr: serve the 118-channel hull-CR ⊕ linear-CR representation
+              (data.continuum_removal.dual_continuum) instead of the 59-channel
+              hull-only one. Requires continuum_removed=True. A memmap cache
+              used with dual_cr=True must itself be 118-channel wide (built by
+              the --dual patch-cache builders) — the byte-exact size check
+              below is keyed on the actual channel count, so a 59-channel
+              cache is rejected rather than silently read as half of a dual
+              patch.
         """
         assert patch_size % 2 == 1, "patch_size must be odd"
         if return_brightness and not continuum_removed:
             raise ValueError('return_brightness requires continuum_removed=True')
+        if dual_cr and not continuum_removed:
+            raise ValueError('dual_cr requires continuum_removed=True')
         df = _collapse_labels(df).reset_index(drop=True)
         self.mrral_map = mrral_map
         self.patch_size = patch_size
@@ -479,6 +491,8 @@ class CRISMSpectralPatchDataset(Dataset):
         self.continuum_removed = continuum_removed
         self.return_brightness = return_brightness
         self.cache_is_cr = cache_is_cr
+        self.dual_cr = dual_cr
+        self.n_channels = 118 if dual_cr else 59
         self.labels = torch.tensor(df[LABEL_COLS].values, dtype=torch.float32)
         self.weights = torch.tensor(df['confidence_weight'].values, dtype=torch.float32)
         self._tile_ids = df['tile_id'].values
@@ -497,19 +511,21 @@ class CRISMSpectralPatchDataset(Dataset):
                 # would silently read a prefix of a stale/oversized file —
                 # exactly the failure mode when the parquet is rebuilt but
                 # the cache isn't. Require an exact byte-size match.
-                expected_bytes = self._n * patch_size * patch_size * 59 * 4
+                expected_bytes = self._n * patch_size * patch_size * self.n_channels * 4
                 actual_bytes = os.path.getsize(cache_file)
                 if actual_bytes != expected_bytes:
                     raise ValueError(
                         f'patch cache {cache_file} is {actual_bytes:,} bytes '
                         f'but the {split} dataframe ({self._n:,} rows) needs '
-                        f'exactly {expected_bytes:,}. The cache was built '
-                        f'from different parquet rows — rebuild it '
+                        f'exactly {expected_bytes:,} ({self.n_channels} '
+                        f'channels). The cache was built from different '
+                        f'parquet rows or a different channel count '
+                        f'(dual_cr={dual_cr}) — rebuild it '
                         f'(scripts/cache_mrral_patches.py) or fix '
                         f'--patch_cache_dir.')
                 self._cache = np.memmap(
                     cache_file, dtype='float32', mode='r',
-                    shape=(self._n, patch_size, patch_size, 59)
+                    shape=(self._n, patch_size, patch_size, self.n_channels)
                 )
                 # A CR cache (cache_is_cr) has already discarded albedo, so the
                 # brightness aux must come from the parallel sidecar written
@@ -556,8 +572,14 @@ class CRISMSpectralPatchDataset(Dataset):
             needs CR applied here.
         """
         if self.continuum_removed and not from_cr_cache:
-            from data.continuum_removal import cr_patch
-            patch, brightness = cr_patch(patch)
+            if self.dual_cr:
+                from data.continuum_removal import (dual_continuum,
+                                                    brightness_scalar)
+                brightness = brightness_scalar(patch)     # from RAW, pre-transform
+                patch = dual_continuum(patch)
+            else:
+                from data.continuum_removal import cr_patch
+                patch, brightness = cr_patch(patch)
         patch_t = torch.from_numpy(np.ascontiguousarray(patch, dtype=np.float32))
         if self.return_brightness:
             b = float(brightness[self.half, self.half])
