@@ -114,15 +114,16 @@ class DenoisingSpatialSpectralMAE(SpatialSpectralMAE):
             loss = ((recon - x_flat) ** 2).mean()
             self.last_block_losses = None
         else:
-            # Per-block MSE, then averaged. A single pooled mean would weight the
-            # objective by each block's variance -- with hull-CR at std 0.0705
-            # and linear-CR at 0.1726 (2.45x), the pretrain would spend itself on
-            # the linear block, which is the raw-space MAE failure mode relocated.
-            #
-            # NOTE: for equal-sized blocks this averaging is mathematically
-            # identical to the plain pooled mean (see task-3-report.md), so it
-            # changes neither the loss value nor its gradient. The per-block
-            # split is kept only as a diagnostic (self.last_block_losses,
+            # Per-block MSE, then averaged. For equal-sized blocks this is
+            # mathematically identical to the plain pooled mean (see
+            # task-3-report.md "Critical finding"), so it changes neither the
+            # loss value nor its gradient -- what actually makes the two
+            # blocks' reconstruction targets comparable is that the CACHE was
+            # standardised per block (each divided by its own global std from
+            # data/mrral_cr_scales.json: hull 0.0705, linear 0.1726, ratio
+            # 1.029x after standardisation). Once the targets are on the same
+            # scale, a pooled MSE already weights them equally. The per-block
+            # split here is kept only as a diagnostic (self.last_block_losses,
             # logged by the pretrain script) -- divergence between block
             # losses can reveal a cache written un-standardised or a stale
             # data/mrral_cr_scales.json, even though it doesn't rebalance

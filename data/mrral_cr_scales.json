@@ -6,5 +6,5 @@
   "n_spectra": 51463,
   "source": "scripts/compute_cr_scales.py --npz spectra.npz",
   "computed": "2026-08-10",
-  "note": "Good bands only. hull-CR is bounded [0,1]; linear-CR is a clipped ratio. The ratio of these stds is why the MAE loss must be computed per channel."
+  "note": "Good bands only. hull-CR is bounded [0,1]; linear-CR is a clipped ratio. Dividing each block by its own std here is what makes the two blocks' reconstruction targets comparable (ratio 1.029x after standardization); once they are comparable, a pooled MAE loss already weights them equally, and the per-block loss is retained only as a diagnostic."
 }

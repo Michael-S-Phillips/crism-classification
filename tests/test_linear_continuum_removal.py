@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from data.continuum_removal import (
-    linear_continuum_removed, good_band_mask_59, WAVELENGTHS_59)
+    linear_continuum_removed, good_band_mask_59, WAVELENGTHS_59, LIN_CR_CLIP)
 
 W = WAVELENGTHS_59
 G = good_band_mask_59()
@@ -66,8 +66,28 @@ def test_excluded_bands_are_one():
 
 
 def test_clipped_to_range():
-    out = linear_continuum_removed(_line(1e-7, 0.0))
-    assert np.all(out >= 0.0) and np.all(out <= 2.0)
+    """The brief's original version of this test fed _line(1e-7, 0.0): a flat
+    spectrum whose max-abs (1e-7) falls below the degeneracy threshold at
+    continuum_removal.py:130 (`> 1e-6`), so it hits the all-ones early-out and
+    the clip is never reached -- deleting LIN_CR_CLIP entirely left this test
+    (and all 51 others) passing. This spectrum instead clears the degeneracy
+    threshold (max-abs 0.30 >> 1e-6) but is shaped so the fitted least-squares
+    line goes through zero near the high-wavelength edge while a handful of
+    real bands there are pulled up well above the line -- exactly the
+    situation LIN_CR_CLIP exists to bound. Unclipped, this specific
+    construction reaches ~2.56 (verified against _linear_continuum before the
+    clip is applied), so the clip at 2.0 genuinely engages here."""
+    y = _line(0.30, -0.29)
+    last5 = np.where(G)[0][-5:]
+    y = y.copy()
+    y[last5] = 0.05
+    out = linear_continuum_removed(y)
+    assert np.all(out >= LIN_CR_CLIP[0]) and np.all(out <= LIN_CR_CLIP[1])
+    # The clip must actually have engaged (not just happen to be satisfied):
+    # at least one of the bumped bands should be pinned at the upper bound.
+    assert np.any(np.isclose(out[last5], LIN_CR_CLIP[1])), (
+        'expected at least one value pinned at the upper clip bound; '
+        f'got {out[last5]}')
 
 
 def test_batch_shape_and_nan_safety():

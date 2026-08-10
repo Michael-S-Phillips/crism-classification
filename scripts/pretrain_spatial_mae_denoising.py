@@ -45,8 +45,13 @@ def main():
     parser.add_argument('--n_bands', type=int, default=59,
                         help='59 for hull-CR only; 118 for dual (hull+linear)')
     parser.add_argument('--n_channel_blocks', type=int, default=1,
-                        help='set 2 with --n_bands 118 so the reconstruction '
-                             'loss is balanced across the two channel blocks')
+                        help='set 2 with --n_bands 118 to log the reconstruction '
+                             'loss per channel block (hull vs linear), a diagnostic '
+                             'for a cache written un-standardised or a stale '
+                             'mrral_cr_scales.json; for equal-sized blocks it does '
+                             'not change the loss value or gradient -- comparability '
+                             'across blocks comes from the per-block std cache, not '
+                             'from this flag')
     # Noise augmentation
     parser.add_argument('--sigma_gauss',  type=float, default=0.0087)
     parser.add_argument('--sigma_spike',  type=float, default=0.0058)
@@ -74,8 +79,12 @@ def main():
     args = parser.parse_args()
 
     if args.n_bands == 118 and args.n_channel_blocks != 2:
-        parser.error('--n_bands 118 requires --n_channel_blocks 2; a pooled loss '
-                     'over blocks of unequal variance skews the pretrain.')
+        parser.error('--n_bands 118 requires --n_channel_blocks 2; not because a '
+                     'pooled loss would skew the pretrain (per-block standardisation '
+                     'of the cache already makes the two blocks comparable, so a '
+                     'pooled MSE weights them equally), but so the per-block loss is '
+                     'logged as a diagnostic for a cache written un-standardised or a '
+                     'stale mrral_cr_scales.json.')
 
     cfg_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), args.config

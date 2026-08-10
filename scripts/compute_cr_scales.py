@@ -59,8 +59,11 @@ def main() -> None:
         'source': f'scripts/compute_cr_scales.py --npz {os.path.basename(args.npz)}',
         'computed': dt.datetime.now().strftime('%Y-%m-%d'),
         'note': ('Good bands only. hull-CR is bounded [0,1]; linear-CR is a '
-                 'clipped ratio. The ratio of these stds is why the MAE loss '
-                 'must be computed per channel.'),
+                 'clipped ratio. Dividing each block by its own std here is '
+                 'what makes the two blocks\' reconstruction targets '
+                 'comparable; once they are, a pooled MAE loss already '
+                 'weights them equally and the per-block loss is retained '
+                 'only as a diagnostic.'),
     }
     with open(args.out, 'w') as f:
         json.dump(meta, f, indent=2)

@@ -199,6 +199,72 @@ def test_dual_mode_emits_118_channels(tmp_path):
     assert brightness.shape == (patches.shape[0], 7, 7)
 
 
+def test_dual_matches_dual_continuum_module(tmp_path):
+    """The shape/isfinite checks in test_dual_mode_emits_118_channels above are
+    blind to the actual transform: replacing `cr = dual_continuum(patch)` in
+    build_global_patch_cache.py with hull-CR written into BOTH halves (linear-CR
+    never computed) leaves patches.shape[-1] == 118 and np.isfinite(patches).all()
+    both true, so all 8 prior tests in this file passed against that mutant. This
+    cache feeds MAE pretrain and every downstream backbone, so a silent no-op here
+    would make the whole dual-continuum hypothesis look falsified for the wrong
+    reason.
+
+    Recomputes the expected 118-channel output independently via
+    data.continuum_removal.dual_continuum() on the SAME raw, clipped patch and
+    compares per-patch. The raw patch is obtained by calling
+    extract_patches_from_tile with continuum_removed=False, dual=False and the
+    identical seed/n_target/patch_size: with the same seed the RNG draw sequence
+    (nodata mask -> valid_centers -> rng.choice) is unaffected by the
+    continuum_removed/dual flags, which are only consulted after sampling, so the
+    two calls sample the same centers and the raw path's [0, clip_max]-clipped
+    patch is exactly the input dual_continuum() would have seen inside the dual
+    path. Also asserts the hull half is NOT equal to the linear half, which
+    catches the specific hull-into-both-halves mutant directly (shape/isfinite
+    alone cannot).
+    """
+    import rasterio
+    from build_global_patch_cache import extract_patches_from_tile
+    from data.continuum_removal import dual_continuum
+
+    H = W = 40
+    n_bands = 59
+    rng = np.random.default_rng(11)
+    data = rng.uniform(0.05, 0.35, size=(n_bands, H, W)).astype(np.float32)
+    prefix = str(tmp_path / 't9996_mrral_00n000_0327_4')
+    img_path = prefix + '.img'
+    hdr_path = prefix + '.hdr'
+    with rasterio.open(img_path, 'w', driver='ENVI', dtype='float32',
+                       count=n_bands, height=H, width=W, interleave='bsq') as dst:
+        for b in range(n_bands):
+            dst.write(data[b], b + 1)
+
+    seed = 5
+    n_target = 10
+    patch_size = 7
+
+    raw_patches, n_skipped_raw = extract_patches_from_tile(
+        hdr_path, n_target=n_target, patch_size=patch_size, seed=seed,
+        continuum_removed=False, dual=False)
+    dual_patches, brightness, n_skipped_dual = extract_patches_from_tile(
+        hdr_path, n_target=n_target, patch_size=patch_size, seed=seed,
+        continuum_removed=True, dual=True)
+
+    assert raw_patches.shape[0] == dual_patches.shape[0] > 0
+    assert n_skipped_raw == n_skipped_dual
+    assert dual_patches.shape[-1] == 118
+
+    for i in range(raw_patches.shape[0]):
+        expected = dual_continuum(raw_patches[i])
+        assert np.allclose(dual_patches[i], expected, atol=1e-5), (
+            f'patch {i}: cache does not match dual_continuum(raw_patch)')
+        # channel-order / distinctness contract: hull half must differ from
+        # the linear half for a real, non-degenerate spectrum -- catches
+        # hull-CR duplicated into both halves.
+        assert not np.allclose(
+            dual_patches[i, ..., :59], dual_patches[i, ..., 59:], atol=1e-3
+        ), f'patch {i}: hull half equals linear half (dual_continuum not exercised)'
+
+
 def test_non_dual_still_emits_59(tmp_path):
     """The existing hull-only path must be untouched."""
     import numpy as np

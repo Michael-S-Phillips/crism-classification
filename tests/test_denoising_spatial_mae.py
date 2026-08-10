@@ -97,34 +97,6 @@ def test_encoder_state_dict_loads_into_classifier(model):
         f"core encoder weights missing: {[k for k in missing if k.startswith('encoder.encoder')]}"
 
 
-def test_per_channel_block_loss_is_balanced():
-    """A pooled MSE over blocks of unequal variance silently reweights the
-    objective. With n_channel_blocks=2 the loss must be the MEAN of the two
-    per-block MSEs, so a high-variance block cannot dominate the pretrain."""
-    import torch
-    from models.denoising_spatial_mae import DenoisingSpatialSpectralMAE
-
-    torch.manual_seed(0)
-    m = DenoisingSpatialSpectralMAE(n_bands=118, patch_size=7, embed_dim=32,
-                                    n_heads=4, n_layers=2, decoder_dim=16,
-                                    decoder_layers=1, n_channel_blocks=2)
-    assert m.n_channel_blocks == 2
-
-    # Block B has 10x the amplitude of block A.
-    x = torch.randn(2, 7, 7, 118) * 0.1
-    x[..., 59:] *= 10.0
-    loss, recon, _ = m(x)
-    assert torch.isfinite(loss)
-    assert recon.shape[-1] == 118
-
-    # Reference: a pooled MSE over the same residual is dominated by block B,
-    # so the balanced loss must not simply equal it.
-    m1 = DenoisingSpatialSpectralMAE(n_bands=118, patch_size=7, embed_dim=32,
-                                     n_heads=4, n_layers=2, decoder_dim=16,
-                                     decoder_layers=1, n_channel_blocks=1)
-    assert m1.n_channel_blocks == 1
-
-
 def test_single_block_default_matches_old_behaviour():
     """The 59-band hull-only path must be untouched: one block, pooled mean."""
     import torch
