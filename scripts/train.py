@@ -253,6 +253,17 @@ def build_args():
         parser.error('--brightness_aux requires --model spatial_vit_aux.')
     if args.cache_is_cr and not args.continuum_removed:
         parser.error('--cache_is_cr requires --continuum_removed.')
+    # Only the branches that forward synth_* to train_torch_model can honour
+    # these. Until 2026-08-10 spatial_vit_aux accepted them and silently dropped
+    # them, so the ft_7cls_handcore_* runs trained with zero MTRDR plagioclase
+    # while their command line said otherwise. Refuse rather than ignore.
+    _SYNTH_SUPPORTED = ('spatial_vit', 'spatial_vit_aux')
+    if any((args.synth_train_cache, args.synth_train_parquet,
+            args.synth_val_cache, args.synth_val_parquet)) \
+            and args.model not in _SYNTH_SUPPORTED:
+        parser.error(
+            f'--synth_* is not supported by --model {args.model}; it would be '
+            f'silently ignored. Supported: {", ".join(_SYNTH_SUPPORTED)}.')
 
     # Class-count / LABEL_COLS swap — must happen BEFORE any dataset code reads it.
     if args.seven_class:
@@ -742,6 +753,17 @@ def main():
                 class_weights=class_weights_tensor,
                 min_delta=args.min_delta,
                 stop_metric=args.stop_metric,
+                # Synthetic/MTRDR patch injection. These were MISSING here while
+                # the spatial_vit branch above passed them, so --synth_train_* and
+                # --synth_val_* were accepted by argparse and then silently
+                # dropped for --model spatial_vit_aux: zero MTRDR plagioclase was
+                # injected and nothing said so. The ft_7cls_handcore_* runs of
+                # 2026-08-09 trained with plag = hand-labelled only despite being
+                # configured otherwise. Audit 2026-08-10.
+                synth_train_cache=args.synth_train_cache,
+                synth_train_parquet=args.synth_train_parquet,
+                synth_val_cache=args.synth_val_cache,
+                synth_val_parquet=args.synth_val_parquet,
                 # brightness-aux path: CR patches + brightness scalar via
                 # CRISMSpectralPatchDataset (no mrrsu_aux_dir). Otherwise the
                 # mrrsu-param aux dataset.
