@@ -1,0 +1,10 @@
+{
+  "hull_std": 0.07054129987955093,
+  "linear_std": 0.17212197184562683,
+  "hull_mean": 0.9341857433319092,
+  "linear_mean": 0.999232828617096,
+  "n_spectra": 51463,
+  "source": "scripts/compute_cr_scales.py --npz spectra.npz",
+  "computed": "2026-08-10",
+  "note": "Good bands only. hull-CR is bounded [0,1]; linear-CR is a clipped ratio. The ratio of these stds is why the MAE loss must be computed per channel."
+}

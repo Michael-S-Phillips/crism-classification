@@ -145,6 +145,31 @@ def brightness_scalar(spec: np.ndarray) -> np.ndarray:
     return spec[..., _GOOD_IDX].mean(axis=-1)
 
 
+_SCALES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'mrral_cr_scales.json')
+with open(_SCALES_PATH) as _f:
+    CR_SCALES = json.load(_f)
+
+
+def dual_continuum(spec: np.ndarray, standardize: bool = True) -> np.ndarray:
+    """hull-CR concatenated with linear-CR. spec: (..., 59) -> (..., 118).
+
+    Channel order is LOAD-BEARING: 0..58 hull, 59..117 linear. Producers
+    (patch-cache builders) and consumers (encoder, inference) all assume it.
+
+    standardize divides each block by its global std from
+    data/mrral_cr_scales.json. Without it the linear block carries 2.45x the
+    variance and a pooled reconstruction loss spends the pretrain on it -- the
+    raw-space MAE failure mode, relocated.
+    """
+    hull = continuum_removed(spec)
+    lin = linear_continuum_removed(spec)
+    if standardize:
+        hull = hull / CR_SCALES['hull_std']
+        lin = lin / CR_SCALES['linear_std']
+    return np.concatenate([hull, lin], axis=-1).astype(np.float32)
+
+
 def cr_patch(patch: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """CR a (P, P, 59) patch. Returns (CR patch (P,P,59), brightness (P,P))."""
     patch = np.asarray(patch, dtype=np.float32)
