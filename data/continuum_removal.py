@@ -27,6 +27,7 @@ with open(_SIDECAR) as _f:
 
 WAVELENGTHS_59 = np.asarray(_meta['wavelengths_nm'], dtype=np.float64)
 assert WAVELENGTHS_59.shape == (59,), WAVELENGTHS_59.shape
+N_BANDS = 59
 _EXCL_LO, _EXCL_HI = _meta['exclusion_window_nm']
 _GOOD = ~((WAVELENGTHS_59 >= _EXCL_LO) & (WAVELENGTHS_59 <= _EXCL_HI))
 _GOOD_IDX = np.where(_GOOD)[0]
@@ -91,6 +92,49 @@ def continuum_removed(spec: np.ndarray) -> np.ndarray:
     for i in range(flat.shape[0]):
         out[i] = _cr_one(flat[i])
     return out.reshape(spec.shape).astype(np.float32)
+
+
+LIN_CR_CLIP = (0.0, 2.0)   # p99.99 of real data is 1.415; the tails reach +-10
+
+
+def _linear_continuum(y: np.ndarray) -> np.ndarray:
+    """Least-squares straight line through (good_wl, y). y: (n, n_good)."""
+    x = (_GOOD_WL - _GOOD_WL.mean()) / (_GOOD_WL.max() - _GOOD_WL.min())
+    X = np.stack([np.ones_like(x), x], axis=1)            # (n_good, 2)
+    coef, *_ = np.linalg.lstsq(X, y.T, rcond=None)        # (2, n)
+    return (X @ coef).T                                   # (n, n_good)
+
+
+def linear_continuum_removed(spec: np.ndarray) -> np.ndarray:
+    """Divide out a per-spectrum LINEAR continuum. spec: (..., 59) -> same shape.
+
+    Removes overall level and slope but is mathematically incapable of removing
+    curvature, because a line has none. That is the difference from
+    continuum_removed(): upper-hull CR divides by the convex hull, and a broad
+    convex arch IS approximately the hull, so hull CR destroys it (41% of
+    alteration's 1-2um arch retained, vs 84% for bland). Per-pixel, the arch
+    alone separates alteration from every other class at AUC 0.990 under linear
+    CR against 0.856 under hull CR.
+
+    Excluded bands and degenerate spectra -> 1.0, matching continuum_removed.
+    Output is clipped to LIN_CR_CLIP: unclipped values reach +-10 and would
+    dominate gradients.
+    """
+    spec = np.asarray(spec)
+    if spec.shape[-1] != N_BANDS:
+        raise ValueError(f'expected last dim {N_BANDS}, got {spec.shape}')
+    flat = spec.reshape(-1, N_BANDS).astype(np.float64)
+    out = np.ones_like(flat, dtype=np.float32)
+
+    y = flat[:, _GOOD_IDX]
+    ok = np.isfinite(y).all(axis=1) & (np.max(np.abs(y), axis=1) > 1e-6)
+    if ok.any():
+        cont = _linear_continuum(y[ok])
+        cont = np.where(np.abs(cont) < 1e-6, 1.0, cont)
+        r = np.nan_to_num(y[ok] / cont, nan=1.0, posinf=1.0, neginf=1.0)
+        out[np.ix_(ok, _GOOD_IDX)] = np.clip(
+            r, LIN_CR_CLIP[0], LIN_CR_CLIP[1]).astype(np.float32)
+    return out.reshape(spec.shape)
 
 
 def brightness_scalar(spec: np.ndarray) -> np.ndarray:
