@@ -472,7 +472,15 @@ git commit -m "feat: dual continuum assembly with per-channel scales"
 - Consumes: nothing from Tasks 1–2 at runtime.
 - Produces: `DenoisingSpatialSpectralMAE(..., n_bands=118, n_channel_blocks=2)`; forward returns the same `(loss, recon, mask)` triple.
 
-**The defect being prevented.** The loss is currently `((recon - x_flat) ** 2).mean()` — one pooled mean over all bands. With 118 channels whose stds differ 2.45×, that silently weights the objective toward the higher-variance block even after input standardisation, because the *reconstruction targets* also differ in scale.
+**CORRECTED 2026-08-10 — read before implementing.** This task originally claimed the pooled loss "silently weights the objective toward the higher-variance block". That is **false for equal-sized blocks**: `mean([mean(A), mean(B)])` equals the pooled mean exactly (verified: they differ by 1.9e-9, float rounding only). Averaging equal-sized block means *is* pooling.
+
+The variance skew is already fixed by Task 2, on the input side: standardised blocks measure std 0.9936 (hull) and 0.9655 (linear) — ratio 1.029× — so the reconstruction *targets* are on the same scale and a pooled MSE weights them equally.
+
+**What this task is actually for**, therefore:
+1. `--n_bands` parameterisation, which is genuinely required (the model hardcodes 59).
+2. Per-block loss **logging**, as a diagnostic: it is how you notice a cache written un-standardised, or CR_SCALES gone stale relative to the transform.
+
+Do NOT write a test asserting the balanced loss differs numerically from the pooled loss — it does not, and forcing that assertion would be a false test.
 
 - [ ] **Step 1: Write the failing test**
 

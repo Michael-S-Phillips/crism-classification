@@ -130,8 +130,31 @@ failure mode as a raw-space MAE, merely relocated. Therefore:
    gradients.
 2. **Standardize per channel block** (divide each 59-band block by its global
    std) before the encoder.
-3. **Compute the MAE denoising loss per channel and average**, never pooled.
-   Pooling silently reweights the objective by the variance ratio.
+3. **Log the MAE denoising loss per channel block.** For monitoring only — see
+   the correction below.
+
+**CORRECTION 2026-08-10.** An earlier version of this section claimed that
+computing the loss per channel and averaging was necessary because "pooling
+silently reweights the objective by the variance ratio". **That is wrong.** For
+equal-sized blocks, `mean([mean(A), mean(B)])` is algebraically identical to the
+pooled `mean(A ∪ B)`:
+
+    mean(A) = sum(A)/n,  mean(B) = sum(B)/n   (equal n)
+    (mean(A) + mean(B))/2 = (sum(A) + sum(B))/(2n) = pooled mean
+
+Verified numerically: the two differ by 1.9e-9, pure float rounding. Averaging
+equal-sized block means *is* pooling.
+
+**Step 2 above is the actual mechanism.** Dividing each block by its own std
+makes the cached *targets* comparable — measured on real spectra, the
+standardised blocks come out at std 0.9936 (hull) and 0.9655 (linear), a ratio of
+1.029×. Once the targets are on the same scale, a pooled MSE already weights them
+equally. Nothing further is required.
+
+The per-block loss machinery is retained purely as a **diagnostic**: reporting
+the two block losses separately is how you would notice a cache written
+un-standardised, or CR_SCALES going stale relative to the transform. It does not
+change the optimisation.
 
 ## Held constant — exactly one variable
 
