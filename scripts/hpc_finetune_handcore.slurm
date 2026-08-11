@@ -42,24 +42,35 @@
 # Before that fix it served every row in the parquet, so a synth set carrying
 # its own val rows trained on them AND validated on them.
 #
-# ── 2026-08-11: the MTRDR plag caches were RAW, not hull-CR ──────────────────
-# The two source caches on disk are raw reflectance (p50 ~0.19, max ~0.34) while
-# hull-CR is bounded [0,1] and centres at 0.934. SyntheticPatchDataset serves its
-# .npy VERBATIM — no transform — so every earlier run of this job trained
-# PLAGIOCLASE ON RAW PATCHES while all six other classes got hull-CR patches: a
-# ~4x level offset on exactly one class. That is trivially separable in
-# validation and then over-fires at inference, where the whole tile is CR. It is
-# a plausible mechanism for the observed plag pathology (high-confidence plag
-# looks reasonable, low-confidence is not plag, and own-class spectral agreement
-# INVERTS 0.45 -> 0.02 as confidence rises; see reports/floor_tests/).
+# ── 2026-08-11: no earlier run of this job used MTRDR plag AT ALL ────────────
+# Until 07547e8 (2026-08-10 09:21) --synth_* was accepted but silently DROPPED
+# for spatial_vit_aux. Every handcore log before that — the newest is 09:18 —
+# lacks any "Concatenating ... synthetic plag patches" line. So
+# ft_7cls_handcore_level and _reviewup trained plagioclase on HAND LABELS ONLY,
+# i.e. exactly the least-separable variant described above (SAM recall 0.29 at
+# k=1, and unlike junk it does not recover at k=5). That alone explains plag
+# over-firing everywhere in the floor test; no further mechanism is needed.
 #
-# Fixed here by converting both caches to hull-CR once, into ${SYNTH_DIR} on
-# xdisk. Row order and row count are preserved exactly, so both *_ROWS parquets
-# are unchanged. SyntheticPatchDataset now also REFUSES a representation
-# mismatch, so this job would abort in seconds rather than waste a GPU day.
+# A SECOND, latent bug sat behind it: the two source caches are raw reflectance
+# (p50 ~0.19) while hull-CR is bounded [0,1] and centres at 0.934, and
+# SyntheticPatchDataset serves its .npy VERBATIM. Once 07547e8 made the
+# injection real, that would have put plagioclase — and only plagioclase — at
+# ~4x the level of every other class. It never reached a trained model, because
+# the first run after the forwarding fix crashed first (see below).
 #
-# Checkpoints from before this fix (ft_7cls_handcore_level / _reviewup) are not
-# valid plagioclase comparators. Re-run this job to get one.
+# Both are fixed here: the caches are converted to hull-CR once into
+# ${SYNTH_DIR} on xdisk (row order and count preserved, so both *_ROWS parquets
+# are unchanged), and SyntheticPatchDataset now REFUSES a representation
+# mismatch rather than training through it.
+#
+# THIRD, exposed by the first real injection (2026-08-11): this job runs
+# --brightness_aux, so the labeled dataset yields (patch, brightness, label,
+# weight) while SyntheticPatchDataset yielded a 3-tuple — default_collate
+# rejects the mixed batch with "each element in list of batch should be of equal
+# size". Hence the brightness sidecar built alongside the patches below.
+#
+# ft_7cls_handcore_level / _reviewup are therefore not plagioclase comparators
+# for any run that injects MTRDR plag. Re-run this job to get one.
 #
 # Submit:  sbatch scripts/hpc_finetune_handcore.slurm
 

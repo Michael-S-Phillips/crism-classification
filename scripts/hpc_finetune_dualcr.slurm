@@ -27,20 +27,20 @@
 # to 118-channel dual-CR (option (a)) and passes them, so plag sees the same
 # pixels as the comparator, in this arm's representation.
 #
-# The EXISTING hull-CR checkpoints are wrong in the other direction.
-# ft_7cls_handcore_level ran `--continuum_removed --cache_is_cr` while pointing
-# --synth_train_cache / --synth_val_cache at RAW-REFLECTANCE .npy files
-# (verified 2026-08-11: p50 ~0.19 against hull-CR's 0.934 mean).
-# SyntheticPatchDataset applies NO transform, so plagioclase — and only
-# plagioclase — trained at ~4x the level of every other class, which is trivially
-# separable in validation and over-fires on an all-CR tile at inference.
-# scripts/hpc_finetune_handcore.slurm has since been FIXED (it now builds hull-CR
-# plag caches via convert_synth_cache_representation.py --mode hull), but the
-# checkpoints on disk predate that fix. So:
+# The EXISTING hull-CR checkpoints have NO MTRDR plag in them at all. Until
+# 07547e8 (2026-08-10 09:21) --synth_* was accepted but silently dropped for
+# spatial_vit_aux, and every handcore log predating it (newest 09:18) lacks any
+# "Concatenating ... synthetic plag patches" line. So ft_7cls_handcore_level
+# trained plagioclase on HAND LABELS ONLY — the least-separable variant, SAM
+# recall 0.29 at k=1, which on its own explains plag over-firing in the floor
+# test. scripts/hpc_finetune_handcore.slurm has since been fixed to inject MTRDR
+# plag as hull-CR with a brightness sidecar, but the checkpoints on disk predate
+# that. So:
 #   * ALTERATION and BLAND — the actual hypothesis under test — never used a synth
 #     cache and are comparable against ft_7cls_handcore_level today.
 #   * PLAGIOCLASE is comparable only against a RE-RUN of the fixed handcore job.
-#     Treat plag as pending until that checkpoint exists.
+#     Comparing this arm's plag to the existing checkpoint would compare
+#     hand-plus-MTRDR against hand-only, not one representation against another.
 #
 # ── What is being tested ─────────────────────────────────────────────────────
 # Upper-hull CR divides by the convex hull, and a broad convex arch IS
