@@ -98,6 +98,7 @@ def train_torch_model(
     continuum_removed: bool = False,
     brightness_aux: bool = False,
     cache_is_cr: bool = False,
+    dual_cr: bool = False,
     min_delta: float = 0.0,
     stop_metric: str = 'val_mAP_core',
     decomp_lambda_recon: float = 1.0,
@@ -161,6 +162,27 @@ def train_torch_model(
         pos_weight = torch.tensor(pw, dtype=torch.float32).to(device)
         logger.info(f"Auto-computed pos_weight from prevalence: {pos_weight.tolist()}")
 
+    # dual_cr (118 channels: hull-CR 0-58 ⊕ linear-CR 59-117) is only served by
+    # CRISMSpectralPatchDataset. Anything else reached with dual_cr=True would
+    # quietly serve 59 channels, and a wrong-representation run that completes is
+    # worse than one that doesn't start — it reads as a falsified hypothesis.
+    if dual_cr:
+        if not continuum_removed:
+            raise ValueError('dual_cr requires continuum_removed=True')
+        if mrral_map is None:
+            raise ValueError(
+                'dual_cr requires the mrral patch path (mrral_map is None), the '
+                'only dataset that serves 118 channels')
+        if mrrsu_aux_dir is not None:
+            raise ValueError(
+                'dual_cr is incompatible with mrrsu_aux_dir: MrrsuAuxPatchDataset '
+                'serves 59-channel patches')
+        if (synth_train_cache or synth_train_parquet
+                or synth_val_cache or synth_val_parquet):
+            raise ValueError(
+                'dual_cr is incompatible with the synth_* patch caches, which are '
+                '59-channel; concatenating them would mix representations')
+
     def make_dataset(sub_df, split_name='train'):
         from data.dataset import MRRAL_BAND_COLS, BAND_COLS, CRISMSpectralDataset, CRISMCombinedDataset
         if mrral_map is not None:
@@ -170,7 +192,8 @@ def train_torch_model(
                 cache_dir=cache_dir, split=split_name,
                 continuum_removed=continuum_removed,
                 return_brightness=brightness_aux,
-                cache_is_cr=cache_is_cr)
+                cache_is_cr=cache_is_cr,
+                dual_cr=dual_cr)
         if use_patches:
             return CRISMPatchDataset(sub_df, mrrsu_map, patch_size=patch_size,
                                      cache_dir=cache_dir, split=split_name)

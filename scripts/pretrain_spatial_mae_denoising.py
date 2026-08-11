@@ -78,6 +78,13 @@ def main():
     parser.add_argument('--no_wandb', action='store_true')
     args = parser.parse_args()
 
+    if args.n_bands == 118 and not args.continuum_removed:
+        parser.error(
+            '--n_bands 118 requires --continuum_removed. Without it the loader '
+            'runs with normalize=True and per-patch z-scores the dual patch. The '
+            'hull and linear blocks sit ~7.5x apart in mean, that offset dominates '
+            'the patch std, and the real within-block signal is shrunk roughly 4x '
+            '— the pretrain would complete and learn almost nothing.')
     if args.n_bands == 118 and args.n_channel_blocks != 2:
         parser.error('--n_bands 118 requires --n_channel_blocks 2; not because a '
                      'pooled loss would skew the pretrain (per-block standardisation '

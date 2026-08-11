@@ -37,7 +37,17 @@ from models.spatial_spectral_transformer import SpatialSpectralClassifier
 
 NODATA = 65535.0
 CLIP_MAX = 0.5
-N_BANDS = 59
+# TWO different band counts, deliberately kept as separate names. They were one
+# constant (N_BANDS) until --dual_cr made them diverge:
+#   N_SRC_BANDS   how many bands to read out of the mrral tile. ALWAYS 59 —
+#                 --dual_cr changes the representation, not the file.
+#   MODEL_N_BANDS the encoder's input width. Rebound to 118 by --dual_cr, because
+#                 dual_continuum() emits hull-CR (0-58) ⊕ linear-CR (59-117).
+# Overloading one constant would either read 118 bands from a 59-band file (loud)
+# or build a 59-channel model for 118-channel input.
+N_SRC_BANDS = 59
+MODEL_N_BANDS = 59
+DUAL_CR = False
 PATCH_SIZE = 7
 PAD = PATCH_SIZE // 2  # 3
 # Defaults for 5-class checkpoints; _set_n_classes() rebinds all three from
@@ -218,7 +228,7 @@ def load_mrrsu_aux_rasters(mrrsu_path, stats_json, patch_size=PATCH_SIZE):
 def load_tile(img_path):
     import rasterio
     with rasterio.open(img_path) as src:
-        data = src.read(list(range(1, N_BANDS + 1))).astype(np.float32)
+        data = src.read(list(range(1, N_SRC_BANDS + 1))).astype(np.float32)
         transform = src.transform
         crs = src.crs
     nodata_mask = (data == NODATA) | ~np.isfinite(data)
@@ -282,15 +292,54 @@ def normalize_patches(patches):
     return ((patches.reshape(B, -1) - mu) / sigma).reshape(patches.shape)
 
 
-def load_classifier(ckpt_path, device, embed_dim=128, n_layers=6):
+_BAND_EMBED_KEY = 'encoder.band_embed.weight'
+
+
+def assert_ckpt_channels(state, dual_cr):
+    """Abort unless the checkpoint's input width matches --dual_cr.
+
+    The checkpoint's first-layer weight is authoritative, not the command line.
+    SpatialSpectralTransformer.band_embed is nn.Linear(n_bands, embed_dim), so its
+    weight is (embed_dim, n_bands) and shape[-1] IS the channel count. Verified
+    2026-08-11 against checkpoints/ft_7cls_handcore_level_best.pt →
+    encoder.band_embed.weight (256, 59), and across all 139 SpatialSpectral
+    classifier checkpoints on this machine (all width 59, key always present).
+
+    A missing key is a refusal, not a skip: skipping the check is exactly how a
+    mismatched invocation gets to produce a plausible-looking wrong map. The 15
+    checkpoints here that lack the key (svit_*, vit_*) are other model families
+    that already fail strict load_state_dict into SpatialSpectralClassifier, so
+    refusing costs no working invocation.
+
+    `state` must already be unwrapped from any {'model_state': ...} envelope.
+    """
+    w = state.get(_BAND_EMBED_KEY)
+    if w is None:
+        raise SystemExit(
+            f'checkpoint has no {_BAND_EMBED_KEY}, so its input channel count '
+            f'cannot be checked against --dual_cr. Refusing rather than guessing: '
+            f'a channel mismatch produces a wrong map, not an error. Is this a '
+            f'SpatialSpectralClassifier checkpoint? Keys seen: '
+            f'{sorted(state)[:6]}')
+    exp = int(w.shape[-1])
+    want = 118 if dual_cr else 59
+    if exp != want:
+        raise SystemExit(
+            f'checkpoint expects {exp} channels but --dual_cr='
+            f'{"on" if dual_cr else "off"} supplies {want}. '
+            f'Pass --dual_cr iff the checkpoint is a dual-CR model.')
+
+
+def load_classifier(ckpt_path, device, embed_dim=128, n_layers=6, dual_cr=False):
     state = torch.load(ckpt_path, map_location=device, weights_only=False)
     if isinstance(state, dict) and 'model_state' in state:
         val_map = state.get('val_mAP', None)
         state = state['model_state']
         print(f'  val_mAP from checkpoint: {val_map:.4f}' if val_map else '')
     _set_n_classes(state)
+    assert_ckpt_channels(state, dual_cr)
     model = SpatialSpectralClassifier(
-        n_bands=N_BANDS, patch_size=PATCH_SIZE, n_classes=N_CLASSES,
+        n_bands=118 if dual_cr else 59, patch_size=PATCH_SIZE, n_classes=N_CLASSES,
         embed_dim=embed_dim, n_heads=4, n_layers=n_layers,
     ).to(device)
     model.load_state_dict(state)
@@ -299,7 +348,8 @@ def load_classifier(ckpt_path, device, embed_dim=128, n_layers=6):
 
 
 def run_supervised(tile, model, device, batch_size=4096, aux_rasters=None,
-                   continuum_removed=False, brightness_aux=False):
+                   continuum_removed=False, brightness_aux=False,
+                   dual_cr=False):
     """Returns prob_maps: (H*W, N_CLASSES) float32 in [0,1].
 
     If aux_rasters is provided (H, W, 2) float32, feeds per-pixel aux features
@@ -313,7 +363,14 @@ def run_supervised(tile, model, device, batch_size=4096, aux_rasters=None,
     brightness_aux: pass the center-pixel brightness scalar as the 1-D aux to the
       aux model (aux_dim=1). Requires continuum_removed and mutually exclusive with
       aux_rasters.
+    dual_cr: build the 118-channel hull-CR ⊕ linear-CR cube (dual_continuum)
+      instead of the 59-channel hull-only one. Requires continuum_removed. The
+      whole-cube call is exact, not an approximation of per-patch: hull CR is
+      per-pixel, and the linear-CR lstsq fit is row-independent, so a padded-cube
+      call and a per-patch call give identical numbers.
     """
+    if dual_cr and not continuum_removed:
+        raise ValueError('dual_cr requires continuum_removed=True')
     H, W, _ = tile.shape
     n_pixels = H * W
     n_batches = (n_pixels + batch_size - 1) // batch_size
@@ -334,9 +391,14 @@ def run_supervised(tile, model, device, batch_size=4096, aux_rasters=None,
     bright_flat = None
     if continuum_removed:
         from data.continuum_removal import (continuum_removed as _cr_cube,
+                                            dual_continuum as _dual_cube,
                                             brightness_scalar as _brightness)
         padded_tile = np.pad(tile, ((PAD, PAD), (PAD, PAD), (0, 0)), mode='constant')
-        cr_padded = _cr_cube(padded_tile).astype(np.float32)
+        # dual widens 59 -> 118 here; the patch slicing below is channel-generic.
+        _transform = _dual_cube if dual_cr else _cr_cube
+        cr_padded = _transform(padded_tile).astype(np.float32)
+        # Brightness stays the RAW-tile good-band mean, pre-transform, exactly as
+        # the dual dataset path computes it (data/dataset.py::_finish).
         bright_flat = _brightness(tile).reshape(-1).astype(np.float32)
 
     patch_iter = (
@@ -533,6 +595,13 @@ def main():
                              'SpatialSpectralClassifierAux (aux_dim=1). Requires '
                              '--continuum_removed; mutually exclusive with '
                              '--mrrsu_aux.')
+    parser.add_argument('--dual_cr', action='store_true',
+                        help='Checkpoint is a 118-channel dual-CR model: feed '
+                             'hull-CR (channels 0-58) ⊕ linear-CR (59-117) via '
+                             'data.continuum_removal.dual_continuum instead of '
+                             'hull-only CR. Requires --continuum_removed. The '
+                             "checkpoint's own first-layer width is verified "
+                             'against this flag and a mismatch aborts.')
     parser.add_argument('--pyx', action='store_true',
                         help='Checkpoint uses the pyx-merge vocab (LCP+HCP collapsed '
                              "into 'pyx'). Forces a 6-class head to be interpreted as "
@@ -551,6 +620,12 @@ def main():
     if args.brightness_aux and args.mrrsu_aux:
         parser.error('--brightness_aux and --mrrsu_aux are mutually exclusive '
                      '(both feed the aux head).')
+    if args.dual_cr and not args.continuum_removed:
+        parser.error('--dual_cr requires --continuum_removed.')
+    if args.dual_cr:
+        global MODEL_N_BANDS, DUAL_CR
+        MODEL_N_BANDS, DUAL_CR = 118, True
+        print('  dual-CR ON: 118-channel input (hull 0-58 ⊕ linear 59-117)')
 
     if args.pyx:
         global PYX_MODE
@@ -577,10 +652,11 @@ def main():
             state = state['model_state']
             print(f'  val_mAP from checkpoint: {val_map:.4f}' if val_map else '')
         _set_n_classes(state)
+        assert_ckpt_channels(state, args.dual_cr)
         # brightness aux is a single 1-D scalar (aux_dim=1); mrrsu aux is 2-D.
         aux_dim = 1 if args.brightness_aux else 2
         model = SpatialSpectralClassifierAux(
-            n_bands=N_BANDS, patch_size=PATCH_SIZE, n_classes=N_CLASSES,
+            n_bands=MODEL_N_BANDS, patch_size=PATCH_SIZE, n_classes=N_CLASSES,
             embed_dim=args.embed_dim, n_heads=4, n_layers=args.n_layers, aux_dim=aux_dim,
         ).to(device)
         model.load_state_dict(state)
@@ -592,7 +668,8 @@ def main():
             print(f'Loading mrrsu aux tile: {mrrsu_path}')
             aux_rasters = load_mrrsu_aux_rasters(mrrsu_path, args.mrrsu_aux_stats)
     else:
-        model = load_classifier(args.ckpt, device, args.embed_dim, args.n_layers)
+        model = load_classifier(args.ckpt, device, args.embed_dim, args.n_layers,
+                                dual_cr=args.dual_cr)
         aux_rasters = None
 
     print('Running supervised inference...')
@@ -601,7 +678,8 @@ def main():
     probs_flat = run_supervised(tile, model, device, args.batch_size,
                                 aux_rasters=aux_rasters,
                                 continuum_removed=args.continuum_removed,
-                                brightness_aux=args.brightness_aux)  # (H*W, N)
+                                brightness_aux=args.brightness_aux,
+                                dual_cr=args.dual_cr)  # (H*W, N)
     probs = probs_flat.reshape(H, W, N_CLASSES)  # (H, W, 5)
 
     if args.save_probs:

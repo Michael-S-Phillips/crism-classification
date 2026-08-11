@@ -202,6 +202,16 @@ def _build_parser():
                              '--continuum_removed or the labeled equivalent); read '
                              'brightness from the *_brightness.npy sidecar rather than '
                              'CR-ing on read.')
+    parser.add_argument('--dual_cr', action='store_true',
+                        help='118-channel input: upper-hull CR in channels 0-58 ⊕ '
+                             'linear CR in 59-117 (data.continuum_removal.'
+                             'dual_continuum), each block divided by its own global '
+                             'std. Linear CR keeps the broad 1-2 µm arch that hull '
+                             'CR flattens. Requires --continuum_removed; add '
+                             '--cache_is_cr when --patch_cache_dir points at a '
+                             '--dual cache (a 59-channel cache is rejected by the '
+                             'byte-size guard, not silently half-read). Supported '
+                             'only by --model spatial_vit / spatial_vit_aux.')
     parser.add_argument('--min_delta', type=float, default=0.0,
                         help='Early-stopping tolerance: val_mAP drops up to this '
                              'much below the running best do not tick patience. '
@@ -253,6 +263,30 @@ def build_args():
         parser.error('--brightness_aux requires --model spatial_vit_aux.')
     if args.cache_is_cr and not args.continuum_removed:
         parser.error('--cache_is_cr requires --continuum_removed.')
+    if args.dual_cr and not args.continuum_removed:
+        parser.error('--dual_cr requires --continuum_removed.')
+    # Only the two SpatialSpectral* branches build an encoder whose n_bands is
+    # parameterised, and only they forward dual_cr to the dataset. Every other
+    # branch would accept the flag and train the 59-band representation anyway —
+    # the exact failure shape of 07547e8 (--synth_* accepted and dropped, so a
+    # run injected zero MTRDR plagioclase and said nothing). Refuse instead.
+    # Note decomp_spatial_vit{,_adv} additionally reconstruct a physical raw-space
+    # decomposition, which is meaningless on a standardised dual-CR input.
+    _DUAL_CR_SUPPORTED = ('spatial_vit', 'spatial_vit_aux')
+    if args.dual_cr and args.model not in _DUAL_CR_SUPPORTED:
+        parser.error(
+            f'--dual_cr is not supported by --model {args.model}; it would be '
+            f'silently ignored. Supported: {", ".join(_DUAL_CR_SUPPORTED)}.')
+    # SyntheticPatchDataset reads a fixed-width MTRDR plag .npy written at 59
+    # channels. ConcatDataset would mix it with 118-channel patches; refuse
+    # rather than half-populate plagioclase in a dual run.
+    if args.dual_cr and any((args.synth_train_cache, args.synth_train_parquet,
+                             args.synth_val_cache, args.synth_val_parquet)):
+        parser.error(
+            '--dual_cr is incompatible with --synth_*: the synthetic/MTRDR plag '
+            'patch caches are 59-channel, so concatenating them into a '
+            '118-channel run would mix representations. Rebuild the synth cache '
+            'as dual first, or drop --synth_*.')
     # Only the branches that forward synth_* to train_torch_model can honour
     # these. Until 2026-08-10 spatial_vit_aux accepted them and silently dropped
     # them, so the ft_7cls_handcore_* runs trained with zero MTRDR plagioclase
@@ -625,7 +659,8 @@ def main():
 
             from models.spatial_spectral_transformer import SpatialSpectralClassifier
             model = SpatialSpectralClassifier(
-                n_bands=59, patch_size=args.patch_size, n_classes=args.n_classes,
+                n_bands=118 if args.dual_cr else 59,
+                patch_size=args.patch_size, n_classes=args.n_classes,
                 embed_dim=args.embed_dim, n_heads=args.n_heads,
                 n_layers=args.n_layers, dropout=dropout,
             )
@@ -700,6 +735,7 @@ def main():
                 freeze_encoder=args.freeze_encoder,
                 continuum_removed=args.continuum_removed,
                 cache_is_cr=args.cache_is_cr,
+                dual_cr=args.dual_cr,
             )
 
         elif args.model == 'spatial_vit_aux':
@@ -727,7 +763,8 @@ def main():
             dropout = args.dropout if args.dropout is not None else 0.1
             from models.spatial_spectral_classifier_aux import SpatialSpectralClassifierAux
             model = SpatialSpectralClassifierAux(
-                n_bands=59, patch_size=args.patch_size, n_classes=args.n_classes,
+                n_bands=118 if args.dual_cr else 59,
+                patch_size=args.patch_size, n_classes=args.n_classes,
                 embed_dim=args.embed_dim, n_heads=args.n_heads,
                 n_layers=args.n_layers, dropout=dropout, aux_dim=aux_dim,
             )
@@ -771,6 +808,7 @@ def main():
                 continuum_removed=args.continuum_removed,
                 brightness_aux=args.brightness_aux,
                 cache_is_cr=args.cache_is_cr,
+                dual_cr=args.dual_cr,
                 is_aux_model=True,
             )
 
