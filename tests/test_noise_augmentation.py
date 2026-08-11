@@ -146,12 +146,30 @@ def test_59_band_bit_identical_to_pre_fix_baseline():
     tensor with the exact same bytes -- not merely close, but bit-identical
     (verified via sha256 over the raw float32 buffer, which is sensitive to
     any change of even a single bit).
+
+    Two layers, deliberately: the sigma-equality and output-sum assertions
+    are robust and diagnose the likely failure directly, while the sha256 is
+    the strict guard that catches single-bit drift. A sha256 over float32
+    bytes is also sensitive to the torch version and BLAS backend, so a
+    hash-only mismatch (with the sum still matching) most likely means the
+    numerics environment moved, not that this module regressed -- see the
+    regen recipe in the module comment above `_BASELINE_59_SHA256`.
     """
     torch.manual_seed(_BASELINE_59_SEED)
     aug = CrismNoiseAugmentation(
         sigma_gauss=0.0087, sigma_spike=0.0058, sigma_column=0.0049,
         spike_center_band=15, spike_fwhm_bands=3.0, spike_band_range=(13, 17),
         n_bands=59, patch_size=7,
+    )
+    # Layer 1: the 59-band path must not pick up the dual-mode noise_scale.
+    # This is the assertion that fires on the actual regression this test
+    # exists to prevent, and it is environment-independent.
+    explicit = CrismNoiseAugmentation(n_bands=59, dual_continuum=False)
+    assert (aug.sigma_gauss, aug.sigma_spike, aug.sigma_column) == (
+        explicit.sigma_gauss, explicit.sigma_spike, explicit.sigma_column
+    ) == (0.0087, 0.0058, 0.0049), (
+        'the 59-band path picked up a noise scale factor; sigmas must stay '
+        'exactly as estimated against 59-band hull-CR data'
     )
     aug.train()
     x = torch.randn(_BASELINE_59_BATCH, 7, 7, 59)
@@ -164,7 +182,10 @@ def test_59_band_bit_identical_to_pre_fix_baseline():
     assert digest == _BASELINE_59_SHA256, (
         f"59-band output diverged bit-for-bit from the pre-fix baseline "
         f"(got sha256={digest}, expected {_BASELINE_59_SHA256}) -- the "
-        f"59-band path must be untouched"
+        f"59-band path must be untouched. If the sigma and sum assertions "
+        f"above PASSED and only this hash differs, the torch version or BLAS "
+        f"backend has changed rather than this module: re-capture the "
+        f"baseline with the recipe in the comment above _BASELINE_59_SHA256."
     )
 
 
