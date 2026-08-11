@@ -128,5 +128,18 @@ for rec in idx['shards']:
 print(f'{len(idx["shards"])} shards verified at {n_ch} channels (dual=True)')
 EOF
 
+# ── DO THE TWO HALVES ACTUALLY DIFFER? ───────────────────────────────────────
+# Everything above confirms the cache is 118 channels wide and self-consistent.
+# None of it confirms that channels 59-117 hold linear-CR rather than a second
+# copy of hull-CR. That failure yields finite floats, the right shape, and a
+# shard_index saying dual=True -- it would survive every check above, and the
+# experiment would then read as the hypothesis being FALSIFIED rather than as a
+# build bug. This MUST gate the pretrain: the chain is afterok, so a downstream
+# job starts the moment this one exits 0.
+echo "=== dual halves check ==="
+${PYTHON} scripts/check_dual_cache.py "$OUTPUT" || {
+    echo "ERROR: dual halves check failed on $OUTPUT — do NOT pretrain on this cache."
+    exit 1; }
+
 echo "=== dual-CR global patch cache build end: $(date) ==="
 echo "Next: sbatch --dependency=afterok:\$SLURM_JOB_ID scripts/hpc_pretrain_dualcr_mae.slurm"

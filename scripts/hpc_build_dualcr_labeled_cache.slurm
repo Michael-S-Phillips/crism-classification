@@ -140,5 +140,18 @@ for s in splits:
 print('dual-CR labeled cache verified at 118 channels against raw cache AND parquet')
 EOF
 
+# ── DO THE TWO HALVES ACTUALLY DIFFER? ───────────────────────────────────────
+# The byte checks above prove 118 channels; they cannot prove channels 59-117
+# hold linear-CR rather than a duplicate of hull-CR. --headerless because this
+# cache is a deliberately raw np.memmap (build_cr_labeled_cache.py:86), unlike
+# the np.save'd global shards. Gates the fine-tune, which is afterok on this job.
+echo "=== dual halves check ==="
+for s in $SPLITS; do
+    ${PYTHON} scripts/check_dual_cache.py --headerless \
+        "${DUAL_CACHE}/mrral_${s}_patches_p7.npy" || {
+        echo "ERROR: dual halves check failed for split ${s} — do NOT fine-tune."
+        exit 1; }
+done
+
 echo "=== DONE ($(date)) ==="
 echo "Next: sbatch scripts/hpc_finetune_dualcr.slurm"
