@@ -111,10 +111,14 @@ for split in $SPLITS; do
 done
 [ $missing -eq 0 ] || { echo "ERROR: dual-CR cache incomplete — do not fine-tune on it"; exit 1; }
 
-# Width check. These are raw headerless memmaps, so the channel count is not
-# recoverable from a file on its own — and a bytes % (7*7*118*4) test would be
-# worthless, because 59 * (even n) == 118 * (n/2), so any 59-channel cache with an
-# even patch count passes it. Two independent references instead:
+# Width check. FORMAT MATTERS, and it differs from jobs 1/2 — do not "unify" them.
+# The LABELED caches are raw HEADERLESS np.memmaps (build_cr_labeled_cache.py:86,
+# cache_mrral_patches.py:43), so np.load cannot report their shape and the byte
+# count is all we have. The GLOBAL shards (jobs 1/2) are np.save'd with a 128-byte
+# .npy header and are checked with np.load(...).shape instead.
+# A bare bytes % (7*7*118*4) test would be worthless here regardless, because
+# 59 * (even n) == 118 * (n/2), so any 59-channel cache with an even patch count
+# passes it. Two independent references instead:
 #   1. the RAW cache: dual must be EXACTLY 2x its byte count
 #   2. the PARQUET row count per split: exactly what CRISMSpectralPatchDataset's
 #      byte-exact guard will demand at fine-tune startup

@@ -37,17 +37,21 @@ from models.spatial_spectral_transformer import SpatialSpectralClassifier
 
 NODATA = 65535.0
 CLIP_MAX = 0.5
-# TWO different band counts, deliberately kept as separate names. They were one
-# constant (N_BANDS) until --dual_cr made them diverge:
-#   N_SRC_BANDS   how many bands to read out of the mrral tile. ALWAYS 59 —
-#                 --dual_cr changes the representation, not the file.
-#   MODEL_N_BANDS the encoder's input width. Rebound to 118 by --dual_cr, because
-#                 dual_continuum() emits hull-CR (0-58) ⊕ linear-CR (59-117).
+# TWO different band counts, deliberately kept separate. They were one constant
+# (N_BANDS) until --dual_cr made them diverge:
+#   N_SRC_BANDS      how many bands to read out of the mrral tile. ALWAYS 59 —
+#                    --dual_cr changes the representation, not the file.
+#   model_n_bands()  the encoder's input width: 118 under --dual_cr, because
+#                    dual_continuum() emits hull-CR (0-58) ⊕ linear-CR (59-117).
 # Overloading one constant would either read 118 bands from a 59-band file (loud)
 # or build a 59-channel model for 118-channel input.
+#
+# The model width is a FUNCTION of the flag, not a mutable module global. This
+# file's whole point is de-overloading a constant, so it gets exactly one
+# mechanism per meaning — a global that main() rebinds would be a second one, and
+# module state that leaks across calls is already a known hazard here (see the
+# PYX_MODE/CLASS_NAMES test-ordering pollution in test_vectorize_tile_minerals).
 N_SRC_BANDS = 59
-MODEL_N_BANDS = 59
-DUAL_CR = False
 PATCH_SIZE = 7
 PAD = PATCH_SIZE // 2  # 3
 # Defaults for 5-class checkpoints; _set_n_classes() rebinds all three from
@@ -295,6 +299,15 @@ def normalize_patches(patches):
 _BAND_EMBED_KEY = 'encoder.band_embed.weight'
 
 
+def model_n_bands(dual_cr):
+    """The encoder's input channel count. THE single place this is derived.
+
+    Every model construction and the checkpoint guard go through here, so the
+    59-vs-118 decision cannot drift between call sites.
+    """
+    return 118 if dual_cr else 59
+
+
 def assert_ckpt_channels(state, dual_cr):
     """Abort unless the checkpoint's input width matches --dual_cr.
 
@@ -322,7 +335,7 @@ def assert_ckpt_channels(state, dual_cr):
             f'SpatialSpectralClassifier checkpoint? Keys seen: '
             f'{sorted(state)[:6]}')
     exp = int(w.shape[-1])
-    want = 118 if dual_cr else 59
+    want = model_n_bands(dual_cr)
     if exp != want:
         raise SystemExit(
             f'checkpoint expects {exp} channels but --dual_cr='
@@ -339,7 +352,7 @@ def load_classifier(ckpt_path, device, embed_dim=128, n_layers=6, dual_cr=False)
     _set_n_classes(state)
     assert_ckpt_channels(state, dual_cr)
     model = SpatialSpectralClassifier(
-        n_bands=118 if dual_cr else 59, patch_size=PATCH_SIZE, n_classes=N_CLASSES,
+        n_bands=model_n_bands(dual_cr), patch_size=PATCH_SIZE, n_classes=N_CLASSES,
         embed_dim=embed_dim, n_heads=4, n_layers=n_layers,
     ).to(device)
     model.load_state_dict(state)
@@ -623,9 +636,8 @@ def main():
     if args.dual_cr and not args.continuum_removed:
         parser.error('--dual_cr requires --continuum_removed.')
     if args.dual_cr:
-        global MODEL_N_BANDS, DUAL_CR
-        MODEL_N_BANDS, DUAL_CR = 118, True
-        print('  dual-CR ON: 118-channel input (hull 0-58 ⊕ linear 59-117)')
+        print(f'  dual-CR ON: {model_n_bands(True)}-channel input '
+              f'(hull 0-58 ⊕ linear 59-117)')
 
     if args.pyx:
         global PYX_MODE
@@ -656,7 +668,7 @@ def main():
         # brightness aux is a single 1-D scalar (aux_dim=1); mrrsu aux is 2-D.
         aux_dim = 1 if args.brightness_aux else 2
         model = SpatialSpectralClassifierAux(
-            n_bands=MODEL_N_BANDS, patch_size=PATCH_SIZE, n_classes=N_CLASSES,
+            n_bands=model_n_bands(args.dual_cr), patch_size=PATCH_SIZE, n_classes=N_CLASSES,
             embed_dim=args.embed_dim, n_heads=4, n_layers=args.n_layers, aux_dim=aux_dim,
         ).to(device)
         model.load_state_dict(state)

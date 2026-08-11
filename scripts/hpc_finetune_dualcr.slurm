@@ -104,9 +104,13 @@ assert hits, f'no *{KEY} in {enc_path}; keys: {sorted(state)[:6]}'
 w = state[hits[0]]
 assert w.shape[-1] == 118, f'encoder is {w.shape[-1]}-channel, not 118 (dual-CR)'
 print(f'  encoder OK: {hits[0]} {tuple(w.shape)}')
-# The cache is a raw headerless memmap: a bytes % (7*7*118*4) test proves nothing,
-# because 59 * (even n) == 118 * (n/2). The parquet row count is the real
-# reference, and it is exactly what CRISMSpectralPatchDataset will demand.
+# The LABELED cache is a raw HEADERLESS np.memmap (build_cr_labeled_cache.py:86),
+# so np.load cannot report its shape and byte count is all we have — unlike the
+# np.save'd GLOBAL shards in jobs 1/2, which are checked via np.load(...).shape.
+# Different formats on purpose; do not unify the two checks.
+# A bare bytes % (7*7*118*4) test proves nothing either, because
+# 59 * (even n) == 118 * (n/2). The parquet row count is the real reference, and
+# it is exactly what CRISMSpectralPatchDataset will demand at startup.
 df = pd.read_parquet(parquet, columns=['split'])
 for s in ('train', 'val'):
     n = os.path.getsize(os.path.join(cache_dir, f'mrral_{s}_patches_p7.npy'))

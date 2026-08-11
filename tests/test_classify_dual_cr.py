@@ -30,14 +30,38 @@ def _synthetic_tile(H=12, W=13, seed=0):
     return rng.uniform(0.0, 0.5, size=(H, W, 59)).astype(np.float32)
 
 
-def test_source_and_model_band_counts_are_separate_constants():
-    """N_SRC_BANDS (tile read) must stay 59; MODEL_N_BANDS is what --dual_cr moves."""
+def test_source_and_model_band_counts_are_separate_mechanisms():
+    """N_SRC_BANDS (tile read) stays 59; model_n_bands() is what --dual_cr moves."""
     import scripts.classify_tile_supervised as cls
     assert cls.N_SRC_BANDS == 59
-    assert cls.MODEL_N_BANDS == 59, 'module default must be the 59-band path'
+    assert cls.model_n_bands(False) == 59
+    assert cls.model_n_bands(True) == 118
     src = open(os.path.join(ROOT, 'scripts', 'classify_tile_supervised.py')).read()
     assert 'range(1, N_SRC_BANDS + 1)' in src, (
         'the source-tile read must use N_SRC_BANDS, never the model width')
+
+
+def test_model_width_has_exactly_one_mechanism():
+    """One meaning, one mechanism.
+
+    Review finding: a dead `DUAL_CR` module global was set and never read, while
+    `load_classifier` computed its own `118 if dual_cr else 59` and the aux branch
+    used a separate `MODEL_N_BANDS` global. In the one file whose entire purpose is
+    de-overloading a constant, three mechanisms for one meaning is self-defeating.
+    Now everything derives from model_n_bands().
+    """
+    import scripts.classify_tile_supervised as cls
+    src = open(os.path.join(ROOT, 'scripts', 'classify_tile_supervised.py')).read()
+    assert not hasattr(cls, 'DUAL_CR'), 'the dead DUAL_CR global is back'
+    assert not hasattr(cls, 'MODEL_N_BANDS'), (
+        'MODEL_N_BANDS is back alongside model_n_bands() — two mechanisms again')
+    # The literal pair may appear ONLY inside model_n_bands() itself.
+    assert src.count('118 if') == 1, (
+        f"the 118-vs-59 choice is made in {src.count('118 if')} places; it must "
+        f'be made only inside model_n_bands()')
+    body = src.split('def model_n_bands(')[1].split('\ndef ')[0]
+    assert '118 if dual_cr else 59' in body, (
+        'the single 118-vs-59 derivation is not the one inside model_n_bands()')
 
 
 # ── checkpoint channel guard ─────────────────────────────────────────────────

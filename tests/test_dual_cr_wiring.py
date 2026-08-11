@@ -382,10 +382,168 @@ def test_pretrain_denoising_118_requires_continuum_removed():
     assert '--n_bands 118 requires --continuum_removed' in p.stderr, p.stderr
 
 
-def test_pretrain_denoising_59band_defaults_still_parse():
-    """The existing 59-band pretrain invocation must be untouched by the guard."""
+@pytest.mark.parametrize('extra, label', [
+    # The RAW 59-band pretrain, mirroring scripts/hpc_pretrain_denoising.slurm:
+    # neither --n_bands nor --continuum_removed. This is the load-bearing case —
+    # it is the ONLY existing invocation that widening the guard to
+    # `args.n_bands in (59, 118)` actually breaks.
+    ([], 'raw_default'),
+    (['--n_bands', '59'], 'raw_explicit_59'),
+    # The CR 59-band pretrain, mirroring scripts/hpc_pretrain_cr_denoising.slurm.
+    (['--continuum_removed', '--n_bands', '59'], 'cr_59'),
+])
+def test_pretrain_denoising_59band_invocations_still_accepted(extra, label):
+    """Every existing 59-band invocation must still PARSE past the new guard.
+
+    The first version of this test asserted only that `--help` exits 0 and
+    mentions --n_bands, which could not fail for its stated reason. The reviewer
+    widened the guard to `args.n_bands in (59, 118)` and it stayed green.
+
+    My first fix was still wrong: it passed --continuum_removed, which immunises
+    the invocation against a guard keyed on `not args.continuum_removed`. The raw
+    default case above is the one that actually bites, and it is what
+    hpc_pretrain_denoising.slurm really runs.
+
+    Success = "got past argument validation". The script then dies on the absent
+    global_patch_cache_dir, which is expected here and happens AFTER it logs the
+    run name — so the run name appearing proves argparse let it through.
+    """
+    run = f'guard_probe_{label}'
     p = subprocess.run(
-        [sys.executable, 'scripts/pretrain_spatial_mae_denoising.py', '--help'],
-        cwd=ROOT, capture_output=True, text=True)
-    assert p.returncode == 0, p.stderr
-    assert '--n_bands' in p.stdout
+        [sys.executable, 'scripts/pretrain_spatial_mae_denoising.py',
+         '--epochs', '1', '--no_wandb', '--run_name', run] + extra,
+        cwd=ROOT, capture_output=True, text=True, timeout=300)
+    combined = p.stdout + p.stderr
+    assert 'requires --continuum_removed' not in combined, (
+        f'the 118-band guard fired on a 59-band invocation ({label}):\n{combined}')
+    assert run in combined, (
+        f'never reached the script body — argument validation rejected a valid '
+        f'59-band invocation ({label}):\n{combined}')
+
+
+def test_pretrain_guard_is_keyed_on_118_only():
+    """The guard must trigger on --n_bands 118 and on nothing else.
+
+    Belt-and-braces against the widening mutation from the other direction: the
+    parametrized test above proves 59 is accepted, this proves 118 is refused, so
+    the guard cannot be loosened OR broadened without a failure.
+    """
+    p = subprocess.run(
+        [sys.executable, 'scripts/pretrain_spatial_mae_denoising.py',
+         '--n_bands', '118', '--n_channel_blocks', '2', '--no_wandb'],
+        cwd=ROOT, capture_output=True, text=True, timeout=300)
+    assert p.returncode != 0
+    assert '--n_bands 118 requires --continuum_removed' in p.stderr, p.stderr
+
+
+# ── SLURM preflights, exercised against caches from the REAL writers ─────────
+
+def _extract_heredocs(slurm_path):
+    """Every <<'EOF' ... EOF python block in a SLURM file, in order.
+
+    Quoted <<'EOF' only, so the `cat > config.local.yaml <<EOF` blocks (unquoted,
+    shell-expanded) are not picked up.
+    """
+    blocks, cur = [], None
+    for line in open(slurm_path):
+        if cur is None:
+            if "<<'EOF'" in line:
+                cur = []
+        elif line.rstrip('\n') == 'EOF':
+            blocks.append(''.join(cur))
+            cur = None
+        else:
+            cur.append(line)
+    assert cur is None, f'unterminated heredoc in {slurm_path}'
+    return blocks
+
+
+def _build_global_cache(tmp_path, out_name, dual):
+    """Build a global patch cache with the REAL builder.
+
+    Load-bearing that this is the actual writer: build_global_patch_cache.py:302
+    uses np.save, which prepends a 128-byte .npy header. A hand-written
+    np.memmap fixture has no header, and a preflight that compares
+    getsize() to n_patches*7*7*C*4 passes on the hand-written one while FAILING on
+    every real cache. That is exactly the bug this test exists to prevent, and it
+    is undetectable with a hand-built fixture.
+    """
+    from tests.test_global_cache_cr import _make_synthetic_data_root
+    base = tmp_path / out_name
+    base.mkdir(parents=True, exist_ok=True)
+    data_root, _ = _make_synthetic_data_root(base, n_tiles=2, H=40, W=40)
+    output = tmp_path / out_name / 'cache'
+    cmd = [sys.executable, '-u',
+           os.path.join(ROOT, 'scripts', 'build_global_patch_cache.py'),
+           '--output', str(output), '--data_root', data_root,
+           '--workers', '2', '--seed', '42',
+           '--patches_per_tile_target', '20', '--patches_per_shard', '25',
+           '--continuum_removed']
+    if dual:
+        cmd.append('--dual')
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, f'builder failed: {r.stderr[-2000:]}'
+    return output
+
+
+def _run_preflight(code, argv):
+    p = subprocess.run([sys.executable, '-c', code] + argv, cwd=ROOT,
+                       capture_output=True, text=True, timeout=300)
+    return p.returncode, p.stdout + p.stderr
+
+
+@pytest.mark.parametrize('slurm', ['hpc_build_dualcr_global_cache.slurm',
+                                   'hpc_pretrain_dualcr_mae.slurm'])
+def test_global_cache_preflight_accepts_a_real_dual_cache(tmp_path, slurm):
+    """The job's own heredoc, run verbatim against a cache from the real builder.
+
+    Regression for the review finding: both preflights asserted
+    getsize(shard) == n_patches*7*7*118*4 and therefore aborted on a CORRECT
+    dual cache (off by the 128-byte .npy header). Job 1 would have died after its
+    full 4-hour build, job 2's afterok would never have fired, and job 4 never
+    ran. Fixed by checking np.load(..., mmap_mode='r').shape, which is
+    header-agnostic and subsumes the width check.
+    """
+    code = _extract_heredocs(os.path.join(ROOT, 'scripts', slurm))[0]
+    out = _build_global_cache(tmp_path, 'dual', dual=True)
+    rc, log = _run_preflight(code, [str(out)])
+    assert rc == 0, f'{slurm} preflight REJECTED a correct dual cache:\n{log}'
+    assert '118' in log, log
+
+
+@pytest.mark.parametrize('slurm', ['hpc_build_dualcr_global_cache.slurm',
+                                   'hpc_pretrain_dualcr_mae.slurm'])
+def test_global_cache_preflight_rejects_a_real_59channel_cache(tmp_path, slurm):
+    """...and still catches a hull-only cache, i.e. a --dual that never took."""
+    code = _extract_heredocs(os.path.join(ROOT, 'scripts', slurm))[0]
+    out = _build_global_cache(tmp_path, 'hull', dual=False)
+    rc, log = _run_preflight(code, [str(out)])
+    assert rc != 0, f'{slurm} preflight ACCEPTED a 59-channel cache:\n{log}'
+    assert 'dual=False' in log or 'n_channels=59' in log, log
+
+
+@pytest.mark.parametrize('slurm', ['hpc_build_dualcr_global_cache.slurm',
+                                   'hpc_pretrain_dualcr_mae.slurm'])
+def test_global_cache_preflight_rejects_a_59channel_cache_that_LIES(tmp_path, slurm):
+    """The hard case: a 59-channel cache whose shard_index CLAIMS dual/118.
+
+    Without this, the preflight could pass its self-consistency checks
+    (`dual is True`, `n_channels == 118`) and never actually look at the shards —
+    which is precisely how the two vacuous width checks in this task slipped
+    through. Here the declared metadata is dual/118 and only the SHARDS are 59
+    channels, so the only thing that can catch it is reading the real shard shape.
+    """
+    import json
+    code = _extract_heredocs(os.path.join(ROOT, 'scripts', slurm))[0]
+    out = _build_global_cache(tmp_path, 'liar', dual=False)
+    with open(out / 'shard_index.json') as f:
+        idx = json.load(f)
+    assert idx['n_channels'] == 59 and idx['dual'] is False
+    idx['n_channels'], idx['dual'] = 118, True       # the lie
+    with open(out / 'shard_index.json', 'w') as f:
+        json.dump(idx, f)
+    rc, log = _run_preflight(code, [str(out)])
+    assert rc != 0, (
+        f'{slurm} preflight trusted a lying shard_index and never checked the '
+        f'shards themselves:\n{log}')
+    assert 'shape' in log, f'rejected for the wrong reason:\n{log}'

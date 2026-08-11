@@ -93,12 +93,22 @@ echo "shards written: $shards"
 
 ${PYTHON} - "$OUTPUT" <<'EOF' || { echo "ERROR: shard width check failed"; exit 1; }
 import json, os, sys
+import numpy as np
 out = sys.argv[1]
-# The shards are RAW headerless memmaps, so the channel count is NOT recoverable
-# from the file alone. A bytes-divisible-by-7*7*118*4 test is worthless here:
-# 59 * (even n) == 118 * (n/2), so every 59-channel shard with an even patch count
-# passes it. shard_index.json is the authoritative record — check the declared
-# width AND cross-check it against the declared per-shard patch count.
+# ── How to check a GLOBAL shard's width (and how NOT to) ─────────────────────
+# These shards are written with np.save (build_global_patch_cache.py:302), so
+# they carry a 128-byte .npy header and np.load can report the true shape. Use
+# that. Do NOT compute the width from the byte count:
+#   * getsize() == n_patches*7*7*118*4 FAILS on a correct cache, because of the
+#     128-byte header.
+#   * getsize() % (7*7*118*4) == 0 PASSES on a wrong one, because
+#     59 * (even n) == 118 * (n/2).
+# Both mistakes were made and caught during Task 7. np.load(mmap_mode='r').shape
+# is header-agnostic and subsumes the width check, so it replaces both.
+# NB the LABELED caches (jobs 3/4) are genuinely headerless np.memmaps
+# (build_cr_labeled_cache.py:86, cache_mrral_patches.py:43) and must be checked
+# by byte count instead. The two formats are different on purpose — do not
+# "unify" these checks.
 with open(os.path.join(out, 'shard_index.json')) as f:
     idx = json.load(f)
 assert idx['dual'] is True, f"shard_index says dual={idx['dual']} — --dual did not take"
@@ -108,13 +118,13 @@ assert n_ch == 118, f'shard_index says n_channels={n_ch}, expected 118'
 P = idx['patch_size']
 for rec in idx['shards']:
     path = rec['path'] if os.path.isabs(rec['path']) else os.path.join(out, rec['path'])
-    want = rec['n_patches'] * P * P * n_ch * 4
-    got = os.path.getsize(path)
-    assert got == want, (f'{path}: {got:,} bytes but shard_index declares '
-                         f'{rec["n_patches"]:,} patches x {P}x{P}x{n_ch} = {want:,}')
+    shape = np.load(path, mmap_mode='r').shape
+    assert shape == (rec['n_patches'], P, P, n_ch), (
+        f'{path}: shape {shape} but shard_index declares '
+        f'{(rec["n_patches"], P, P, n_ch)}')
     br = path.replace('.npy', '_brightness.npy')
     assert os.path.exists(br), f'missing brightness sidecar {br}'
-    print(f'  OK {os.path.basename(path)}  {rec["n_patches"]:,} x {P}x{P}x{n_ch}')
+    print(f'  OK {os.path.basename(path)}  {shape}')
 print(f'{len(idx["shards"])} shards verified at {n_ch} channels (dual=True)')
 EOF
 

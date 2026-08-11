@@ -34,6 +34,12 @@
 # CrismNoiseAugmentation auto-detects the dual representation from n_bands == 118
 # and rescales its sigmas by 1/hull_std. No flag needed and none should be added.
 #
+# SIDE EFFECT: this job REWRITES config.local.yaml unconditionally (the value is
+# run-specific; a stale global_patch_cache_dir pointing at the 59-channel cache
+# would pretrain the wrong representation). It leaves global_patch_cache_dir
+# pointing at the DUAL cache, so a later 59-band job must reset it. Job 3 runs in
+# parallel but only reads data_root, which is identical either way.
+#
 # Submit chained on the global cache:
 #   sbatch --dependency=afterok:<global_cache_job> scripts/hpc_pretrain_dualcr_mae.slurm
 
@@ -75,8 +81,13 @@ fi
 # mismatch anyway, but not before burning GPU allocation on startup.
 ${PYTHON} - "$DUAL_CACHE" <<'EOF' || { echo "ERROR: cache is not the 118-channel dual cache"; exit 1; }
 import json, os, sys
-# shard_index.json is authoritative. Do NOT test bytes % (7*7*118*4): 59 * (even n)
-# equals 118 * (n/2), so every 59-channel shard with an even patch count passes it.
+import numpy as np
+# Global shards are np.save'd (build_global_patch_cache.py:302) so they carry a
+# 128-byte .npy header and np.load reports the true shape — use it. A byte-count
+# test is wrong twice over here: == n*7*7*118*4 fails on a CORRECT cache (header),
+# and % (7*7*118*4) passes on a WRONG one (59 * even n == 118 * n/2).
+# The LABELED caches (jobs 3/4) ARE headerless np.memmaps and are correctly
+# checked by byte count there. Different formats on purpose; do not unify.
 out = sys.argv[1]
 with open(os.path.join(out, 'shard_index.json')) as f:
     idx = json.load(f)
@@ -86,9 +97,9 @@ assert idx['n_channels'] == 118, f"n_channels={idx['n_channels']}, expected 118"
 P, n_ch = idx['patch_size'], idx['n_channels']
 for rec in idx['shards']:
     path = rec['path'] if os.path.isabs(rec['path']) else os.path.join(out, rec['path'])
-    want = rec['n_patches'] * P * P * n_ch * 4
-    got = os.path.getsize(path)
-    assert got == want, f'{path}: {got:,} bytes, shard_index declares {want:,}'
+    shape = np.load(path, mmap_mode='r').shape
+    assert shape == (rec['n_patches'], P, P, n_ch), (
+        f'{path}: shape {shape}, shard_index declares {(rec["n_patches"], P, P, n_ch)}')
 print(f'{len(idx["shards"])} shards verified at {n_ch} channels (dual=True)')
 EOF
 
