@@ -597,9 +597,14 @@ def test_slurm_header_still_warns_about_the_plag_comparator():
 
 
 def test_plag_preflight_accepts_a_real_converted_dual_cache(tmp_path):
-    """Run the job's heredoc against a cache from the REAL converter."""
-    dual = _dual(tmp_path)
-    npy = _save(tmp_path / 'plag_dual.npy', dual)
+    """Run the job's heredoc against a cache from the REAL converter.
+
+    Uses the converter's own OUTPUT PATH, not a re-save of its array: as of
+    2026-08-11 the preflight also demands the brightness sidecar the converter
+    writes beside it, and a re-saved copy would have none.
+    """
+    npy = _converted(tmp_path, 'dual', 'plag')
+    dual = np.load(npy, mmap_mode='r')
     pq = _rows_parquet(tmp_path / 'plag.parquet', len(dual))
     rc, log = _run_preflight(_plag_preflight(), [npy, pq, npy, pq])
     assert rc == 0, f'preflight REJECTED a correct dual plag cache:\n{log}'
@@ -633,3 +638,659 @@ def test_plag_preflight_rejects_a_row_count_mismatch(tmp_path):
     rc, log = _run_preflight(_plag_preflight(), [npy, pq, npy, pq])
     assert rc != 0, f'preflight accepted a row-count mismatch:\n{log}'
     assert 'parquet' in log.lower(), log
+
+
+# ── 6. the brightness sidecar ───────────────────────────────────────────────
+#
+# THE BUG (2026-08-11, hpc_finetune_handcore --array=0-1, died in seconds):
+#
+#   INFO Concatenating 8671 synthetic plag patches into train set
+#   RuntimeError: each element in list of batch should be of equal size
+#
+# Under --brightness_aux, CRISMSpectralPatchDataset._finish returns the 4-tuple
+# (patch, brightness (1,), label, weight) while SyntheticPatchDataset returned a
+# 3-tuple. ConcatDataset mixes them and default_collate rejects the first batch
+# that spans the boundary. Latent since the beginning: until 07547e8 the
+# --synth_* flags were silently dropped for spatial_vit_aux, so the two dataset
+# types had never actually been concatenated in a brightness run.
+#
+# The fix mirrors the labeled cache: build_cr_labeled_cache.py writes an
+# (N, P, P) float32 .npy brightness sidecar beside its CR patches, and the
+# converter now does the same beside a converted synth cache.
+
+import shutil                                                       # noqa: E402
+import subprocess as _sp                                            # noqa: E402
+
+import torch                                                        # noqa: E402
+from torch.utils.data import ConcatDataset, DataLoader              # noqa: E402
+
+from data.continuum_removal import brightness_scalar, cr_patch      # noqa: E402
+from data.dataset import (LABEL_COLS, CRISMSpectralPatchDataset,    # noqa: E402
+                          SyntheticPatchDataset, synth_brightness_path)
+from scripts.convert_synth_cache_representation import (  # noqa: E402
+    describe_brightness, transform_chunk)
+
+HANDCORE_SLURM = os.path.join(ROOT, 'scripts', 'hpc_finetune_handcore.slurm')
+
+
+def _converted(tmp_path, mode, name='conv', arr=None):
+    """Run the REAL converter; return the output path (sidecar sits beside it)."""
+    src = _save(tmp_path / f'_{name}_raw.npy',
+                _raw_patches() if arr is None else arr)
+    out = str(tmp_path / f'{name}_{mode}.npy')
+    convert(src, out, mode, log=lambda *a: None)
+    return out
+
+
+def _level_ramp(n=10) -> np.ndarray:
+    """(n,7,7,59) raw patches whose brightness is strictly increasing in row i.
+
+    Row-identity by LEVEL, not by absorption band: brightness_scalar is a mean
+    over good bands, so a level ramp makes the sidecar's row order directly
+    readable and any reorder/misindex visible.
+
+    A within-patch spatial gradient rides on top, so no two pixels of a patch
+    share a brightness. Without it every pixel is equal and a test that claims to
+    read the CENTRE pixel passes when handed a corner (mutation M5 survived
+    exactly that way).
+    """
+    lv = (0.05 + 0.03 * np.arange(n, dtype=np.float32))[:, None, None, None]
+    r = np.arange(7, dtype=np.float32)[None, :, None, None]
+    c = np.arange(7, dtype=np.float32)[None, None, :, None]
+    return np.ascontiguousarray(
+        np.broadcast_to(lv * (1.0 + 0.02 * r + 0.01 * c),
+                        (n, 7, 7, 59)).astype(np.float32))
+
+
+# ── 6a. the converter writes it ─────────────────────────────────────────────
+
+@pytest.mark.parametrize('mode', ['hull', 'dual'])
+def test_converter_writes_a_sidecar_in_the_labeled_cache_layout(tmp_path, mode):
+    """<stem>_brightness.npy, (N, P, P) float32, np.load-able.
+
+    The layout is not a free choice: CRISMSpectralPatchDataset indexes the
+    labeled sidecar as bright[row, half, half] (data/dataset.py:585), so an (N,)
+    per-row scalar array would raise IndexError, and an (N, P, P, 59) map would
+    feed a whole spectrum where a scalar belongs. build_cr_labeled_cache.py:90
+    opens exactly (n, P, P) via np.lib.format.open_memmap.
+    """
+    out = _converted(tmp_path, mode)
+    n = len(np.load(out, mmap_mode='r'))
+    side = synth_brightness_path(out)
+    assert side == os.path.splitext(out)[0] + '_brightness.npy'
+    assert os.path.exists(side), f'converter wrote no sidecar at {side}'
+    b = np.load(side)                    # np.load, not np.memmap: a real .npy
+    assert b.shape == (n, 7, 7), b.shape
+    assert b.dtype == np.float32, b.dtype
+    assert np.isfinite(b).all()
+
+
+@pytest.mark.parametrize('mode', ['hull', 'dual'])
+def test_sidecar_equals_finish_brightness_of_the_sanitized_raw(tmp_path, mode):
+    """Exact agreement with what CRISMSpectralPatchDataset._finish would compute.
+
+    _finish's two paths reach brightness differently -- the hull path unpacks
+    cr_patch(patch) -> (cr, brightness), the dual path calls brightness_scalar
+    separately -- but cr_patch IS (continuum_removed, brightness_scalar) of the
+    same array (data/continuum_removal.py:243-250), so both reduce to
+    brightness_scalar of the pre-transform patch. This asserts against the hull
+    path's cr_patch for BOTH modes, which is only true if they really agree.
+    """
+    raw = _raw_patches()
+    out = _converted(tmp_path, mode, arr=raw)
+    b = np.load(synth_brightness_path(out))
+    clean, _ = sanitize(raw)
+    np.testing.assert_allclose(b, brightness_scalar(clean), rtol=0, atol=0)
+    for i in range(len(raw)):
+        _, expect = cr_patch(clean[i])           # the _finish hull path, verbatim
+        np.testing.assert_allclose(b[i], expect, rtol=0, atol=0)
+
+
+def test_sidecar_comes_from_the_raw_patch_not_the_transformed_one(tmp_path):
+    """hull and dual sidecars of the same input must be BYTE-IDENTICAL.
+
+    They can only agree if brightness is taken BEFORE the transform. Computing it
+    after would give hull-CR levels (~0.93) in one file and standardized dual
+    levels (~13) in the other -- and would silently feed the aux head a
+    continuum-removed quantity instead of the albedo the head exists to see.
+    """
+    raw = _raw_patches()
+    bh = np.load(synth_brightness_path(_converted(tmp_path, 'hull', 'h', raw)))
+    bd = np.load(synth_brightness_path(_converted(tmp_path, 'dual', 'd', raw)))
+    np.testing.assert_array_equal(bh, bd)
+    # ...and it is the RAW level (raw patches sit in [0, CLIP_MAX]), not a CR one.
+    assert bh.max() <= CLIP_MAX, bh.max()
+    assert abs(float(np.median(bh)) - float(np.median(brightness_scalar(raw)))) < 1e-6
+
+
+def test_sidecar_rows_stay_aligned_with_patch_rows(tmp_path):
+    """Row i of the sidecar must describe row i of the cache.
+
+    A misaligned sidecar mislabels plagioclase brightness rather than failing:
+    the shapes still match and training proceeds. The level ramp makes the row
+    order readable -- brightness must be strictly increasing in row index.
+    """
+    raw = _level_ramp(10)
+    out = _converted(tmp_path, 'hull', 'ramp', raw)
+    b = np.load(synth_brightness_path(out))
+    centre = b[:, 3, 3]
+    assert np.all(np.diff(centre) > 0), centre
+    np.testing.assert_allclose(centre, brightness_scalar(raw)[:, 3, 3],
+                               rtol=0, atol=1e-6)
+
+
+def test_chunking_does_not_change_the_sidecar(tmp_path):
+    """chunk_rows must not affect a single byte of the sidecar, exactly as it must
+    not affect the patches (test_chunking_changes_not_a_single_byte)."""
+    raw = _level_ramp(9)
+    a = _converted(tmp_path, 'hull', 'chunkA', raw)
+    src = _save(tmp_path / '_chunkB_raw.npy', raw)
+    b_out = str(tmp_path / 'chunkB_hull.npy')
+    convert(src, b_out, 'hull', chunk_rows=2, log=lambda *a: None)
+    assert open(synth_brightness_path(a), 'rb').read() == \
+        open(synth_brightness_path(b_out), 'rb').read()
+
+
+def test_converter_refuses_to_clobber_an_existing_sidecar(tmp_path):
+    """A stale sidecar with the patches deleted must not survive a rebuild.
+
+    The pre-existing guard covered --output only, so `rm cache.npy && convert`
+    would leave the OLD sidecar in place beside NEW patches -- silently
+    misaligned if the source ever changed row count.
+    """
+    src = _save(tmp_path / 'raw.npy', _raw_patches())
+    out = str(tmp_path / 'out.npy')
+    np.save(synth_brightness_path(out), np.zeros((3, 7, 7), dtype=np.float32))
+    with pytest.raises(FileExistsError, match='_brightness.npy'):
+        convert(src, out, 'hull', log=lambda *a: None)
+    convert(src, out, 'hull', force=True, log=lambda *a: None)   # --force still works
+    assert np.load(synth_brightness_path(out)).shape[0] == len(_raw_patches())
+
+
+def test_transform_chunk_returns_brightness_for_both_modes():
+    """The chunk-level contract, independent of file IO."""
+    raw = _raw_patches()[:4]
+    for mode, n_ch in (('hull', 59), ('dual', 118)):
+        block, bright, _ = transform_chunk(raw, mode)
+        assert block.shape == (4, 7, 7, n_ch)
+        assert bright.shape == (4, 7, 7) and bright.dtype == np.float32
+        np.testing.assert_allclose(bright, brightness_scalar(sanitize(raw)[0]),
+                                   rtol=0, atol=0)
+
+
+def test_describe_brightness_reports_the_centre_pixel_range(tmp_path):
+    """The reported range must cover the CENTRE pixel specifically -- that, not
+    the whole map, is the scalar the datasets serve as the aux feature."""
+    raw = _level_ramp(6)
+    out = _converted(tmp_path, 'hull', 'desc', raw)
+    st = describe_brightness(np.load(synth_brightness_path(out)))
+    centre = brightness_scalar(raw)[:, 3, 3]
+    assert st['shape'] == (6, 7, 7)
+    np.testing.assert_allclose(st['centre_min'], centre.min(), rtol=0, atol=1e-6)
+    np.testing.assert_allclose(st['centre_max'], centre.max(), rtol=0, atol=1e-6)
+
+
+# ── 6b. SyntheticPatchDataset.return_brightness ─────────────────────────────
+
+def test_synth_dataset_returns_the_finish_4tuple(tmp_path):
+    """Same length, ORDER and dtypes as CRISMSpectralPatchDataset._finish.
+
+    A tuple-length check alone is not enough: (patch, label, bright, weight)
+    collates perfectly and trains the aux head on one-hot labels.
+    """
+    out = _converted(tmp_path, 'hull')
+    n = len(np.load(out, mmap_mode='r'))
+    pq = _rows_parquet(tmp_path / 'rows.parquet', n)
+    ds = SyntheticPatchDataset(out, pq, patch_size=7, expect_repr='hull',
+                               return_brightness=True)
+    b = np.load(synth_brightness_path(out))
+    patch, bright, label, weight = ds[3]
+    assert patch.shape == (7, 7, 59) and patch.dtype == torch.float32
+    assert bright.shape == (1,) and bright.dtype == torch.float32
+    assert label.shape == (len(LABEL_COLS),) and label.dtype == torch.float32
+    assert weight.shape == () and weight.dtype == torch.float32
+    np.testing.assert_allclose(bright.item(), b[3, 3, 3], rtol=0, atol=1e-6)
+    # element 1 is brightness, not the label: they must not be interchangeable
+    assert bright.numel() == 1 and label.numel() == len(LABEL_COLS)
+
+
+def test_synth_dataset_default_is_the_unchanged_3tuple(tmp_path):
+    """Inertness. With the sidecar SITTING RIGHT THERE, the default caller still
+    gets exactly the pre-2026-08-11 3-tuple and identical patch bytes."""
+    out = _converted(tmp_path, 'hull')
+    n = len(np.load(out, mmap_mode='r'))
+    pq = _rows_parquet(tmp_path / 'rows.parquet', n)
+    assert os.path.exists(synth_brightness_path(out))
+    ds = SyntheticPatchDataset(out, pq, patch_size=7, expect_repr='hull')
+    item = ds[2]
+    assert len(item) == 3, 'default return_brightness must stay False'
+    ds_b = SyntheticPatchDataset(out, pq, patch_size=7, expect_repr='hull',
+                                 return_brightness=True)
+    np.testing.assert_array_equal(item[0].numpy(), ds_b[2][0].numpy())
+    assert torch.equal(item[1], ds_b[2][2]) and torch.equal(item[2], ds_b[2][3])
+
+
+def test_synth_dataset_without_sidecar_raises_naming_file_and_builder(tmp_path):
+    """Absent sidecar must be LOUD at construction, never a zero fill.
+
+    A zero (or synthesised) brightness trains plagioclase against a constant aux
+    feature: the run completes, val_mAP looks normal, and the aux head has simply
+    learned "plag == aux 0.0" -- undetectable except at inference.
+    """
+    out = _converted(tmp_path, 'hull')
+    n = len(np.load(out, mmap_mode='r'))
+    pq = _rows_parquet(tmp_path / 'rows.parquet', n)
+    side = synth_brightness_path(out)
+    os.remove(side)
+    with pytest.raises(FileNotFoundError) as e:
+        SyntheticPatchDataset(out, pq, patch_size=7, expect_repr='hull',
+                              return_brightness=True)
+    msg = str(e.value)
+    assert side in msg, msg
+    assert 'convert_synth_cache_representation.py' in msg, msg
+
+
+def test_synth_brightness_is_indexed_by_the_npy_row_not_the_split_row(tmp_path):
+    """Under a split filter the sidecar must be indexed by the MAPPED row.
+
+    self._indices[idx] maps a filtered position to its row in the full npy; the
+    sidecar is aligned with the npy, not with the filtered frame. Indexing it
+    with `idx` pairs patch _indices[idx] with brightness idx -- a silent
+    mislabel, and the real caches ARE split-filtered (split='train'/'val').
+    """
+    raw = _level_ramp(10)
+    out = _converted(tmp_path, 'hull', 'split', raw)
+    splits = ['val'] * 6 + ['train'] * 4          # train rows are npy rows 6..9
+    pq = _rows_parquet(tmp_path / 'rows.parquet', 10, splits=splits)
+    ds = SyntheticPatchDataset(out, pq, patch_size=7, split='train',
+                               expect_repr='hull', return_brightness=True)
+    assert len(ds) == 4
+    b = np.load(synth_brightness_path(out))
+    for i in range(4):
+        _, bright, _, _ = ds[i]
+        np.testing.assert_allclose(bright.item(), b[6 + i, 3, 3], rtol=0, atol=1e-6)
+        assert abs(bright.item() - b[i, 3, 3]) > 1e-3, (
+            'brightness was read at the FILTERED index, not the npy row')
+
+
+def test_synth_dataset_rejects_a_sidecar_of_the_wrong_shape(tmp_path):
+    """A sidecar from a different cache (or an (N,) scalar layout) must fail at
+    construction rather than IndexError mid-epoch."""
+    out = _converted(tmp_path, 'hull')
+    n = len(np.load(out, mmap_mode='r'))
+    pq = _rows_parquet(tmp_path / 'rows.parquet', n)
+    np.save(synth_brightness_path(out), np.zeros(n, dtype=np.float32))
+    with pytest.raises(ValueError, match='brightness sidecar'):
+        SyntheticPatchDataset(out, pq, patch_size=7, expect_repr='hull',
+                              return_brightness=True)
+
+
+# ── 6c. THE LOAD-BEARING TEST: the two datasets must collate together ───────
+
+def _labeled_cr_dataset(tmp_path, n=6, P=7):
+    """A brightness-returning CRISMSpectralPatchDataset over a cache_is_cr cache."""
+    rng = np.random.default_rng(7)
+    cr = rng.uniform(0.6, 1.0, (n, P, P, 59)).astype(np.float32)
+    fp = np.memmap(str(tmp_path / f'mrral_train_patches_p{P}.npy'),
+                   dtype='float32', mode='w+', shape=(n, P, P, 59))
+    fp[:] = cr; fp.flush(); del fp
+    np.save(str(tmp_path / f'mrral_train_patches_p{P}_brightness.npy'),
+            rng.uniform(0.05, 0.4, (n, P, P)).astype(np.float32))
+    d = {'tile_id': ['t0001'] * n, 'pixel_row': [3] * n, 'pixel_col': [3] * n,
+         'confidence_weight': [1.0] * n, 'confidence_tier': ['High'] * n,
+         'split': ['train'] * n}
+    for c in ('olivine_t1', 'olivine_t2', 'lcp', 'hcp', 'plagioclase', 'other'):
+        d[c] = [0.0] * n
+    d['lcp'] = [1.0] * n
+    df = pd.DataFrame(d)
+    return CRISMSpectralPatchDataset(
+        df, {}, patch_size=P, cache_dir=str(tmp_path), split='train',
+        continuum_removed=True, return_brightness=True, cache_is_cr=True), n
+
+
+def test_concat_of_labeled_and_synth_collates_under_brightness_aux(tmp_path):
+    """THE crash, as a test. A DataLoader over ConcatDataset([labeled, synth])
+    with brightness on BOTH halves must collate every batch, including the one
+    that straddles the boundary -- into 4 tensors with the aux in position 1.
+    """
+    labeled_dir = tmp_path / 'labeled'; labeled_dir.mkdir()
+    labeled, n_lab = _labeled_cr_dataset(labeled_dir)
+    out = _converted(tmp_path, 'hull')
+    n_syn = len(np.load(out, mmap_mode='r'))
+    pq = _rows_parquet(tmp_path / 'rows.parquet', n_syn)
+    synth = SyntheticPatchDataset(out, pq, patch_size=7, expect_repr='hull',
+                                  return_brightness=True)
+    loader = DataLoader(ConcatDataset([labeled, synth]), batch_size=4,
+                        shuffle=False)
+    seen = 0
+    straddled = False
+    for patch, bright, label, weight in loader:      # 4-unpack: arity + order
+        bs = patch.shape[0]
+        if seen < n_lab < seen + bs:
+            straddled = True
+        assert patch.shape == (bs, 7, 7, 59) and patch.dtype == torch.float32
+        assert bright.shape == (bs, 1) and bright.dtype == torch.float32
+        assert label.shape == (bs, len(LABEL_COLS))
+        assert weight.shape == (bs,)
+        assert torch.isfinite(bright).all()
+        seen += bs
+    assert seen == n_lab + n_syn
+    assert straddled, 'no batch mixed the two dataset types; test proves nothing'
+
+
+def test_concat_without_synth_brightness_is_the_original_runtimeerror(tmp_path):
+    """Regression documentation: the un-fixed pairing still fails the same way.
+
+    This is the exact message from the killed job. It pins WHY return_brightness
+    must track brightness_aux -- if some future change made a 3-tuple collate
+    silently against a 4-tuple, the fix above would have become unnecessary and
+    this test would tell us.
+    """
+    labeled_dir = tmp_path / 'labeled'; labeled_dir.mkdir()
+    labeled, _ = _labeled_cr_dataset(labeled_dir)
+    out = _converted(tmp_path, 'hull')
+    n_syn = len(np.load(out, mmap_mode='r'))
+    pq = _rows_parquet(tmp_path / 'rows.parquet', n_syn)
+    synth = SyntheticPatchDataset(out, pq, patch_size=7, expect_repr='hull')
+    loader = DataLoader(ConcatDataset([labeled, synth]), batch_size=4,
+                        shuffle=False)
+    with pytest.raises(RuntimeError, match='equal size'):
+        for _ in loader:
+            pass
+
+
+# ── 6d. train_torch wiring ──────────────────────────────────────────────────
+
+def _train_aux(tmp_path, mode='hull'):
+    """One epoch of the real handcore configuration: --continuum_removed
+    --cache_is_cr --brightness_aux with a converted synth cache concatenated in."""
+    from models.spatial_spectral_classifier_aux import SpatialSpectralClassifierAux
+    from training.train_torch import train_torch_model
+
+    df = _tiny_labeled_df()
+    cache = tmp_path / 'cache'; cache.mkdir(exist_ok=True)
+    _labeled_cache(cache, df)
+    for split in ('train', 'val'):
+        k = int((df['split'] == split).sum())
+        np.save(str(cache / f'mrral_{split}_patches_p7_brightness.npy'),
+                np.full((k, 7, 7), 0.2, dtype=np.float32))
+    out = _converted(tmp_path, mode, 'train_synth')
+    n = len(np.load(out, mmap_mode='r'))
+    # Mixed splits, so BOTH SyntheticPatchDataset constructions get a non-empty
+    # dataset. With an all-'train' parquet the val synth set filters down to zero
+    # rows, is never collated, and dropping return_brightness from the val
+    # construction goes undetected -- mutation M12 survived exactly that way.
+    pq = _rows_parquet(tmp_path / 'train_synth_rows.parquet', n,
+                       splits=['train'] * (n // 2) + ['val'] * (n - n // 2))
+    model = SpatialSpectralClassifierAux(
+        n_bands=59, patch_size=7, n_classes=len(LABEL_COLS),
+        embed_dim=16, n_heads=2, n_layers=1, aux_dim=1)
+    return train_torch_model(
+        model=model, df=df, model_name='synth_bright_probe', max_epochs=1,
+        batch_size=8, lr=1e-3, use_wandb=False, checkpoint_dir=None,
+        mrral_map={'t0001': '/nonexistent.img'}, patch_size=7,
+        cache_dir=str(cache), device='cpu',
+        continuum_removed=True, cache_is_cr=True,
+        brightness_aux=True, is_aux_model=True,
+        synth_train_cache=out, synth_train_parquet=pq,
+        synth_val_cache=out, synth_val_parquet=pq)
+
+
+def test_brightness_aux_run_concatenates_the_synth_cache_and_trains(tmp_path):
+    """The job that died, end to end through train_torch_model.
+
+    Both SyntheticPatchDataset constructions (train AND val) must receive
+    return_brightness=brightness_aux; leaving either one out reproduces the
+    RuntimeError in the corresponding loader.
+    """
+    hist = _train_aux(tmp_path)
+    assert hist is not None
+
+
+def test_brightness_aux_run_fails_loudly_when_the_sidecar_is_missing(tmp_path):
+    """No silent degradation: a synth cache without its sidecar must stop the run
+    at dataset construction, before a GPU-day is spent."""
+    from models.spatial_spectral_classifier_aux import SpatialSpectralClassifierAux
+    from training.train_torch import train_torch_model
+    df = _tiny_labeled_df()
+    cache = tmp_path / 'cache'; cache.mkdir(exist_ok=True)
+    _labeled_cache(cache, df)
+    for split in ('train', 'val'):
+        k = int((df['split'] == split).sum())
+        np.save(str(cache / f'mrral_{split}_patches_p7_brightness.npy'),
+                np.full((k, 7, 7), 0.2, dtype=np.float32))
+    out = _converted(tmp_path, 'hull', 'nosidecar')
+    os.remove(synth_brightness_path(out))
+    n = len(np.load(out, mmap_mode='r'))
+    pq = _rows_parquet(tmp_path / 'rows.parquet', n)
+    model = SpatialSpectralClassifierAux(
+        n_bands=59, patch_size=7, n_classes=len(LABEL_COLS),
+        embed_dim=16, n_heads=2, n_layers=1, aux_dim=1)
+    with pytest.raises(FileNotFoundError, match='_brightness.npy'):
+        train_torch_model(
+            model=model, df=df, model_name='probe', max_epochs=1, batch_size=8,
+            lr=1e-3, use_wandb=False, checkpoint_dir=None,
+            mrral_map={'t0001': '/nonexistent.img'}, patch_size=7,
+            cache_dir=str(cache), device='cpu', continuum_removed=True,
+            cache_is_cr=True, brightness_aux=True, is_aux_model=True,
+            synth_train_cache=out, synth_train_parquet=pq)
+
+
+def test_a_non_brightness_run_still_gets_the_3tuple_path(tmp_path):
+    """Inertness at the wiring level: without brightness_aux, train_torch must not
+    ask the synth dataset for brightness (there may be no sidecar at all)."""
+    out = _converted(tmp_path, 'hull', 'plain')
+    os.remove(synth_brightness_path(out))
+    hist = _train(tmp_path, np.load(out), continuum_removed=True, cache_is_cr=True)
+    assert hist is not None
+
+
+# ── 6e. the SLURM jobs must build the sidecars ──────────────────────────────
+
+def _synth_build_block(slurm_path):
+    """The `mkdir -p "$SYNTH_DIR"` ... `done` cache-build loop, verbatim."""
+    lines = open(slurm_path).read().splitlines()
+    i = next(i for i, l in enumerate(lines) if l.strip() == 'mkdir -p "$SYNTH_DIR"')
+    j = next(j for j in range(i, len(lines)) if lines[j].strip() == 'done')
+    return '\n'.join(lines[i:j + 1])
+
+
+def _stub_converter(tmp_path):
+    """A $PYTHON stub that logs its argv and writes patches + sidecar at --output.
+
+    Running the REAL build loop against a stub is the point: a grep for
+    '_brightness' in the file would pass on a loop that never reaches the
+    converter, and the whole bug was a guard that skipped the build.
+    """
+    log = tmp_path / 'invocations.log'
+    stub = tmp_path / 'python_stub.sh'
+    stub.write_text(
+        '#!/bin/bash\n'
+        f'echo "$@" >> "{log}"\n'
+        'out=""; prev=""\n'
+        'for a in "$@"; do\n'
+        '  if [ "$prev" = "--output" ]; then out="$a"; fi\n'
+        '  prev="$a"\n'
+        'done\n'
+        '[ -n "$out" ] || exit 3\n'
+        'mkdir -p "$(dirname "$out")"\n'
+        'printf patches > "$out"\n'
+        'printf bright > "${out%.npy}_brightness.npy"\n')
+    stub.chmod(0o755)
+    return str(stub), log
+
+
+def _run_build_block(tmp_path, slurm_path, raw_var, out_var, preexisting):
+    """Execute a job's real build loop with a stub converter.
+
+    `preexisting` seeds ${SYNTH_DIR} before the loop runs: 'none', 'patches'
+    (the state actually on the HPC today) or 'both'. Returns (rc, invocations,
+    synth_dir).
+    """
+    synth = tmp_path / 'synth'
+    raws = tmp_path / 'raws'; raws.mkdir(parents=True, exist_ok=True)
+    for nm in ('train_raw.npy', 'val_raw.npy'):
+        (raws / nm).write_text('raw')
+    finals = {'train': 'plag_train_conv.npy', 'val': 'plag_val_conv.npy'}
+    if preexisting != 'none':
+        synth.mkdir(parents=True, exist_ok=True)
+        for f in finals.values():
+            (synth / f).write_text('stale-patches')
+            if preexisting == 'both':
+                (synth / f.replace('.npy', '_brightness.npy')).write_text('stale')
+    stub, log = _stub_converter(tmp_path)
+    preamble = '\n'.join([
+        'set -o pipefail',
+        f'PYTHON={stub}',
+        f'SYNTH_DIR={synth}',
+        f'{raw_var[0]}={raws}/train_raw.npy',
+        f'{raw_var[1]}={raws}/val_raw.npy',
+        f'{out_var[0]}={synth}/{finals["train"]}',
+        f'{out_var[1]}={synth}/{finals["val"]}',
+    ])
+    p = _sp.run(['bash', '-c', preamble + '\n' + _synth_build_block(slurm_path)],
+                capture_output=True, text=True, timeout=120)
+    inv = log.read_text().splitlines() if log.exists() else []
+    return p.returncode, inv, synth, p.stdout + p.stderr
+
+
+JOBS = [
+    (HANDCORE_SLURM, ('MTRDR_TRAIN_RAW', 'MTRDR_VAL_RAW'),
+     ('MTRDR_TRAIN_PATCHES', 'MTRDR_VAL_PATCHES'), '--mode hull'),
+    (DUALCR_SLURM, ('SYNTH_TRAIN_RAW', 'SYNTH_VAL_RAW'),
+     ('SYNTH_TRAIN', 'SYNTH_VAL'), '--mode dual'),
+]
+JOB_IDS = ['handcore', 'dualcr']
+
+
+@pytest.mark.parametrize('slurm, raw_var, out_var, mode_flag', JOBS, ids=JOB_IDS)
+def test_build_loop_converts_when_nothing_is_present(tmp_path, slurm, raw_var,
+                                                     out_var, mode_flag):
+    rc, inv, synth, log = _run_build_block(tmp_path, slurm, raw_var, out_var, 'none')
+    assert rc == 0, log
+    assert len(inv) == 2, inv
+    for line in inv:
+        assert mode_flag in line, line
+    for f in ('plag_train_conv.npy', 'plag_val_conv.npy'):
+        assert (synth / f).exists(), f'{f} not installed: {log}'
+        assert (synth / f.replace('.npy', '_brightness.npy')).exists(), \
+            f'sidecar for {f} not installed: {log}'
+
+
+@pytest.mark.parametrize('slurm, raw_var, out_var, mode_flag', JOBS, ids=JOB_IDS)
+def test_build_loop_rebuilds_when_only_the_sidecar_is_missing(tmp_path, slurm,
+                                                              raw_var, out_var,
+                                                              mode_flag):
+    """THE HPC STATE TODAY. Both jobs already have converted caches on xdisk with
+    no sidecar. A patches-only existence check reports "present", skips the
+    build, and the sidecar never appears -- so the job dies exactly as it did.
+    """
+    rc, inv, synth, log = _run_build_block(tmp_path, slurm, raw_var, out_var,
+                                           'patches')
+    assert rc == 0, log
+    assert len(inv) == 2, (
+        f'the guard skipped the rebuild although the sidecar was absent: {inv}')
+    for f in ('plag_train_conv.npy', 'plag_val_conv.npy'):
+        assert (synth / f.replace('.npy', '_brightness.npy')).exists(), log
+        assert (synth / f).read_text() == 'patches', 'patches were not replaced'
+
+
+@pytest.mark.parametrize('slurm, raw_var, out_var, mode_flag', JOBS, ids=JOB_IDS)
+def test_build_loop_skips_when_both_files_are_present(tmp_path, slurm, raw_var,
+                                                      out_var, mode_flag):
+    """Built once and reused: a complete pair must not be rebuilt (an 8,671-patch
+    hull-CR conversion is minutes of a GPU allocation, per array task)."""
+    rc, inv, synth, log = _run_build_block(tmp_path, slurm, raw_var, out_var, 'both')
+    assert rc == 0, log
+    assert inv == [], f'converter re-ran on a complete pair: {inv}'
+    assert (synth / 'plag_train_conv.npy').read_text() == 'stale-patches'
+
+
+@pytest.mark.parametrize('slurm, raw_var, out_var, mode_flag', JOBS, ids=JOB_IDS)
+def test_build_is_atomic_via_a_temp_path_inside_synth_dir(tmp_path, slurm, raw_var,
+                                                          out_var, mode_flag):
+    """hpc_finetune_handcore is --array=0-1: two tasks reach this loop at once and
+    both can miss an "if absent" check. The converter must therefore write to a
+    UNIQUE path and the result be renamed in, never written to the final path
+    directly. The temp path must also be under ${SYNTH_DIR} -- a rename across
+    filesystems is a copy, and a half-copied cache is what this prevents.
+    """
+    rc, inv, synth, log = _run_build_block(tmp_path, slurm, raw_var, out_var, 'none')
+    assert rc == 0, log
+    finals = {str(synth / 'plag_train_conv.npy'), str(synth / 'plag_val_conv.npy')}
+    for line in inv:
+        out = line.split('--output ')[1].split()[0]
+        assert out not in finals, (
+            f'converter wrote straight to the final path {out}: two concurrent '
+            f'array tasks would interleave into one file')
+        assert out.startswith(str(synth) + '/'), (
+            f'temp output {out} is not under SYNTH_DIR; the rename would cross '
+            f'filesystems and stop being atomic')
+    # nothing left behind
+    leftovers = [p for p in os.listdir(synth) if p.startswith('.build.')]
+    assert leftovers == [], f'temp build dirs not cleaned up: {leftovers}'
+
+
+def _hull_plag_preflight():
+    from tests.test_dual_cr_wiring import _extract_heredocs
+    blocks = [b for b in _extract_heredocs(HANDCORE_SLURM) if 'plag cache OK' in b]
+    assert len(blocks) == 1, f'expected one plag preflight, got {len(blocks)}'
+    return blocks[0]
+
+
+@pytest.mark.parametrize('mode, preflight', [('hull', _hull_plag_preflight),
+                                             ('dual', _plag_preflight)],
+                         ids=['handcore', 'dualcr'])
+def test_plag_preflight_accepts_a_converted_cache_with_its_sidecar(tmp_path, mode,
+                                                                   preflight):
+    out = _converted(tmp_path, mode, 'pf')
+    n = len(np.load(out, mmap_mode='r'))
+    pq = _rows_parquet(tmp_path / 'pf.parquet', n)
+    rc, log = _run_preflight(preflight(), [out, pq, out, pq])
+    assert rc == 0, f'preflight rejected a correct cache + sidecar:\n{log}'
+    assert 'brightness sidecar' in log, log
+
+
+@pytest.mark.parametrize('mode, preflight', [('hull', _hull_plag_preflight),
+                                             ('dual', _plag_preflight)],
+                         ids=['handcore', 'dualcr'])
+def test_plag_preflight_rejects_a_cache_with_no_sidecar(tmp_path, mode, preflight):
+    """The pre-2026-08-11 caches on the HPC. Both jobs run --brightness_aux, so
+    this must stop the job before SLURM hands over a GPU."""
+    out = _converted(tmp_path, mode, 'pf')
+    os.remove(synth_brightness_path(out))
+    n = len(np.load(out, mmap_mode='r'))
+    pq = _rows_parquet(tmp_path / 'pf.parquet', n)
+    rc, log = _run_preflight(preflight(), [out, pq, out, pq])
+    assert rc != 0, f'preflight accepted a cache with no sidecar:\n{log}'
+    assert 'brightness sidecar' in log, log
+
+
+@pytest.mark.parametrize('mode, preflight', [('hull', _hull_plag_preflight),
+                                             ('dual', _plag_preflight)],
+                         ids=['handcore', 'dualcr'])
+def test_plag_preflight_rejects_a_sidecar_with_the_wrong_row_count(tmp_path, mode,
+                                                                   preflight):
+    """A sidecar left over from a different cache has the right NAME and the wrong
+    rows; SyntheticPatchDataset would then serve mismatched brightness."""
+    out = _converted(tmp_path, mode, 'pf')
+    n = len(np.load(out, mmap_mode='r'))
+    np.save(synth_brightness_path(out),
+            np.zeros((n - 1, 7, 7), dtype=np.float32))
+    pq = _rows_parquet(tmp_path / 'pf.parquet', n)
+    rc, log = _run_preflight(preflight(), [out, pq, out, pq])
+    assert rc != 0, f'preflight accepted a short sidecar:\n{log}'
+
+
+def test_handcore_slurm_keeps_every_data_path_on_xdisk():
+    """/groups filled up and killed two cache builds with Errno 28; the new temp
+    build dir must not reintroduce one."""
+    for line in open(HANDCORE_SLURM).read().splitlines():
+        s = line.strip()
+        if not s or s.startswith('#') or '/groups' not in s:
+            continue
+        assert s.startswith('WORK_DIR=') or s.startswith('PYTHON='), \
+            f'data path on /groups: {s}'
+    assert '/tmp' not in _synth_build_block(HANDCORE_SLURM), \
+        'the atomic build must stage inside ${SYNTH_DIR} on xdisk, not /tmp'
+    assert '/tmp' not in _synth_build_block(DUALCR_SLURM)

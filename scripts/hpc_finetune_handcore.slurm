@@ -108,19 +108,43 @@ done
 
 # ── MTRDR PLAGIOCLASE AS HULL-CR ─────────────────────────────────────────────
 # Built once and reused. Output on xdisk under ${SYNTH_DIR}, never /groups.
+#
+# The existence check requires the BRIGHTNESS SIDECAR as well as the patches.
+# This job runs --brightness_aux, so SyntheticPatchDataset needs the sidecar to
+# return the same 4-tuple as the labeled dataset. Converted caches built before
+# 2026-08-11 are already on the HPC WITHOUT a sidecar, so a patches-only check
+# would report "present", skip the rebuild, and the sidecar would never appear.
+#
+# The build is ATOMIC. This job is --array=0-1, so two tasks reach this loop at
+# once; the previous "if absent, convert straight to $hull" let both miss the
+# check and write the same path concurrently, interleaving two writers into one
+# memmap. Each task now converts into its own mktemp -d INSIDE ${SYNTH_DIR}
+# (same filesystem, so the rename is a true atomic rename, not a copy) and moves
+# the finished files into place. The transform is deterministic, so whichever
+# task wins the race every reader still sees one complete, correct pair.
 mkdir -p "$SYNTH_DIR"
 for pair in "${MTRDR_TRAIN_RAW}|${MTRDR_TRAIN_PATCHES}" \
             "${MTRDR_VAL_RAW}|${MTRDR_VAL_PATCHES}"; do
     raw=${pair%%|*}
     hull=${pair##*|}
-    if [ -f "$hull" ]; then
-        echo "  hull-CR plag cache present: $hull"
-    else
-        echo "  building hull-CR plag cache: $hull"
-        $PYTHON scripts/convert_synth_cache_representation.py \
-            --input "$raw" --output "$hull" --mode hull \
-            || { echo "ERROR: hull-CR plag conversion failed for $raw"; exit 1; }
+    hull_bright="${hull%.npy}_brightness.npy"
+    if [ -f "$hull" ] && [ -f "$hull_bright" ]; then
+        echo "  hull-CR plag cache + brightness sidecar present: $hull"
+        continue
     fi
+    echo "  building hull-CR plag cache + brightness sidecar: $hull"
+    tmpdir=$(mktemp -d "${SYNTH_DIR}/.build.XXXXXXXX") \
+        || { echo "ERROR: mktemp -d failed under $SYNTH_DIR"; exit 1; }
+    $PYTHON scripts/convert_synth_cache_representation.py \
+        --input "$raw" --output "${tmpdir}/$(basename "$hull")" --mode hull \
+        || { echo "ERROR: hull-CR plag conversion failed for $raw"; rm -rf "$tmpdir"; exit 1; }
+    # Sidecar first, patches last: nothing keys on the sidecar alone, so a crash
+    # between the two renames leaves the pair detectably incomplete and the next
+    # run rebuilds it.
+    mv -f "${tmpdir}/$(basename "$hull_bright")" "$hull_bright" \
+        && mv -f "${tmpdir}/$(basename "$hull")" "$hull" \
+        || { echo "ERROR: could not install $hull"; rm -rf "$tmpdir"; exit 1; }
+    rm -rf "$tmpdir"
 done
 
 # Preflight the plag caches on their TRUE array shape, never a byte count.
@@ -130,10 +154,12 @@ done
 # caught in this work; do not reintroduce one.
 $PYTHON - "$MTRDR_TRAIN_PATCHES" "$MTRDR_TRAIN_ROWS" \
          "$MTRDR_VAL_PATCHES" "$MTRDR_VAL_ROWS" <<'EOF' || { echo "ERROR: hull-CR plag cache preflight failed"; exit 1; }
+import os
 import sys
 import numpy as np
 import pandas as pd
 from data.continuum_removal import detect_representation
+from data.dataset import synth_brightness_path
 
 for cache, parquet in zip(sys.argv[1::2], sys.argv[2::2]):
     arr = np.load(cache, mmap_mode='r')
@@ -151,7 +177,21 @@ for cache, parquet in zip(sys.argv[1::2], sys.argv[2::2]):
     assert shape[0] == rows, (
         f'{cache} has {shape[0]:,} patches but {parquet} has {rows:,} rows; '
         f'SyntheticPatchDataset asserts they match row-for-row')
-    print(f'  plag cache OK: {cache} {shape} {repr_} vs {rows:,} parquet rows')
+    # This job runs --brightness_aux, so the labeled dataset yields
+    # (patch, brightness, label, weight). Without this sidecar the synth half
+    # yields a 3-tuple and default_collate kills the job on the first mixed
+    # batch with "each element in list of batch should be of equal size".
+    bpath = synth_brightness_path(cache)
+    assert os.path.exists(bpath), (
+        f'{cache} has no brightness sidecar {bpath}. This job runs '
+        f'--brightness_aux, so SyntheticPatchDataset cannot serve it. Delete '
+        f'{cache} and re-run: the converter writes the sidecar alongside.')
+    b = np.load(bpath, mmap_mode='r')
+    assert b.shape == (shape[0], 7, 7), (
+        f'{bpath} has shape {b.shape}, expected {(shape[0], 7, 7)} — one (7,7) '
+        f'brightness map per patch, aligned row-for-row with {cache}')
+    print(f'  plag cache OK: {cache} {shape} {repr_} vs {rows:,} parquet rows '
+          f'(+ brightness sidecar {b.shape})')
 EOF
 for split in train val; do
     for f in "${CACHE_DIR}/mrral_${split}_patches_p7.npy" \

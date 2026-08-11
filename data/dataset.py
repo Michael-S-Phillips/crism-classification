@@ -651,6 +651,19 @@ class CRISMSpectralPatchDataset(Dataset):
         self._handles.clear()
 
 
+def synth_brightness_path(npy_path: str) -> str:
+    """Sidecar path for a synth patch cache: <stem>_brightness.npy.
+
+    The single source of truth for the name, shared by the producer
+    (scripts/convert_synth_cache_representation.py) and the consumer
+    (SyntheticPatchDataset). The labeled-cache pair
+    (build_cr_labeled_cache.py / CRISMSpectralPatchDataset) spells its
+    `mrral_{split}_patches_p{P}_brightness.npy` twice; that duplication is
+    exactly what this avoids here.
+    """
+    return os.path.splitext(npy_path)[0] + '_brightness.npy'
+
+
 class SyntheticPatchDataset(Dataset):
     """Serves pre-synthesized plagioclase patches from a .npy + parquet fragment.
 
@@ -676,12 +689,25 @@ class SyntheticPatchDataset(Dataset):
         'hull' -- 59 channels, hull-CR (median > RAW_LEVEL_MAX, bounded <= 1)
         'dual' -- 118 channels, hull 0-58 ⊕ linear 59-117, both CR-level
     Convert a raw cache with scripts/convert_synth_cache_representation.py.
+
+    `return_brightness` (default False, so every pre-2026-08-11 caller is
+    byte-identical) switches __getitem__ to the 4-tuple
+    (patch, brightness (1,), label, weight) that CRISMSpectralPatchDataset._finish
+    yields under --brightness_aux. It MUST be set whenever this dataset is
+    ConcatDataset'd with a brightness-returning CRISMSpectralPatchDataset:
+    default_collate rejects a batch that mixes 3- and 4-tuples with
+    "each element in list of batch should be of equal size", which is exactly how
+    the 2026-08-11 hpc_finetune_handcore job died seconds into training.
+    The scalar is read from the <stem>_brightness.npy sidecar the converter
+    writes; there is no fallback, because a synthesised constant would train
+    plagioclase against a dead aux feature and still look healthy.
     """
 
     _REPRS = ('any', 'raw', 'hull', 'dual')
 
     def __init__(self, npy_path: str, parquet_path: str, patch_size: int = 7,
-                 split: Optional[str] = None, expect_repr: str = 'any'):
+                 split: Optional[str] = None, expect_repr: str = 'any',
+                 return_brightness: bool = False):
         if expect_repr not in self._REPRS:
             raise ValueError(
                 f'expect_repr={expect_repr!r}; expected one of {self._REPRS}')
@@ -704,6 +730,40 @@ class SyntheticPatchDataset(Dataset):
         assert self._cache.shape[1:] == (patch_size, patch_size, n_ch)
         if expect_repr != 'any':
             self._check_representation(npy_path, expect_repr)
+
+        # Brightness aux. Note there is deliberately NO
+        # "return_brightness requires continuum_removed" guard here, the way
+        # CRISMSpectralPatchDataset.__init__ has one. That guard exists because
+        # there `brightness` is only produced inside the CR branch of _finish, so
+        # the raw path would index None. This dataset applies no transform and
+        # reads brightness from an independent sidecar computed from the RAW
+        # source, so raw + brightness is well defined. The combination that would
+        # be wrong -- a run with --brightness_aux but no --continuum_removed --
+        # is already refused by the labeled dataset in the same run.
+        self.half = patch_size // 2
+        self.return_brightness = return_brightness
+        self._bright_cache = None
+        if return_brightness:
+            bpath = synth_brightness_path(npy_path)
+            if not os.path.exists(bpath):
+                raise FileNotFoundError(
+                    f'return_brightness=True needs the brightness sidecar '
+                    f'{bpath}, which does not exist. Build it alongside the '
+                    f'cache:  python scripts/convert_synth_cache_representation.py '
+                    f'--input <RAW cache> --output {npy_path} --mode '
+                    f'{"dual" if expect_repr == "dual" else "hull"}  '
+                    f'(the converter writes the sidecar automatically). Never '
+                    f'substitute a zero or a synthesised value: that trains this '
+                    f'class against a constant aux feature and looks fine.')
+            self._bright_cache = np.load(bpath, mmap_mode='r')
+            if self._bright_cache.shape != (full_n, patch_size, patch_size):
+                raise ValueError(
+                    f'brightness sidecar {bpath} has shape '
+                    f'{self._bright_cache.shape}, expected '
+                    f'{(full_n, patch_size, patch_size)} -- one (P, P) brightness '
+                    f'map per cache row, matching the layout '
+                    f'build_cr_labeled_cache.py writes. It was built from a '
+                    f'different cache; rebuild it with the converter.')
 
     def _check_representation(self, npy_path: str, expect: str) -> None:
         """Fail loudly if the cache's statistics contradict `expect`.
@@ -742,9 +802,20 @@ class SyntheticPatchDataset(Dataset):
         return self._n
 
     def __getitem__(self, idx):
+        # self._indices[idx] is the row in the FULL npy; idx is the row in the
+        # split-filtered frame. The sidecar is aligned with the npy, so it must
+        # be indexed by the same mapped row -- indexing it with idx would serve
+        # patch i's brightness against patch j's spectrum under any split filter.
+        row = self._indices[idx]
         patch = torch.from_numpy(
-            np.asarray(self._cache[self._indices[idx]], dtype=np.float32).copy()
+            np.asarray(self._cache[row], dtype=np.float32).copy()
         )
+        if self.return_brightness:
+            # Same order and dtypes as CRISMSpectralPatchDataset._finish:
+            # (patch, (1,) float32 centre-pixel brightness, label, weight).
+            b = float(self._bright_cache[row, self.half, self.half])
+            bright_t = torch.tensor([b], dtype=torch.float32)
+            return patch, bright_t, self.labels[idx], self.weights[idx]
         return patch, self.labels[idx], self.weights[idx]
 
 

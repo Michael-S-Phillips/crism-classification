@@ -249,8 +249,14 @@ def train_torch_model(
             # put the val rows in VAL — the model was validated on plagioclase
             # patches it had trained on. Logs show 1,817 into train against 109
             # into val, and the 109 were a subset of the 1,817. Audit 2026-08-08.
+            # return_brightness must track brightness_aux exactly. make_dataset
+            # gives the labeled half a 4-tuple under --brightness_aux; a synth
+            # half still returning a 3-tuple makes default_collate raise "each
+            # element in list of batch should be of equal size" on the first
+            # mixed batch (2026-08-11, hpc_finetune_handcore).
             synth_ds = SyntheticPatchDataset(synth_train_cache, synth_train_parquet,
-                                             split='train', expect_repr=synth_repr)
+                                             split='train', expect_repr=synth_repr,
+                                             return_brightness=brightness_aux)
             logger.info(f"Concatenating {len(synth_ds)} synthetic plag patches into train set")
             train_ds = ConcatDataset([train_ds, synth_ds])
         val_ds = make_dataset(val_df, 'val')
@@ -259,7 +265,7 @@ def train_torch_model(
             from torch.utils.data import ConcatDataset
             synth_val_ds = SyntheticPatchDataset(
                 synth_val_cache, synth_val_parquet, split='val',
-                expect_repr=synth_repr)
+                expect_repr=synth_repr, return_brightness=brightness_aux)
             logger.info(f"Concatenating {len(synth_val_ds)} synthetic plag val patches")
             val_ds = ConcatDataset([val_ds, synth_val_ds])
 
