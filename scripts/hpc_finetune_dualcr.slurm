@@ -27,19 +27,20 @@
 # to 118-channel dual-CR (option (a)) and passes them, so plag sees the same
 # pixels as the comparator, in this arm's representation.
 #
-# The hull-CR baseline is STILL WRONG, in the other direction.
+# The EXISTING hull-CR checkpoints are wrong in the other direction.
 # ft_7cls_handcore_level ran `--continuum_removed --cache_is_cr` while pointing
 # --synth_train_cache / --synth_val_cache at RAW-REFLECTANCE .npy files
-# (verified 2026-08-11: p50 0.239 and 0.225 against hull-CR's 0.934 mean).
+# (verified 2026-08-11: p50 ~0.19 against hull-CR's 0.934 mean).
 # SyntheticPatchDataset applies NO transform, so plagioclase — and only
 # plagioclase — trained at ~4x the level of every other class, which is trivially
 # separable in validation and over-fires on an all-CR tile at inference.
-# ft_7cls_handcore_level is therefore NOT a valid plagioclase comparator yet.
-# Fixing it means re-running scripts/hpc_finetune_handcore.slurm with hull-CR
-# synth caches (that job now FAILS as written, by design — see
-# scripts/convert_synth_cache_representation.py --mode hull). Until that re-run
-# exists, compare ALTERATION and BLAND — the actual hypothesis under test, which
-# never used a synth cache — and treat plag as pending.
+# scripts/hpc_finetune_handcore.slurm has since been FIXED (it now builds hull-CR
+# plag caches via convert_synth_cache_representation.py --mode hull), but the
+# checkpoints on disk predate that fix. So:
+#   * ALTERATION and BLAND — the actual hypothesis under test — never used a synth
+#     cache and are comparable against ft_7cls_handcore_level today.
+#   * PLAGIOCLASE is comparable only against a RE-RUN of the fixed handcore job.
+#     Treat plag as pending until that checkpoint exists.
 #
 # ── What is being tested ─────────────────────────────────────────────────────
 # Upper-hull CR divides by the convex hull, and a broad convex arch IS

@@ -42,6 +42,25 @@
 # Before that fix it served every row in the parquet, so a synth set carrying
 # its own val rows trained on them AND validated on them.
 #
+# ── 2026-08-11: the MTRDR plag caches were RAW, not hull-CR ──────────────────
+# The two source caches on disk are raw reflectance (p50 ~0.19, max ~0.34) while
+# hull-CR is bounded [0,1] and centres at 0.934. SyntheticPatchDataset serves its
+# .npy VERBATIM — no transform — so every earlier run of this job trained
+# PLAGIOCLASE ON RAW PATCHES while all six other classes got hull-CR patches: a
+# ~4x level offset on exactly one class. That is trivially separable in
+# validation and then over-fires at inference, where the whole tile is CR. It is
+# a plausible mechanism for the observed plag pathology (high-confidence plag
+# looks reasonable, low-confidence is not plag, and own-class spectral agreement
+# INVERTS 0.45 -> 0.02 as confidence rises; see reports/floor_tests/).
+#
+# Fixed here by converting both caches to hull-CR once, into ${SYNTH_DIR} on
+# xdisk. Row order and row count are preserved exactly, so both *_ROWS parquets
+# are unchanged. SyntheticPatchDataset now also REFUSES a representation
+# mismatch, so this job would abort in seconds rather than waste a GPU day.
+#
+# Checkpoints from before this fix (ft_7cls_handcore_level / _reviewup) are not
+# valid plagioclase comparators. Re-run this job to get one.
+#
 # Submit:  sbatch scripts/hpc_finetune_handcore.slurm
 
 WORK_DIR=/groups/sbyrne/phillipsm/crism_classification
@@ -57,10 +76,15 @@ PARQUET=${DATA_DIR}/mrral_pixels_7cls_handcore.parquet
 CACHE_DIR=${DATA_DIR}/patch_cache_handcore_cr
 
 # Plagioclase: big disjoint pool for train, small disjoint pool for val.
-MTRDR_TRAIN_PATCHES=${DATA_DIR}/patch_cache/mtrdr_plag_patches_p7.npy
+# The sources are RAW; the hull-CR copies are what this job actually trains on.
+MTRDR_TRAIN_RAW=${DATA_DIR}/patch_cache/mtrdr_plag_patches_p7.npy
+MTRDR_VAL_RAW=${DATA_DIR}/contrastive/extra_plag_roi/patches.npy
 MTRDR_TRAIN_ROWS=${DATA_DIR}/patch_cache/mtrdr_plag_rows.parquet
-MTRDR_VAL_PATCHES=${DATA_DIR}/contrastive/extra_plag_roi/patches.npy
 MTRDR_VAL_ROWS=${DATA_DIR}/mtrdr_plag_rows.parquet
+
+SYNTH_DIR=${DATA_DIR}/patch_cache_hullcr_synth
+MTRDR_TRAIN_PATCHES=${SYNTH_DIR}/mtrdr_plag_patches_p7_hull.npy
+MTRDR_VAL_PATCHES=${SYNTH_DIR}/extra_plag_roi_patches_hull.npy
 
 # Arm 0 is the clean baseline: ONE variable at a time. Arm 1 changes only the
 # weight scheme, so any difference is attributable to hand-vs-review weighting
@@ -77,10 +101,58 @@ if [ ! -f config.local.yaml ]; then
 fi
 
 # ── PREREQUISITES ────────────────────────────────────────────────────────────
-for f in "$ENCODER" "$PARQUET" "$MTRDR_TRAIN_PATCHES" "$MTRDR_TRAIN_ROWS" \
-         "$MTRDR_VAL_PATCHES" "$MTRDR_VAL_ROWS"; do
+for f in "$ENCODER" "$PARQUET" "$MTRDR_TRAIN_RAW" "$MTRDR_TRAIN_ROWS" \
+         "$MTRDR_VAL_RAW" "$MTRDR_VAL_ROWS"; do
     [ -f "$f" ] || { echo "ERROR: missing $f"; exit 1; }
 done
+
+# ── MTRDR PLAGIOCLASE AS HULL-CR ─────────────────────────────────────────────
+# Built once and reused. Output on xdisk under ${SYNTH_DIR}, never /groups.
+mkdir -p "$SYNTH_DIR"
+for pair in "${MTRDR_TRAIN_RAW}|${MTRDR_TRAIN_PATCHES}" \
+            "${MTRDR_VAL_RAW}|${MTRDR_VAL_PATCHES}"; do
+    raw=${pair%%|*}
+    hull=${pair##*|}
+    if [ -f "$hull" ]; then
+        echo "  hull-CR plag cache present: $hull"
+    else
+        echo "  building hull-CR plag cache: $hull"
+        $PYTHON scripts/convert_synth_cache_representation.py \
+            --input "$raw" --output "$hull" --mode hull \
+            || { echo "ERROR: hull-CR plag conversion failed for $raw"; exit 1; }
+    fi
+done
+
+# Preflight the plag caches on their TRUE array shape, never a byte count.
+# These are np.save'd (128-byte header), so getsize() arithmetic is off by 128 —
+# and byte counts cannot distinguish 59 channels from 118 anyway, since
+# 59 * (2k) == 118 * k. Two vacuous byte-arithmetic preflights were already
+# caught in this work; do not reintroduce one.
+$PYTHON - "$MTRDR_TRAIN_PATCHES" "$MTRDR_TRAIN_ROWS" \
+         "$MTRDR_VAL_PATCHES" "$MTRDR_VAL_ROWS" <<'EOF' || { echo "ERROR: hull-CR plag cache preflight failed"; exit 1; }
+import sys
+import numpy as np
+import pandas as pd
+from data.continuum_removal import detect_representation
+
+for cache, parquet in zip(sys.argv[1::2], sys.argv[2::2]):
+    arr = np.load(cache, mmap_mode='r')
+    shape = arr.shape
+    assert len(shape) == 4 and shape[1:3] == (7, 7), f'{cache}: bad shape {shape}'
+    assert shape[-1] == 59, (
+        f'{cache} is {shape[-1]}-channel, not 59: shape {shape}')
+    repr_ = detect_representation(arr)
+    assert repr_ == 'hull', (
+        f'{cache} looks like {repr_!r}, not hull-CR. This job trains with '
+        f'--continuum_removed, so a raw cache here would put plagioclase on a '
+        f'different representation from every other class. Rebuild with '
+        f'scripts/convert_synth_cache_representation.py --mode hull')
+    rows = len(pd.read_parquet(parquet, columns=['split']))
+    assert shape[0] == rows, (
+        f'{cache} has {shape[0]:,} patches but {parquet} has {rows:,} rows; '
+        f'SyntheticPatchDataset asserts they match row-for-row')
+    print(f'  plag cache OK: {cache} {shape} {repr_} vs {rows:,} parquet rows')
+EOF
 for split in train val; do
     for f in "${CACHE_DIR}/mrral_${split}_patches_p7.npy" \
              "${CACHE_DIR}/mrral_${split}_patches_p7_brightness.npy"; do
