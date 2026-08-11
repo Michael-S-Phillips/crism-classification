@@ -170,6 +170,76 @@ def dual_continuum(spec: np.ndarray, standardize: bool = True) -> np.ndarray:
     return np.concatenate([hull, lin], axis=-1).astype(np.float32)
 
 
+# ── Representation detection ────────────────────────────────────────────────
+#
+# A 59-channel patch cache on disk is either RAW reflectance or hull-CR, and the
+# two are indistinguishable by shape. Serving one where the other is expected is
+# a silent ~4x level offset on whichever class the cache carries -- exactly the
+# 2026-08-11 MTRDR-plagioclase bug (a raw plag cache concatenated into a
+# --continuum_removed --cache_is_cr run). These helpers make the two states
+# separable by a robust statistic so producers and consumers can both check.
+
+RAW_LEVEL_MAX = 0.5
+"""Median-level boundary between raw reflectance and hull-CR at 59 channels.
+
+Not a tuned threshold. It is ``CRISMSpectralPatchDataset.CLIP_MAX``
+(data/dataset.py:440, a fixed class constant = 0.5): every raw patch the pipeline
+produces is clipped to [0, CLIP_MAX], so a raw cache's median CANNOT exceed it by
+construction (the two real MTRDR plag caches sit at p50 0.239 and 0.225). Hull-CR
+is bounded [0, 1] with mean 0.934 and std 0.071 over 51,463 real spectra
+(``mrral_cr_scales.json``), so a hull-CR median at or below 0.5 would be a
+~6 sigma excursion. The gap either side is ~6x the relevant spread.
+
+Restated as a literal here rather than imported, because data.dataset imports
+THIS module and the reverse import would be circular.
+``test_synth_cache_representation.test_raw_level_max_is_pinned_to_clip_max``
+asserts the two are equal so they cannot drift apart silently.
+"""
+
+_LEVEL_SAMPLE_ROWS = 256
+
+
+def _sample_row_idx(n: int, n_rows: int) -> np.ndarray:
+    """Deterministic, evenly-spread row indices — no RNG, no seed to mismatch."""
+    if n <= n_rows:
+        return np.arange(n)
+    return np.unique(np.linspace(0, n - 1, n_rows).astype(np.int64))
+
+
+def sample_level(arr, n_rows: int = _LEVEL_SAMPLE_ROWS, chan_slice=None) -> float:
+    """Median of the finite values in an evenly-spread sample of rows.
+
+    arr may be a memmap; only the sampled rows are read. A median (not a mean)
+    and many rows (not one pixel) on purpose: a single pixel can be an all-zero
+    NODATA window in a raw cache or an all-ones degenerate window in a CR cache,
+    either of which reads as the other representation.
+    """
+    idx = _sample_row_idx(len(arr), n_rows)
+    vals = np.asarray(arr[idx], dtype=np.float64)
+    if chan_slice is not None:
+        vals = vals[..., chan_slice]
+    vals = vals.ravel()
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        return float('nan')
+    return float(np.median(vals))
+
+
+def detect_representation(arr, n_rows: int = _LEVEL_SAMPLE_ROWS) -> str:
+    """Classify a patch cache as 'raw', 'hull' or 'dual' from shape + level.
+
+    118 channels is dual by construction (hull 0-58 ⊕ linear 59-117); at 59
+    channels the level decides. Any other width raises.
+    """
+    n_ch = arr.shape[-1]
+    if n_ch == 118:
+        return 'dual'
+    if n_ch != N_BANDS:
+        raise ValueError(
+            f'expected 59 (raw/hull) or 118 (dual) channels, got {n_ch}')
+    return 'raw' if sample_level(arr, n_rows) <= RAW_LEVEL_MAX else 'hull'
+
+
 def cr_patch(patch: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """CR a (P, P, 59) patch. Returns (CR patch (P,P,59), brightness (P,P))."""
     patch = np.asarray(patch, dtype=np.float32)

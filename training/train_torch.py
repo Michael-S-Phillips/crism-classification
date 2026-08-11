@@ -52,6 +52,23 @@ def build_class_balanced_weights(df: pd.DataFrame) -> np.ndarray:
     return pixel_weights
 
 
+def _expected_synth_repr(continuum_removed: bool, dual_cr: bool) -> str:
+    """Representation a run's synth patch cache must already be in.
+
+    SyntheticPatchDataset serves its .npy VERBATIM -- it applies no transform --
+    so the cache on disk must match whatever the rest of the run serves:
+      dual_cr           -> 'dual' (118 channels, hull ⊕ linear)
+      continuum_removed -> 'hull' (59 channels, hull-CR). True whether or not
+                           cache_is_cr: with it the labeled cache is pre-CR'd on
+                           disk, without it CRISMSpectralPatchDataset CRs at read
+                           time; either way the SERVED representation is hull-CR.
+      otherwise         -> 'raw'  (59 channels, raw reflectance)
+    """
+    if dual_cr:
+        return 'dual'
+    return 'hull' if continuum_removed else 'raw'
+
+
 def train_torch_model(
     model: torch.nn.Module,
     df: pd.DataFrame,
@@ -177,11 +194,10 @@ def train_torch_model(
             raise ValueError(
                 'dual_cr is incompatible with mrrsu_aux_dir: MrrsuAuxPatchDataset '
                 'serves 59-channel patches')
-        if (synth_train_cache or synth_train_parquet
-                or synth_val_cache or synth_val_parquet):
-            raise ValueError(
-                'dual_cr is incompatible with the synth_* patch caches, which are '
-                '59-channel; concatenating them would mix representations')
+        # synth_* caches are no longer refused outright: a 118-channel dual plag
+        # cache can be built with scripts/convert_synth_cache_representation.py.
+        # A 59-channel one is still fatal, and SyntheticPatchDataset raises on it
+        # because every construction below declares expect_repr.
 
     def make_dataset(sub_df, split_name='train'):
         from data.dataset import MRRAL_BAND_COLS, BAND_COLS, CRISMSpectralDataset, CRISMCombinedDataset
@@ -204,6 +220,11 @@ def train_torch_model(
         if has_mrral:
             return CRISMSpectralDataset(sub_df)
         return CRISMPixelDataset(sub_df)
+
+    # The representation every synth cache in this run must already be in. Only
+    # 'raw' can reach the pre-2026-08-11 code path unchanged; 'hull' is what makes
+    # a raw cache in a --continuum_removed run fail instead of train.
+    synth_repr = _expected_synth_repr(continuum_removed, dual_cr)
 
     if mrrsu_aux_dir is not None:
         import os as _os
@@ -229,7 +250,7 @@ def train_torch_model(
             # patches it had trained on. Logs show 1,817 into train against 109
             # into val, and the 109 were a subset of the 1,817. Audit 2026-08-08.
             synth_ds = SyntheticPatchDataset(synth_train_cache, synth_train_parquet,
-                                             split='train')
+                                             split='train', expect_repr=synth_repr)
             logger.info(f"Concatenating {len(synth_ds)} synthetic plag patches into train set")
             train_ds = ConcatDataset([train_ds, synth_ds])
         val_ds = make_dataset(val_df, 'val')
@@ -237,7 +258,8 @@ def train_torch_model(
             from data.dataset import SyntheticPatchDataset
             from torch.utils.data import ConcatDataset
             synth_val_ds = SyntheticPatchDataset(
-                synth_val_cache, synth_val_parquet, split='val')
+                synth_val_cache, synth_val_parquet, split='val',
+                expect_repr=synth_repr)
             logger.info(f"Concatenating {len(synth_val_ds)} synthetic plag val patches")
             val_ds = ConcatDataset([val_ds, synth_val_ds])
 
@@ -350,7 +372,8 @@ def train_torch_model(
     _synth_val_n = 0
     if synth_val_cache and synth_val_parquet:
         from data.dataset import SyntheticPatchDataset as _SVD
-        _synth_val_n = len(_SVD(synth_val_cache, synth_val_parquet, split='val'))
+        _synth_val_n = len(_SVD(synth_val_cache, synth_val_parquet, split='val',
+                               expect_repr=synth_repr))
     best_monitored = -1.0
     best_state = None
     best_map = -1.0       # secondary: always tracks val_mAP regardless of stop_metric

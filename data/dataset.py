@@ -662,10 +662,29 @@ class SyntheticPatchDataset(Dataset):
     If `split` is given (e.g. 'train', 'val', 'test'), only rows matching that split
     column are served; the original row indices into the npy are preserved so the
     alignment holds even after filtering.
+
+    `expect_repr` declares the representation the RUN serves, and the cache is
+    checked against it. Patches here are served VERBATIM -- no transform is
+    applied -- so a raw cache in a --continuum_removed run injects one class at
+    ~4x the level of every other class. That happened: ft_7cls_handcore_level
+    ran `--continuum_removed --cache_is_cr` with the RAW MTRDR plag caches, so
+    plagioclase was the only class carrying raw level and slope, making it
+    trivially separable in validation and prone to over-firing on a CR tile.
+    Legal values:
+        'any'  (default, inert) -- no check, 59 channels, BASE behaviour
+        'raw'  -- 59 channels, raw reflectance (median <= RAW_LEVEL_MAX)
+        'hull' -- 59 channels, hull-CR (median > RAW_LEVEL_MAX, bounded <= 1)
+        'dual' -- 118 channels, hull 0-58 ⊕ linear 59-117, both CR-level
+    Convert a raw cache with scripts/convert_synth_cache_representation.py.
     """
 
+    _REPRS = ('any', 'raw', 'hull', 'dual')
+
     def __init__(self, npy_path: str, parquet_path: str, patch_size: int = 7,
-                 split: Optional[str] = None):
+                 split: Optional[str] = None, expect_repr: str = 'any'):
+        if expect_repr not in self._REPRS:
+            raise ValueError(
+                f'expect_repr={expect_repr!r}; expected one of {self._REPRS}')
         full_df = pd.read_parquet(parquet_path)
         full_n = len(full_df)
         if split is not None and 'split' in full_df.columns:
@@ -681,7 +700,43 @@ class SyntheticPatchDataset(Dataset):
         self._cache = np.load(npy_path, mmap_mode='r')
         assert self._cache.shape[0] == full_n, (
             f"patch count {self._cache.shape[0]} != parquet rows {full_n}")
-        assert self._cache.shape[1:] == (patch_size, patch_size, 59)
+        n_ch = 118 if expect_repr == 'dual' else 59
+        assert self._cache.shape[1:] == (patch_size, patch_size, n_ch)
+        if expect_repr != 'any':
+            self._check_representation(npy_path, expect_repr)
+
+    def _check_representation(self, npy_path: str, expect: str) -> None:
+        """Fail loudly if the cache's statistics contradict `expect`.
+
+        Channel count alone distinguishes 'dual'; raw-vs-hull are both 59
+        channels and are separated by level (see continuum_removal.RAW_LEVEL_MAX).
+        """
+        from data.continuum_removal import (RAW_LEVEL_MAX, detect_representation,
+                                            sample_level)
+        fix = ('Convert it: python scripts/convert_synth_cache_representation.py '
+               f'--input {npy_path} --output <dest> --mode '
+               f'{"dual" if expect == "dual" else "hull"}')
+        if expect == 'dual':
+            hull_lvl = sample_level(self._cache, chan_slice=slice(0, 59))
+            lin_lvl = sample_level(self._cache, chan_slice=slice(59, 118))
+            if not (hull_lvl > RAW_LEVEL_MAX and lin_lvl > RAW_LEVEL_MAX):
+                raise ValueError(
+                    f'synth cache {npy_path} is 118-channel but does not look '
+                    f'dual-CR: hull-block median {hull_lvl:.4f}, linear-block '
+                    f'median {lin_lvl:.4f}; both must exceed '
+                    f'{RAW_LEVEL_MAX} (standardized dual sits near 13.2 and 5.8, '
+                    f'unstandardized near 0.93 and 1.0; raw would be ~0.23). '
+                    f'{fix}')
+            return
+        got = detect_representation(self._cache)
+        if got != expect:
+            raise ValueError(
+                f'synth cache {npy_path} looks {got.upper()} but this run serves '
+                f'{expect.upper()} patches (median level '
+                f'{sample_level(self._cache):.4f}, boundary {RAW_LEVEL_MAX}). '
+                f'SyntheticPatchDataset applies NO transform, so the cache would '
+                f'inject one class at the wrong level -- the bug that invalidated '
+                f'plagioclase in ft_7cls_handcore_level. {fix}')
 
     def __len__(self):
         return self._n

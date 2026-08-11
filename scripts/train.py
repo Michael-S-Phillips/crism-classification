@@ -277,16 +277,39 @@ def build_args():
         parser.error(
             f'--dual_cr is not supported by --model {args.model}; it would be '
             f'silently ignored. Supported: {", ".join(_DUAL_CR_SUPPORTED)}.')
-    # SyntheticPatchDataset reads a fixed-width MTRDR plag .npy written at 59
-    # channels. ConcatDataset would mix it with 118-channel patches; refuse
-    # rather than half-populate plagioclase in a dual run.
+    # A 59-channel MTRDR plag cache cannot be concatenated into a 118-channel run.
+    # Since 2026-08-11 a DUAL plag cache can exist
+    # (scripts/convert_synth_cache_representation.py --mode dual), so --synth_* is
+    # no longer refused outright — but the real array width is verified here, at
+    # parse time, before SLURM hands over a GPU. Both flags of a pair must be
+    # present: a cache without its parquet (or vice versa) is silently dropped by
+    # train_torch's `if synth_*_cache and synth_*_parquet` branches.
     if args.dual_cr and any((args.synth_train_cache, args.synth_train_parquet,
                              args.synth_val_cache, args.synth_val_parquet)):
-        parser.error(
-            '--dual_cr is incompatible with --synth_*: the synthetic/MTRDR plag '
-            'patch caches are 59-channel, so concatenating them into a '
-            '118-channel run would mix representations. Rebuild the synth cache '
-            'as dual first, or drop --synth_*.')
+        for _nm, _cache, _pq in (('train', args.synth_train_cache,
+                                  args.synth_train_parquet),
+                                 ('val', args.synth_val_cache,
+                                  args.synth_val_parquet)):
+            if bool(_cache) != bool(_pq):
+                parser.error(
+                    f'--dual_cr is incompatible with --synth_* given in half: '
+                    f'--synth_{_nm}_cache={_cache!r} and '
+                    f'--synth_{_nm}_parquet={_pq!r} must both be set or both '
+                    f'omitted, or the pair is silently dropped.')
+            if not _cache:
+                continue
+            try:
+                _shape = np.load(_cache, mmap_mode='r').shape
+            except Exception as _exc:
+                parser.error(
+                    f'--dual_cr is incompatible with --synth_* caches whose width '
+                    f'cannot be verified: cannot read {_cache}: {_exc}')
+            if _shape[-1] != 118:
+                parser.error(
+                    f'--dual_cr is incompatible with --synth_* caches that are not '
+                    f'118-channel dual-CR: {_cache} has shape {_shape}. Build one '
+                    f'with scripts/convert_synth_cache_representation.py --mode '
+                    f'dual, or drop --synth_*.')
     # Only the branches that forward synth_* to train_torch_model can honour
     # these. Until 2026-08-10 spatial_vit_aux accepted them and silently dropped
     # them, so the ft_7cls_handcore_* runs trained with zero MTRDR plagioclase

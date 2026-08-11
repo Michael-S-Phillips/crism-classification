@@ -105,12 +105,19 @@ def test_dual_cr_rejected_for_unsupported_models(model):
 
 
 def test_dual_cr_rejects_synthetic_patch_mixing():
-    """--dual_cr + any --synth_* must refuse: those caches are 59-channel.
+    """--dual_cr + HALF a --synth_* pair must refuse.
 
-    SyntheticPatchDataset (data/dataset.py) reads a fixed-width .npy written by
-    build_mtrdr_plag_patches.py at 59 channels. ConcatDataset would happily mix
-    it with 118-channel patches and the collate would blow up mid-epoch at best,
-    or silently under-represent plagioclase at worst.
+    A cache without its parquet (or a parquet without its cache) is silently
+    dropped by train_torch's `if synth_*_cache and synth_*_parquet` branches — the
+    07547e8 failure shape, an accepted-but-ignored flag. Each flag alone is
+    therefore still a parse error.
+
+    Task 7 refused --dual_cr + ANY --synth_* outright, because every MTRDR plag
+    cache in existence was 59-channel. Since 2026-08-11 a 118-channel dual plag
+    cache can be built and hpc_finetune_dualcr.slurm passes one, so the blanket
+    refusal became a width check — see
+    test_dual_cr_synth_mixing_is_gated_on_the_real_cache_width below for the
+    replacement contract.
     """
     for flag in ('--synth_train_cache', '--synth_train_parquet',
                  '--synth_val_cache', '--synth_val_parquet'):
@@ -119,6 +126,39 @@ def test_dual_cr_rejects_synthetic_patch_mixing():
              '--mrral_parquets', '_', flag, 'x'])
         assert rc != 0, f'{flag} was accepted alongside --dual_cr:\n{out}'
         assert '--dual_cr is incompatible with --synth_*' in err, err
+
+
+@pytest.mark.parametrize('n_ch, should_parse', [(59, False), (118, True)])
+def test_dual_cr_synth_mixing_is_gated_on_the_real_cache_width(
+        tmp_path, n_ch, should_parse):
+    """The replacement contract, both directions.
+
+    59-channel synth cache under --dual_cr -> REFUSED (concatenating it into a
+    118-channel run mixes representations); 118-channel -> ACCEPTED, which is what
+    lets the dual arm inject the same MTRDR plagioclase as its comparator instead
+    of carrying a second variable.
+
+    Width only, deliberately: parse time is where a *shape* can be checked
+    cheaply, and the LEVEL check (raw vs hull vs dual) lives in
+    SyntheticPatchDataset's expect_repr guard — see
+    tests/test_synth_cache_representation.py.
+    """
+    cache = tmp_path / f'synth_{n_ch}.npy'
+    np.save(cache, np.random.default_rng(0).uniform(
+        0.1, 0.9, size=(6, 7, 7, n_ch)).astype(np.float32))
+    pq = tmp_path / 'rows.parquet'
+    pd.DataFrame({'split': ['train'] * 6}).to_parquet(pq, index=False)
+
+    rc, out, err = _parse_args_in_subprocess(
+        ['--dual_cr', '--continuum_removed', '--model', 'spatial_vit',
+         '--mrral_parquets', '_', '--synth_train_cache', str(cache),
+         '--synth_train_parquet', str(pq)])
+    if should_parse:
+        assert rc == 0, f'a {n_ch}-channel synth cache was refused:\n{out}\n{err}'
+        assert 'PARSED_OK True' in out, out
+    else:
+        assert rc != 0, f'a {n_ch}-channel synth cache was accepted:\n{out}'
+        assert '118-channel dual-CR' in err, err
 
 
 # ── Source-level wiring ──────────────────────────────────────────────────────

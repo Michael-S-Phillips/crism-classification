@@ -20,18 +20,26 @@
 #   lr 5e-4, encoder_lr_scale 0.001, 150 epochs, patience 40, min_delta 0.0005,
 #   batch 256, embed_dim 256, 4 heads, 6 layers, patch 7.
 #
-# ── ONE UNAVOIDABLE SECOND DIFFERENCE. READ BEFORE INTERPRETING THE RESULT ───
-# ft_7cls_handcore_level injects MTRDR plagioclase via --synth_train_cache /
-# --synth_val_cache. Those caches are 59-channel, so train.py REFUSES --dual_cr
-# alongside any --synth_* rather than concatenating a 59-channel source into a
-# 118-channel run. This arm therefore trains plagioclase on hand labels only.
+# ── PLAGIOCLASE. READ BEFORE INTERPRETING ANY PLAG NUMBER FROM THIS RUN ──────
+# Task 7 flagged that omitting --synth_* introduced a SECOND variable for
+# plagioclase (this arm trained plag on hand labels only, the comparator did not).
+# That is now RESOLVED ON THE DUAL SIDE: this job converts the MTRDR plag caches
+# to 118-channel dual-CR (option (a)) and passes them, so plag sees the same
+# pixels as the comparator, in this arm's representation.
 #
-# So a plagioclase difference between this run and ft_7cls_handcore_level is NOT
-# evidence about hull-vs-dual CR. Task 8 must do one of:
-#   (a) build a dual-CR MTRDR plag patch cache and re-run with --synth_*, or
-#   (b) run a matched hull-CR control arm with --synth_* also omitted.
-# Option (b) is cheaper and is the honest minimum. The ALTERATION and BLAND
-# classes — the actual hypothesis under test — are unaffected either way.
+# The hull-CR baseline is STILL WRONG, in the other direction.
+# ft_7cls_handcore_level ran `--continuum_removed --cache_is_cr` while pointing
+# --synth_train_cache / --synth_val_cache at RAW-REFLECTANCE .npy files
+# (verified 2026-08-11: p50 0.239 and 0.225 against hull-CR's 0.934 mean).
+# SyntheticPatchDataset applies NO transform, so plagioclase — and only
+# plagioclase — trained at ~4x the level of every other class, which is trivially
+# separable in validation and over-fires on an all-CR tile at inference.
+# ft_7cls_handcore_level is therefore NOT a valid plagioclase comparator yet.
+# Fixing it means re-running scripts/hpc_finetune_handcore.slurm with hull-CR
+# synth caches (that job now FAILS as written, by design — see
+# scripts/convert_synth_cache_representation.py --mode hull). Until that re-run
+# exists, compare ALTERATION and BLAND — the actual hypothesis under test, which
+# never used a synth cache — and treat plag as pending.
 #
 # ── What is being tested ─────────────────────────────────────────────────────
 # Upper-hull CR divides by the convex hull, and a broad convex arch IS
@@ -62,6 +70,18 @@ ENCODER=${CKPT_DIR}/spatial_mae_dualcr_denoising_${EMBED_DIM}d_6l_best.pt
 PARQUET=${DATA_DIR}/mrral_pixels_7cls_handcore.parquet
 CACHE_DIR=${DATA_DIR}/patch_cache_handcore_dualcr
 RUN_NAME=ft_7cls_handcore_dualcr_level
+
+# MTRDR plagioclase — the same pixels ft_7cls_handcore_level uses, in this arm's
+# representation. Sources are RAW reflectance; the dual copies are built below.
+# EVERY path here is under ${DATA_DIR} (xdisk). Never /groups: it filled up and
+# killed two cache builds with Errno 28.
+SYNTH_DIR=${DATA_DIR}/patch_cache_dualcr_synth
+SYNTH_TRAIN_RAW=${DATA_DIR}/patch_cache/mtrdr_plag_patches_p7.npy
+SYNTH_TRAIN_ROWS=${DATA_DIR}/patch_cache/mtrdr_plag_rows.parquet
+SYNTH_VAL_RAW=${DATA_DIR}/contrastive/extra_plag_roi/patches.npy
+SYNTH_VAL_ROWS=${DATA_DIR}/mtrdr_plag_rows.parquet
+SYNTH_TRAIN=${SYNTH_DIR}/mtrdr_plag_patches_p7_dual.npy
+SYNTH_VAL=${SYNTH_DIR}/extra_plag_roi_patches_dual.npy
 
 cd "$WORK_DIR" || { echo "ERROR: cannot cd $WORK_DIR"; exit 1; }
 mkdir -p logs
@@ -121,6 +141,50 @@ for s in ('train', 'val'):
     print(f'  cache OK: {s} {rows:,} patches x 7x7x118')
 EOF
 
+# ── MTRDR PLAGIOCLASE AS DUAL-CR ─────────────────────────────────────────────
+# The source caches are RAW reflectance. SyntheticPatchDataset serves its .npy
+# verbatim, so they must be converted, not merely passed. Built once and reused;
+# output lives on xdisk under ${SYNTH_DIR}.
+for f in "$SYNTH_TRAIN_RAW" "$SYNTH_TRAIN_ROWS" "$SYNTH_VAL_RAW" "$SYNTH_VAL_ROWS"; do
+    [ -f "$f" ] || { echo "ERROR: missing MTRDR plag source $f"; exit 1; }
+done
+mkdir -p "$SYNTH_DIR"
+for pair in "${SYNTH_TRAIN_RAW}|${SYNTH_TRAIN}" "${SYNTH_VAL_RAW}|${SYNTH_VAL}"; do
+    raw=${pair%%|*}
+    dual=${pair##*|}
+    if [ -f "$dual" ]; then
+        echo "  dual plag cache present: $dual"
+    else
+        echo "  building dual plag cache: $dual"
+        $PYTHON scripts/convert_synth_cache_representation.py \
+            --input "$raw" --output "$dual" --mode dual \
+            || { echo "ERROR: dual plag conversion failed for $raw"; exit 1; }
+    fi
+done
+
+# Preflight the plag caches on their TRUE array shape.
+$PYTHON - "$SYNTH_TRAIN" "$SYNTH_TRAIN_ROWS" "$SYNTH_VAL" "$SYNTH_VAL_ROWS" <<'EOF' || { echo "ERROR: dual plag cache preflight failed"; exit 1; }
+import sys
+import numpy as np
+import pandas as pd
+# np.load(..., mmap_mode='r').shape, never a byte-size computation. These caches
+# ARE np.save'd/open_memmap'd (128-byte header), so getsize() arithmetic is off by
+# 128 — and byte counts cannot distinguish 118 channels from 59 anyway, because
+# 59 * (2k) == 118 * k. Two vacuous byte-arithmetic preflights were already caught
+# in this task; do not reintroduce one.
+for cache, parquet in zip(sys.argv[1::2], sys.argv[2::2]):
+    shape = np.load(cache, mmap_mode='r').shape
+    assert len(shape) == 4 and shape[1:3] == (7, 7), f'{cache}: bad shape {shape}'
+    assert shape[-1] == 118, (
+        f'{cache} is {shape[-1]}-channel, not 118 (dual-CR): shape {shape}. '
+        f'Rebuild with scripts/convert_synth_cache_representation.py --mode dual')
+    rows = len(pd.read_parquet(parquet, columns=['split']))
+    assert shape[0] == rows, (
+        f'{cache} has {shape[0]:,} patches but {parquet} has {rows:,} rows; '
+        f'SyntheticPatchDataset asserts they match row-for-row')
+    print(f'  plag cache OK: {cache} {shape} vs {rows:,} parquet rows')
+EOF
+
 # Refuse to train on spectra we have not checked. Cheap next to a wasted GPU day.
 echo "=== spectra audit ==="
 $PYTHON scripts/audit_spectra_quality.py "$PARQUET" --fail_tile_over 5 || {
@@ -137,6 +201,10 @@ $PYTHON -u scripts/train.py \
     --mrral_parquets "$PARQUET" \
     --patch_cache_dir "$CACHE_DIR" \
     --weight_scheme level \
+    --synth_train_cache "$SYNTH_TRAIN" \
+    --synth_train_parquet "$SYNTH_TRAIN_ROWS" \
+    --synth_val_cache "$SYNTH_VAL" \
+    --synth_val_parquet "$SYNTH_VAL_ROWS" \
     --lr 5e-4 --encoder_lr_scale 0.001 \
     --epochs 150 --patience 40 --min_delta 0.0005 \
     --batch_size 256 \
