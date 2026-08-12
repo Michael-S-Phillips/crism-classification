@@ -156,6 +156,42 @@ the two block losses separately is how you would notice a cache written
 un-standardised, or CR_SCALES going stale relative to the transform. It does not
 change the optimisation.
 
+**CORRECTION 2026-08-12 — the sentence above ("a pooled MSE already weights them
+equally") is wrong as stated, and the diagnostic is what caught it.** Equal
+target *variance* does not produce equal *loss*. Measured on the completed
+pretrain (`spatial_mae_dualcr_denoising_256d_6l`, job 23548835, 200 epochs):
+
+| epoch | hull block | linear block | hull share of total |
+|---:|---:|---:|---:|
+| 1 | 136.09 | 23.77 | 85% |
+| 20 | 0.1649 | 0.0454 | 78% |
+| 100 | 0.0977 | 0.0172 | 85% |
+| 200 | 0.0846 | 0.0138 | 86% |
+
+The hull block carries **85–88% of the reconstruction loss throughout**, and the
+ratio *widens* from 5.7× to ~7×. So the residual objective is dominated by the
+59 channels that flatten alteration's arch — the opposite of the imbalance this
+section was written to prevent, and invisible without the per-block split.
+
+(The pooled-equals-average identity itself still holds exactly, as the same log
+confirms: (0.0846 + 0.0138)/2 = 0.0492, the reported total to four decimals. The
+2026-08-10 correction above stands.)
+
+**This is probably not a pathology, and the distinction matters.** The linear
+block reaches a *lower* absolute error, so it is fit well rather than neglected —
+a well-fit block contributes little gradient precisely because little error
+remains. Independent evidence that the model learns real linear-block structure:
+against the trivial baseline "predict each masked position as the mean of the
+visible positions in the same patch" (`scripts/plot_mae_reconstructions.py`), the
+MAE wins by **1.33× on the linear block against 1.14× on hull**, and by **1.60×
+on alteration** — its largest margin, in the block and class the design predicts.
+
+What it does mean: the pretrain's spare capacity goes to hull-CR, so if Task 8
+finds the dual representation underperforming, an obvious next lever is
+reweighting the two blocks in the loss — which the existing `n_channel_blocks`
+machinery already makes a one-line change, since the per-block losses are already
+computed. Do not do this pre-emptively; it would add a second variable.
+
 ## Held constant — exactly one variable
 
 | | value | why |
@@ -215,9 +251,23 @@ builds with `Errno 28`, so the target must be xdisk explicitly.
 
 ## Risks and open questions
 
-- **The MAE may still favour one channel** even after standardization, if the
-  denoising noise model interacts differently with a bounded vs unbounded
-  channel. Watch the per-channel losses; they should be comparable.
+- **RESOLVED 2026-08-12 — the MAE does favour one channel, and it is hull.**
+  This risk was written as "watch the per-channel losses; they should be
+  comparable." They are not: hull holds 85–88% of the loss for the whole run (see
+  the 2026-08-12 correction above). Not judged a pathology — the linear block
+  simply reaches a lower error — but the premise that standardisation alone
+  equalises the two blocks is retired. Block reweighting is the lever if Task 8
+  disappoints.
+- **The noise model had to be rescaled for the standardised representation, and
+  the pretrain log does not show it.** `CrismNoiseAugmentation`'s sigmas are
+  absolute and were estimated against hull-CR of std 0.0705; against standardised
+  dual data (std ≈ 1) they would have been 14× too weak, giving a nominally
+  denoising MAE with negligible corruption. Fixed in `a822a08` (scale by
+  `1/hull_std`, auto-detected from `n_bands == 118`, seam spike mirrored into the
+  linear block at band 74). **But `pretrain_spatial_mae_denoising.py` logs the
+  pre-scale CLI values** — job 23548835 printed `σ_gauss=0.0087` when the
+  effective value was ~0.1233 — so the log cannot be used to confirm the scaling
+  was active. Fix the log line to print effective sigmas.
 - **118 channels doubles patch memory.** At batch 256 that is ~11.6 MB/batch,
   which is not a constraint, but the labeled cache doubling to 64 GB is.
 - **Band 0 is corrupt in both channels.** The reader already masks I/F > 1.0 to
