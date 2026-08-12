@@ -88,7 +88,16 @@ def main() -> None:
     files: list[str] = []
     for p in args.paths:
         if os.path.isdir(p):
-            hits = sorted(glob.glob(os.path.join(p, 'global_patches_*.npy')))
+            # EXCLUDE the brightness sidecars. `global_patches_*.npy` also
+            # matches `global_patches_NNN_brightness.npy`, which is an (N, P, P)
+            # map with no channel axis at all -- so shape[-1] is the patch width,
+            # 7, and every sidecar was reported as "7 channels, expected 118".
+            # That false positive failed a completed, genuinely correct 4-hour
+            # build of 50 shards and killed the whole afterok chain (job
+            # 23538726, 2026-08-11: "100 file(s), 9,998,352 patches, 50 bad" --
+            # the 50 bad were exactly the 50 sidecars).
+            hits = sorted(f for f in glob.glob(os.path.join(p, 'global_patches_*.npy'))
+                          if not f.endswith('_brightness.npy'))
             if not hits:
                 raise SystemExit(f'no global_patches_*.npy under {p}')
             files += hits
@@ -134,7 +143,29 @@ def main() -> None:
                 f'level {exp_l:.2f} than the hull level {exp_h:.2f}, and linear '
                 f'p50 {l50:.2f} is nearer {exp_h:.2f}. Channels 0-58 must be hull.')
 
+        # Out-of-family statistics: partial corruption, which the exact-equality
+        # and level checks both miss. Standardisation divides each block by its
+        # own global std, so a correct block has std ~1.0 by construction; and
+        # hull-CR vs linear-CR of the same spectrum are related but far from
+        # collinear. Job 23538728 (2026-08-11) read its test split while a
+        # DUPLICATE concurrent job was still writing it and got std 6.684 with
+        # corr +0.969, against 0.99/+0.32 for train and val in the same run --
+        # and this check passed it, because np.allclose was false and the levels
+        # were unremarkable. Bounds are deliberately wide: a cache holding one
+        # spectrally narrow class legitimately runs low (0.75 measured on the
+        # MTRDR plag cache), so only a blown-up std is treated as corruption.
         corr = float(np.corrcoef(hull.ravel(), lin.ravel())[0, 1])
+        for lbl, block in (('hull', hull), ('linear', lin)):
+            if block.std() > 3.0:
+                problems.append(
+                    f'{lbl} std {block.std():.3f} exceeds 3.0; standardisation '
+                    f'targets ~1.0, so this block is not what the transform '
+                    f'produces (partial write? concurrent writer?)')
+        if corr > 0.95:
+            problems.append(
+                f'hull/linear correlation {corr:+.3f} is near-collinear; the two '
+                f'transforms should differ substantially (healthy: +0.28..+0.53)')
+
         status = 'FAIL' if problems else 'ok  '
         print(f'{status} {name}  n={len(arr):,}  '
               f'hull p50={h50:7.3f} std={hull.std():.3f}  '
