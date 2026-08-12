@@ -101,8 +101,14 @@ def main():
 
     run_name = args.run_name
     log.info(f"Run name: {run_name}")
-    log.info(f"σ_gauss={args.sigma_gauss}, σ_spike={args.sigma_spike}, "
-             f"σ_column={args.sigma_column}")
+    # "requested", not "σ_gauss=", on purpose: CrismNoiseAugmentation rescales
+    # these for the 118-channel dual representation, so the CLI values are NOT
+    # what the model corrupts with. The effective values are logged after the
+    # model is built, read back off the module. Job 23548835 logged 0.0087 here
+    # while corrupting at ~0.1233, which made the log useless for confirming the
+    # rescale was active.
+    log.info(f"σ requested (pre-scale): gauss={args.sigma_gauss}, "
+             f"spike={args.sigma_spike}, column={args.sigma_column}")
 
     # ── Data ──────────────────────────────────────────────────────────────
     shard_dir = cfg.get('global_patch_cache_dir')
@@ -147,6 +153,28 @@ def main():
         spike_center_band=args.spike_center_band,
         spike_fwhm_bands=args.spike_fwhm_bands,
     ).to(device)
+
+    # EFFECTIVE corruption, read back off the constructed module rather than
+    # recomputed here -- a recomputation could drift from what the model does.
+    # This is the line that tells you whether the dual rescale actually fired.
+    _na = model.noise_aug
+    _prof = _na._spike_profile
+    _bumps = [int(i) for i in torch.nonzero(_prof).flatten().tolist()]
+    log.info(
+        f"σ effective: gauss={_na.sigma_gauss:.5f}, spike={_na.sigma_spike:.5f}, "
+        f"column={_na.sigma_column:.5f}  "
+        f"(dual_continuum={_na.dual_continuum}, "
+        f"scale={_na.sigma_gauss / args.sigma_gauss:.3f}x)")
+    log.info(
+        f"1 µm seam spike: {len(_bumps)} non-zero bands"
+        + (f" spanning {_bumps[0]}–{_bumps[-1]}" if _bumps else "")
+        + (" — MIRRORED into both channel blocks" if _na.dual_continuum else ""))
+    if _na.dual_continuum and _na.sigma_gauss <= args.sigma_gauss:
+        raise SystemExit(
+            f"--n_bands {args.n_bands} detected as dual, but the effective "
+            f"σ_gauss ({_na.sigma_gauss}) was not scaled above the requested "
+            f"value ({args.sigma_gauss}). Corruption would be ~14x too weak, "
+            f"producing a nominally-denoising MAE that barely denoises.")
 
     # ── Optimizer & schedule ──────────────────────────────────────────────
     base_lr = 1.5e-4 * args.batch_size / 256
