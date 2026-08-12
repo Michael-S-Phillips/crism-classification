@@ -55,6 +55,35 @@ n_flat=$(find "$DATA_ROOT" -maxdepth 1 -name 't*mrral*.hdr' 2>/dev/null | wc -l)
 n_mc=$(find "$DATA_ROOT" -maxdepth 2 -path '*/mc*' -name 't*mrral*.hdr' 2>/dev/null | wc -l)
 echo "mrral tiles: flat=$n_flat, mc*/=$n_mc"
 
+# ── ONE BUILDER AT A TIME ────────────────────────────────────────────────────
+# This job was submitted twice by accident on 2026-08-11 (jobs 23538728 and
+# 23538734, 2.5 min apart) and both wrote the same np.memmap files concurrently.
+# The transform is deterministic, so both wrote identical bytes and the final
+# content survived -- but 23538728's own verification read the test split while
+# 23538734 was still writing it and measured std 6.684 / corr +0.969 against
+# ~0.99 / +0.32 for train and val. A training job reading at that moment would
+# have consumed it silently. Refuse to run rather than race.
+#
+# flock -n fails IMMEDIATELY rather than queueing: waiting behind a 12-hour
+# build inside a 12-hour allocation would just hit the walltime. The lock is
+# released when this shell exits, including on scancel or a crash.
+LOCKFILE="${DUAL_CACHE}.lock"
+mkdir -p "$(dirname "$LOCKFILE")"
+if command -v flock >/dev/null 2>&1; then
+    exec 9>"$LOCKFILE" || { echo "ERROR: cannot open $LOCKFILE"; exit 1; }
+    flock -n 9 || {
+        echo "ERROR: another instance of this job already holds $LOCKFILE."
+        echo "  Two concurrent builds write the same memmap files, and any reader"
+        echo "  in between sees a partially-written cache. Refusing to run."
+        echo "  Check: squeue -u \$USER -o '%.10i %.34j %.2t %.11M'"
+        exit 1; }
+    echo "holding build lock $LOCKFILE"
+else
+    echo "WARNING: flock not found — cannot guarantee a single builder."
+    echo "  Verify no other build_dualcr_labeled_cache job is running before trusting"
+    echo "  this cache: squeue -u \$USER"
+fi
+
 # Don't spend hours caching spectra we haven't checked.
 echo "=== auditing the parquet before caching ($(date)) ==="
 $PYTHON scripts/audit_spectra_quality.py "$PARQUET" --fail_tile_over 5 || {

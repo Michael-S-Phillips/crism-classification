@@ -73,6 +73,26 @@ if [ -n "${avail_gb:-}" ] && [ "$avail_gb" -lt 250 ]; then
     exit 1
 fi
 
+# ── ONE BUILDER AT A TIME ────────────────────────────────────────────────────
+# Same exposure as the labeled-cache job, where a duplicate submission on
+# 2026-08-11 had two jobs writing one set of files. flock -n fails immediately
+# rather than queueing behind a 4-hour build inside a 4-hour allocation; the lock
+# releases when this shell exits, including on scancel.
+LOCKFILE="${OUTPUT}.lock"
+mkdir -p "$(dirname "$LOCKFILE")"
+if command -v flock >/dev/null 2>&1; then
+    exec 9>"$LOCKFILE" || { echo "ERROR: cannot open $LOCKFILE"; exit 1; }
+    flock -n 9 || {
+        echo "ERROR: another instance of this job already holds $LOCKFILE."
+        echo "  Refusing to run: two builders writing one shard set can leave a"
+        echo "  reader observing a partially-written cache."
+        echo "  Check: squeue -u \$USER -o '%.10i %.34j %.2t %.11M'"
+        exit 1; }
+    echo "holding build lock $LOCKFILE"
+else
+    echo "WARNING: flock not found — cannot guarantee a single builder."
+fi
+
 echo "=== dual-CR global patch cache build start: $(date) ==="
 echo "    output: $OUTPUT  (118 channels)"
 
