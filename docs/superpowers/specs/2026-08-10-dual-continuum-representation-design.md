@@ -264,10 +264,15 @@ builds with `Errno 28`, so the target must be xdisk explicitly.
   dual data (std ≈ 1) they would have been 14× too weak, giving a nominally
   denoising MAE with negligible corruption. Fixed in `a822a08` (scale by
   `1/hull_std`, auto-detected from `n_bands == 118`, seam spike mirrored into the
-  linear block at band 74). **But `pretrain_spatial_mae_denoising.py` logs the
-  pre-scale CLI values** — job 23548835 printed `σ_gauss=0.0087` when the
-  effective value was ~0.1233 — so the log cannot be used to confirm the scaling
-  was active. Fix the log line to print effective sigmas.
+  linear block at band 74). `pretrain_spatial_mae_denoising.py` had logged only
+  the pre-scale CLI values — job 23548835 printed `σ_gauss=0.0087` when the
+  effective value was ~0.1233 — so its log could not confirm the scaling fired.
+  **RESOLVED `e983a2d`:** it now logs the effective sigmas read back off the
+  constructed module, the detected dual flag, the realised scale factor and the
+  seam-spike band span, and aborts if dual is detected without the scale.
+  Measured 59-band 0.00870 / 1.000× / spike 13–17; 118-band 0.12333 / **14.176×**
+  / spike 13–76 mirrored. Job 23548835 ran this same module, so the dual encoder
+  in use is confirmed a genuine denoising MAE.
 - **118 channels doubles patch memory.** At batch 256 that is ~11.6 MB/batch,
   which is not a constraint, but the labeled cache doubling to 64 GB is.
 - **Band 0 is corrupt in both channels.** The reader already masks I/F > 1.0 to
