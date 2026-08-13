@@ -1,8 +1,20 @@
-"""Is a checkpoint's val advantage real generalisation, or scene memorisation?
+"""Split a held-out set by scene overlap with training, and score each half.
 
-Motivating question (2026-08-12): the dual-CR arm leads the hull-CR arm by ~0.12
-val_mAP_core. Is that the 118-channel representation genuinely generalising, or
-is it exploiting a weaker invariance to fingerprint scenes it has already seen?
+Two uses, and the FIRST is the one that matters for publication:
+
+1. REPORTING (use --split test). `assign_unit_balanced_splits` holds out whole
+   geographic units, not whole scenes, so a reported test number is a blend of
+   pixels from unseen scenes and pixels from scenes the model trained on
+   elsewhere. Measured on mrral_pixels.parquet: 8 of 20 test tiles also appear in
+   train, covering 38.6% of test rows. Reporting the headline number ALONGSIDE
+   the scene-disjoint subset is both more defensible and more informative than
+   the headline alone -- and it is the first thing a remote-sensing reviewer will
+   ask about a pixel-level split.
+
+2. DIAGNOSIS (use --split val). The dual-CR arm leads the hull-CR arm by ~0.12
+   val_mAP_core. Is that genuine generalisation, or a weaker invariance
+   fingerprinting scenes it has already seen? Note val is also the early-stopping
+   metric, so it is not a clean holdout for reporting either way.
 
 The mechanism to worry about is specific. Linear-CR divides by a fitted LINE, so
 it removes level and slope but preserves broad curvature. Hull-CR divides by the
@@ -22,10 +34,10 @@ mrral_pixels.parquet: 8 of 83 tiles straddle train and val, and those account fo
 
 That gives a clean natural experiment, run here:
 
-    val_disjoint  val rows whose tile appears NOWHERE in train.
-                  No scene the model has seen. Honest generalisation.
-    val_shared    val rows whose tile ALSO appears in train, >0.25 deg away.
-                  Same scene, unseen location. Scene fingerprinting is available.
+    <split>_disjoint  rows whose tile appears NOWHERE in train. No scene the
+                      model has seen. The scene-generalisation number.
+    <split>_shared    rows whose tile ALSO appears in train, >0.25 deg away.
+                      Same scene, unseen location; fingerprinting available.
 
 Read the RESULT, not either number alone:
 
@@ -36,13 +48,12 @@ Read the RESULT, not either number alone:
                                             not reproduce it
   * advantage larger on val_disjoint     -> stronger result than val_mAP implies
 
-This is a post-hoc evaluation on finished checkpoints. It does not retrain
-anything, and it is not a substitute for the floor test -- that remains the
-arbiter, because its tiles are outside the training parquet entirely. This is the
-diagnostic that says WHY the floor test came out the way it did.
+This is a post-hoc evaluation on finished checkpoints; it retrains nothing. It is
+independent of the floor test, which serves a different purpose (a visual
+plausibility check on fixed tiles, read by eye rather than scored).
 
 Usage
-    # one checkpoint
+    # reported test numbers, headline + scene-disjoint (the default split)
     python scripts/eval_val_leakage_split.py --ckpt <ft_best.pt> \
         --parquet <mrral_pixels_7cls_handcore.parquet>
 
@@ -154,7 +165,11 @@ def evaluate(ckpt, cache_dir, df_val, is_disjoint, mrral_map, device, args, tag)
     print(f'    cache: {cache_dir}')
 
     ds = CRISMSpectralPatchDataset(
-        df_val, mrral_map, patch_size=7, cache_dir=cache_dir, split='val',
+        # args.split, NOT a literal: the cache file is named per split, so a
+        # hardcoded 'val' would load the wrong memmap for a test run. The
+        # byte-exact size guard would catch it, but only by luck of differing
+        # row counts -- name it correctly rather than rely on that.
+        df_val, mrral_map, patch_size=7, cache_dir=cache_dir, split=args.split,
         continuum_removed=True, cache_is_cr=True,
         return_brightness=baux, dual_cr=dual)
     y_true, y_score = score(model, ds, baux, device, args.batch_size, args.workers)
@@ -188,6 +203,10 @@ def main() -> None:
     ap.add_argument('--ckpt_b', default=None, help='second arm, evaluated identically')
     ap.add_argument('--patch_cache_dir_b', default=None)
     ap.add_argument('--parquet', default=None)
+    ap.add_argument('--split', default='test', choices=('test', 'val'),
+                    help="held-out split to score. Default 'test': that is what "
+                         "gets reported, and val doubles as the early-stopping "
+                         "metric so it is not a clean holdout.")
     ap.add_argument('--batch_size', type=int, default=512)
     ap.add_argument('--workers', type=int, default=4)
     ap.add_argument('--data_root', default=None)
@@ -203,24 +222,25 @@ def main() -> None:
         if col not in df.columns:
             raise SystemExit(f'{parquet} has no {col!r} column')
     train_tiles = set(df.loc[df['split'] == 'train', 'tile_id'].unique())
-    df_val = df[df['split'] == 'val'].reset_index(drop=True)
+    df_val = df[df['split'] == args.split].reset_index(drop=True)
     if not len(df_val):
-        raise SystemExit(f'{parquet} has no val rows')
+        raise SystemExit(f'{parquet} has no {args.split} rows')
     is_disjoint = ~df_val['tile_id'].isin(train_tiles).to_numpy()
 
     print(f'parquet: {parquet}')
-    print(f'val rows: {len(df_val):,}   train tiles: {len(train_tiles)}')
-    print(f'  val_disjoint (tile unseen in train): {is_disjoint.sum():,} '
+    print(f'split: {args.split}   rows: {len(df_val):,}   '
+          f'train tiles: {len(train_tiles)}')
+    print(f'  {args.split}_disjoint (tile unseen in train): {is_disjoint.sum():,} '
           f'({100 * is_disjoint.mean():.1f}%)')
-    print(f'  val_shared   (tile also in train):   {(~is_disjoint).sum():,} '
-          f'({100 * (~is_disjoint).mean():.1f}%)')
+    print(f'  {args.split}_shared   (tile also in train):   '
+          f'{(~is_disjoint).sum():,} ({100 * (~is_disjoint).mean():.1f}%)')
     if is_disjoint.sum() == 0:
         raise SystemExit(
-            'Every val tile also appears in train, so there is no disjoint '
-            'subset and this diagnostic cannot separate the two hypotheses.')
+            f'Every {args.split} tile also appears in train, so there is no '
+            f'scene-disjoint subset to report.')
     if (~is_disjoint).sum() == 0:
-        print('  NOTE: no shared subset — val is already fully tile-disjoint, so '
-              'scene fingerprinting was never available. Nothing to rule out.')
+        print(f'  NOTE: no shared subset — {args.split} is already fully '
+              f'scene-disjoint, so the headline number needs no qualification.')
 
     mrral_map = build_mrral_map(root)
     cache_a = args.patch_cache_dir or cfg.get('patch_cache_dir')
@@ -233,11 +253,12 @@ def main() -> None:
                             device, args, 'ARM B')
 
     print('\n' + '=' * 70)
+    print(f'(subset labels below read as {args.split}_all / _disjoint / _shared)')
     print(f'{"subset":<16}{"n":>10}{"A mAP_core":>13}'
           + (f'{"B mAP_core":>13}{"A − B":>10}' if res_b else ''))
     print('-' * 70)
     gaps = {}
-    for subset in ('val_all', 'val_disjoint', 'val_shared'):
+    for subset in ('val_all', 'val_disjoint', 'val_shared'):   # keys are generic
         a = res_a.get(subset)
         if a is None:
             continue
@@ -285,8 +306,6 @@ def main() -> None:
                   'suggests, not weaker.')
         print('\nPer-class positives differ between subsets, so a class with few '
               'disjoint positives (see pos(dj)) carries little weight above.')
-        print('The floor test remains the arbiter: its tiles are outside the '
-              'training parquet entirely.')
 
 
 if __name__ == '__main__':
