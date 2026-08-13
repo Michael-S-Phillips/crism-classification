@@ -77,6 +77,17 @@ SUMMARY="${REPORT_DIR}/summary.md"
     echo "- checkpoint: \`${CKPT}\`"
     echo "- date: $(date -u +%Y-%m-%dT%H:%MZ)"
     echo "- tiles: nili t1249 t1250 t1321 t1322 | argyre t0434 t0435 | mc11 t1086 t1087"
+    # A baseline scorer drops BASELINE_CAVEAT.txt beside its probs; the
+    # supervised classifier never does, so a normal model run emits nothing
+    # here and this summary stays byte-identical. It matters because summary.md
+    # is the only artifact a human opens: without the caveat, a baseline whose
+    # scores are calibrated on the labeled-pixel population reads as a
+    # like-for-like comparison against a model scored over whole tiles.
+    CAVEAT_FILE=$(ls -1 "${PROBS_ROOT}"/*/BASELINE_CAVEAT.txt 2>/dev/null | head -1 || true)
+    if [ -n "$CAVEAT_FILE" ]; then
+        echo
+        sed 's/^/> /' "$CAVEAT_FILE"
+    fi
     for region in nili argyre mc11; do
         echo
         echo "## ${region} — per-mineral × threshold polygon counts"

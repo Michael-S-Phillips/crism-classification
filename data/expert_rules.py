@@ -6,7 +6,14 @@ calibrated (scripts/fit_expert_rules.py). Two kinds of gate:
   VETO (hard)      artifacts and genuinely incompatible conditions only --
                    ice, saturation, non-physical values, dust for plagioclase.
   DOMINANCE (soft) cross-responding index pairs raise the TIER of the dominant
-                   label without zeroing the other.
+                   label without zeroing the other. The demotion is one RUNG
+                   STEP down the loser's own ladder, floored at the lowest
+                   rung -- never a multiplicative factor. A factor is a
+                   de-facto exclusive gate at the contract boundary: the
+                   vectorizer selects with `>= 0.50`, so halving a ladder
+                   precision (<= 1.0) drops every non-dominant pixel out of
+                   EVERY polygon layer, which is the exclusivity this design
+                   exists to avoid, merely relocated downstream.
 
 The vocabulary is MULTI-LABEL: a pixel can be olivine AND hcp. Exclusive gates
 would fight the label structure and silently suppress real assemblages, so there
@@ -120,6 +127,30 @@ def _tier_score(value: np.ndarray, fires: np.ndarray, ladder) -> np.ndarray:
     return out
 
 
+def _demote_one_rung(score: np.ndarray, ladder) -> np.ndarray:
+    """Step a tier score down to the next-LOWER rung of its own ladder.
+
+    Floored at the lowest rung: a firing label must keep a real ladder
+    precision, because the vectorizer selects polygons with `>= 0.50` and a
+    score pushed below the lowest rung would vanish from every threshold layer
+    instead of merely ranking second.
+
+    Distinct precisions only: adjacent rungs can share a precision, and
+    stepping by rung INDEX would then be a no-op that leaves the demoted label
+    tied with the dominant one.
+    """
+    precisions = sorted({float(p) for _t, p in (ladder or [])})
+    if not precisions:
+        return score
+    out = score.copy()
+    for i, p in enumerate(precisions):
+        # Compare against the ORIGINAL score, never the partially rewritten
+        # `out`, so a demotion cannot cascade down several rungs at once.
+        out = np.where(score == np.float32(p),
+                       np.float32(precisions[max(i - 1, 0)]), out)
+    return out
+
+
 def evaluate_rules(cube: np.ndarray, names: list[str], config: dict
                    ) -> dict[str, np.ndarray]:
     """Score every class of `config['vocab']` on an (H, W, 60) mrrsu cube.
@@ -189,12 +220,14 @@ def evaluate_rules(cube: np.ndarray, names: list[str], config: dict
         # ── mafic minerals: own evidence only, no exclusivity ────────────────
         score = _tier_score(v, fires, c['ladder'])
         # Dominance raises the tier; it never gates. A basalt with both LCP and
-        # HCP must receive both labels.
+        # HCP must receive both labels -- and both must survive the vectorizer's
+        # lowest threshold, so the loser steps ONE rung down its own ladder and
+        # no further (see _demote_one_rung).
         dom = c.get('dominance_over')
         if dom is not None:
             other = np.nan_to_num(_p(cube, names, dom), nan=-np.inf)
-            score = np.where(fires & (v > other), score,
-                             np.where(fires, score * np.float32(0.5), score))
+            demoted = _demote_one_rung(score, c['ladder'])
+            score = np.where(fires & (v <= other), demoted, score)
         out[cls] = score.astype(np.float32)
 
     out['junk'] = is_junk.astype(np.float32)

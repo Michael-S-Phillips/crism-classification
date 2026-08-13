@@ -569,6 +569,150 @@ def test_hook_lets_a_baseline_replace_the_classifier_and_still_gets_ckpt():
                    '--ckpt CKPT_PATH --save_probs NPZ --no_plot')
 
 
+# ── the optimism caveat has to reach summary.md ──────────────────────────────
+#
+# `test_rules_scoring_prints_the_calibration_caveat` pins stdout, and stdout is
+# not an artifact: floor_test.sh builds summary.md from the VECTORIZE log only,
+# so a caveat on the classify stream reaches nobody. These tests cross that
+# boundary -- the sentinel the scorer writes, and the shipped shell fragment
+# that has to pick it up -- because that is where the caveat was being lost.
+
+def _write_summary_inputs(root, tag='t', caveat=None):
+    """Minimal floor-test output tree: a vectorize log per region, and
+    optionally the baseline caveat sentinel beside the probs."""
+    report_dir = os.path.join(str(root), 'reports', 'floor_tests', tag)
+    probs_root = os.path.join(str(root), 'probs', tag)
+    for region in ('nili', 'argyre', 'mc11'):
+        os.makedirs(os.path.join(report_dir, region), exist_ok=True)
+        os.makedirs(os.path.join(probs_root, region), exist_ok=True)
+        with open(os.path.join(report_dir, f'{region}_vectorize.log'), 'w') as f:
+            f.write('noise\nPer-mineral × threshold polygon counts:\nolivine 3\n')
+        # the summary block lists gpkg sizes through `ls ... | awk`, which is a
+        # failing pipeline under `set -o pipefail` when the glob matches nothing
+        with open(os.path.join(report_dir, region, 'olivine.gpkg'), 'w') as f:
+            f.write('x')
+    if caveat is not None:
+        with open(os.path.join(probs_root, 'nili', 'BASELINE_CAVEAT.txt'),
+                  'w') as f:
+            f.write(caveat + '\n')
+    return report_dir, probs_root
+
+
+def _summary_fragment(strip_caveat=False):
+    """The summary-report block of floor_test.sh, verbatim.
+
+    Executing the shipped block is the point: a test that merely grepped the
+    script for a string would pass on a block that never runs, which is the
+    class of bug being fixed here. `strip_caveat` reconstructs the pre-change
+    block so back-compatibility can be compared byte for byte.
+    """
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    lines = open(os.path.join(here, 'scripts', 'floor_test.sh')).read().splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith('# ── Summary report'))
+    end = next(i for i, ln in enumerate(lines) if ln.startswith('} > "$SUMMARY"'))
+    frag = lines[start:end + 1]
+    if strip_caveat:
+        # exactly the added lines: the CAVEAT_FILE assignment through the `fi`
+        # that closes its `if`. Comments are left alone -- they produce no
+        # output, so their presence cannot affect a byte comparison.
+        head = next((i for i, ln in enumerate(frag) if 'CAVEAT_FILE=$(' in ln),
+                    None)
+        if head is not None:
+            tail = next(i for i in range(head, len(frag))
+                        if frag[i].strip() == 'fi')
+            frag = frag[:head] + frag[tail + 1:]
+    return '\n'.join(frag)
+
+
+def _run_summary_fragment(root, report_dir, probs_root, strip_caveat=False):
+    import shlex
+    import subprocess
+    q = lambda p: shlex.quote(str(p))
+    script = ('set -euo pipefail\n'
+              f'PROJ={q(root)}\nTAG=t\nCKPT=CKPT_PATH\n'
+              f'REPORT_DIR={q(report_dir)}\nPROBS_ROOT={q(probs_root)}\n'
+              + _summary_fragment(strip_caveat=strip_caveat))
+    subprocess.run(['bash', '-c', script], check=True, capture_output=True,
+                   text=True)
+    return open(os.path.join(report_dir, 'summary.md')).read()
+
+
+def test_caveat_reaches_summary_md_for_a_baseline_run(tmp_path):
+    """summary.md is the one artifact a human opens. A baseline calibrated on
+    the labeled-pixel population reads systematically optimistic against a
+    model scored over whole tiles, and someone comparing the tables without
+    that context over-credits the baseline."""
+    from scripts.classify_tile_baseline import RULES_CAVEAT
+    report_dir, probs_root = _write_summary_inputs(tmp_path, caveat=RULES_CAVEAT)
+    summary = _run_summary_fragment(tmp_path, report_dir, probs_root)
+    assert 'OPTIMISTIC' in summary, (
+        f'the caveat never reached summary.md:\n{summary}')
+    assert 'LABELED-PIXEL' in summary
+    # the whole sentence, not a fragment of it
+    assert RULES_CAVEAT.split(': ', 1)[1][:60] in summary.replace('> ', '')
+
+
+def test_summary_md_carries_no_caveat_for_a_normal_model_run(tmp_path):
+    """The supervised classifier writes no sentinel, so nothing may appear --
+    a caveat printed on every run is a caveat nobody reads."""
+    report_dir, probs_root = _write_summary_inputs(tmp_path, caveat=None)
+    summary = _run_summary_fragment(tmp_path, report_dir, probs_root)
+    assert 'CAVEAT' not in summary, f'caveat leaked into a model run:\n{summary}'
+    assert 'OPTIMISTIC' not in summary
+
+
+def test_model_run_summary_is_byte_identical_to_the_pre_change_script(tmp_path):
+    """Back-compatibility, checked against the reconstructed pre-change block
+    rather than asserted. Every existing floor test must keep producing the
+    same file."""
+    report_dir, probs_root = _write_summary_inputs(tmp_path, caveat=None)
+    new = _run_summary_fragment(tmp_path, report_dir, probs_root)
+    old = _run_summary_fragment(tmp_path, report_dir, probs_root,
+                                strip_caveat=True)
+    # the date line is minute-resolution and the two runs can straddle a minute
+    strip = lambda s: '\n'.join(l for l in s.splitlines()
+                                if not l.startswith('- date:'))
+    assert strip(new) == strip(old), (
+        'the summary changed for a run with no baseline involved')
+
+
+def test_baseline_scorer_writes_the_caveat_beside_the_probs(monkeypatch,
+                                                            tmp_path):
+    """The producing half of the contract: the sentinel must land in the probs
+    directory floor_test.sh globs, under the name it globs for."""
+    import scripts.classify_tile_baseline as ctb
+
+    _patch_tile_io(monkeypatch, np.ones((H, W), bool), _cube())
+    cfg_path = tmp_path / 'rules.json'
+    cfg_path.write_text(json.dumps(_rules_config()))
+    probs_dir = tmp_path / 'floor_test_tag' / 'nili'
+    probs_dir.mkdir(parents=True)   # _patch_tile_io stubs os.path.exists
+    npz = probs_dir / 't1250_probs.npz'
+    monkeypatch.setattr('sys.argv', [
+        'classify_tile_baseline.py',
+        '--tile', '/nonexistent/t1250_mrral_00n000_0327_4.img',
+        '--baseline', str(cfg_path), '--model', 'rules',
+        '--save_probs', str(npz), '--no_plot'])
+    ctb.main()
+
+    sentinel = probs_dir / ctb.CAVEAT_FILENAME
+    assert sentinel.exists(), (
+        f'no {ctb.CAVEAT_FILENAME} beside the probs; floor_test.sh globs '
+        f'"$PROBS_ROOT"/*/{ctb.CAVEAT_FILENAME}')
+    assert 'OPTIMISTIC' in sentinel.read_text()
+
+
+def test_every_baseline_model_carries_a_caveat_not_only_the_rules():
+    """rf/histgb are fitted on the same labeled-pixel population, so they are
+    optimistic for the same reason; a caveat only on the rules path would let
+    the other two through uncaveated."""
+    from scripts.classify_tile_baseline import caveat_text
+    for model in ('rules', 'rf', 'histgb'):
+        text = caveat_text(model)
+        assert 'OPTIMISTIC' in text and 'LABELED-PIXEL' in text.upper(), (
+            f'{model} has no usable caveat: {text!r}')
+
+
 def test_floor_test_hook_is_the_only_copy_of_the_vectorization():
     """A forked floor_test / vectorizer would drift and silently stop being the
     same comparison."""

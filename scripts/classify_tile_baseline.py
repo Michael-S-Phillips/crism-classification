@@ -49,6 +49,40 @@ RULES_CAVEAT = (
     'whole tile\'s. Compared at 0.5/0.9/0.99 against a model scored over whole '
     'tiles, the rule baseline reads systematically OPTIMISTIC.')
 
+ML_CAVEAT = (
+    'CAVEAT: this baseline was fitted and calibrated on the LABELED-PIXEL '
+    'population, whose positive base rate is far higher than a whole tile\'s. '
+    'Compared at 0.5/0.9/0.99 against a model scored over whole tiles, the '
+    'baseline reads systematically OPTIMISTIC.')
+
+# Sentinel dropped next to the probs npz. stdout is not an artifact: floor_test.sh
+# builds summary.md from the VECTORIZE log only, so a caveat printed here never
+# reaches the one file a human opens, and the summary tables then read as a
+# like-for-like comparison against a deep model when they are not. A file beside
+# the probs travels with them and needs no change to the classify plumbing.
+CAVEAT_FILENAME = 'BASELINE_CAVEAT.txt'
+
+
+def caveat_text(model: str) -> str:
+    """The optimism caveat for `model`. Every baseline this script can produce
+    is calibrated on the labeled-pixel population, so every one of them carries
+    a caveat; only the wording differs."""
+    return RULES_CAVEAT if model == 'rules' else ML_CAVEAT
+
+
+def write_caveat(save_probs: str, model: str) -> str:
+    """Drop the caveat beside the probs npz and return its path.
+
+    Written unconditionally for a baseline run, and only ever by this script --
+    so floor_test.sh can include it when present and stay byte-identical for a
+    normal model run, which never creates it.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(save_probs)),
+                        CAVEAT_FILENAME)
+    with open(path, 'w') as f:
+        f.write(caveat_text(model) + '\n')
+    return path
+
 
 def assemble_npz_payload(probs, valid_mask, transform_arr, crs_wkt,
                          class_names) -> dict:
@@ -240,7 +274,9 @@ def main() -> None:
     out_dir = os.path.dirname(os.path.abspath(args.save_probs))
     os.makedirs(out_dir, exist_ok=True)
     np.savez_compressed(args.save_probs, **payload)
+    caveat_path = write_caveat(args.save_probs, args.model)
     print(f'wrote {args.save_probs}')
+    print(f'wrote {caveat_path}')
 
 
 if __name__ == '__main__':

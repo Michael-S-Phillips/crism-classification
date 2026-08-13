@@ -9,7 +9,14 @@ import copy
 import numpy as np
 import pytest
 
-from data.expert_rules import CLASSES_PYX, evaluate_rules, DEFAULT_RULES
+from data.expert_rules import (CLASSES_PYX, DEFAULT_RULES, _demote_one_rung,
+                               evaluate_rules)
+# The consumer of these scores, imported so the coupling is real: a change to
+# the vectorizer's threshold ladder must be able to break these tests.
+from scripts.vectorize_per_mineral_thresholds_nili_6cls import (
+    UNIFORM_THRESHOLDS)
+
+LOWEST_LAYER = min(UNIFORM_THRESHOLDS)   # 0.50 — the lowest polygon layer
 
 NAMES = ['R770','RBR','BD530_2','SH600_2','SH770','BD640_2','BD860_2','BD920_2',
          'RPEAK1','BDI1000VIS','R440','IRR1','R530','R600','BDI1000IR','OLINDEX3',
@@ -455,6 +462,166 @@ def test_alteration_group_strength_is_the_weakest_required_parameter():
         'alteration scored the rung of its STRONGEST parameter, not its '
         f"weakest: got {out['alteration'][0, 0]}, expected 0.5 for min(0.30, "
         '0.30, 0.08)')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The dominance demotion, tested at the CONTRACT BOUNDARY it actually crosses.
+#
+# The scores leave this module and are read by
+# scripts/vectorize_per_mineral_thresholds_nili_6cls.py, which selects pixels
+# with `>= threshold` over UNIFORM_THRESHOLDS. A demotion that leaves the loser
+# below min(UNIFORM_THRESHOLDS) is an exclusive gate in every way that matters:
+# the label exists in the npz and appears in NO polygon layer at ANY threshold.
+# A unit assertion of `score > 0` cannot see that, which is why these tests
+# assert against the vectorizer's own threshold list.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _cfg_ladder_at_the_vectorizer_floor():
+    """Config whose lowest rung sits exactly at the vectorizer's lowest
+    threshold — the tightest case for the survival invariant."""
+    c = _cfg()
+    for cls in ('olivine', 'lcp', 'hcp'):
+        c['classes'][cls]['ladder'] = [[0.05, LOWEST_LAYER], [0.10, 0.9]]
+    return c
+
+
+def test_non_dominant_pyroxene_survives_the_vectorizers_lowest_threshold():
+    """THE regression. A multiplicative demotion (score * 0.5) puts a
+    non-dominant pixel at 0.99 * 0.5 = 0.495 < 0.50, so it is selected by NO
+    threshold layer the vectorizer builds — the exclusivity this vocabulary
+    forbids, relocated from the rule logic to the contract boundary. The
+    demotion must be a RUNG STEP, floored at the lowest rung, so a firing
+    label always keeps a real ladder precision."""
+    cfg = _cfg_ladder_at_the_vectorizer_floor()
+    cube = _blank(2)
+    for i in (0, 1):
+        _set(cube, 'R770', 0.2, i)
+    _set(cube, 'LCPINDEX2', 0.20, 0)   # both on the TOP rung
+    _set(cube, 'HCPINDEX2', 0.12, 0)
+    _set(cube, 'LCPINDEX2', 0.06, 1)   # both on the LOWEST rung
+    _set(cube, 'HCPINDEX2', 0.06, 1)
+    out = evaluate_rules(cube, NAMES, cfg)
+
+    for cls in ('lcp', 'hcp'):
+        s = out[cls]
+        firing = s > 0
+        assert firing.any(), f'{cls} did not fire at all'
+        assert (s[firing] >= LOWEST_LAYER).all(), (
+            f'{cls} scores {s[firing]} fall below the vectorizer\'s lowest '
+            f'threshold {LOWEST_LAYER}: the label is emitted into the npz and '
+            f'then appears in no polygon layer at any threshold')
+        # what the vectorizer literally does: (prob >= threshold) & valid
+        assert (s >= LOWEST_LAYER).sum() == firing.sum(), (
+            f'{cls}: a firing pixel is dropped by the lowest polygon layer')
+
+
+def test_non_dominant_pyroxene_survives_at_every_ladder_position():
+    """The invariant is not special to one rung: whatever rung a firing,
+    non-dominant label lands on, it must still clear the lowest ladder
+    precision after demotion."""
+    cfg = _cfg_ladder_at_the_vectorizer_floor()
+    lowest_precision = min(p for _t, p in cfg['classes']['hcp']['ladder'])
+    for hcp_val in (0.05, 0.06, 0.10, 0.12, 0.30):
+        cube = _blank()
+        _set(cube, 'R770', 0.2)
+        _set(cube, 'LCPINDEX2', 0.40)      # always dominant
+        _set(cube, 'HCPINDEX2', hcp_val)
+        s = float(evaluate_rules(cube, NAMES, cfg)['hcp'][0, 0])
+        assert s >= lowest_precision, (
+            f'HCPINDEX2={hcp_val} demoted to {s}, below the lowest ladder '
+            f'precision {lowest_precision}')
+
+
+def test_dominance_still_strictly_outscores_on_the_same_rung():
+    """Ordering is the whole point of the modifier: demoting by a rung must
+    not become a no-op. Both indices clear the same top rung here, so the two
+    scores are equal unless the demotion actually applies."""
+    cube = _blank()
+    _set(cube, 'LCPINDEX2', 0.12)
+    _set(cube, 'HCPINDEX2', 0.11)   # same (top) rung as LCP
+    _set(cube, 'R770', 0.2)
+    out = evaluate_rules(cube, NAMES, _cfg_ladder_at_the_vectorizer_floor())
+    assert out['lcp'][0, 0] > out['hcp'][0, 0], (
+        'dominance did not demote the weaker pyroxene: '
+        f"{out['lcp'][0, 0]} / {out['hcp'][0, 0]} on the same rung")
+
+
+def test_both_pyroxenes_still_fire_when_both_indices_are_high():
+    """The multi-label guarantee, restated against the demotion: raising the
+    dominant label must never remove the other one."""
+    cube = _blank()
+    _set(cube, 'LCPINDEX2', 0.30)
+    _set(cube, 'HCPINDEX2', 0.25)
+    _set(cube, 'R770', 0.2)
+    out = evaluate_rules(cube, NAMES, _cfg_ladder_at_the_vectorizer_floor())
+    assert out['lcp'][0, 0] > 0 and out['hcp'][0, 0] > 0, (
+        'a co-occurring pyroxene pixel emitted only one label')
+    assert out['bland'][0, 0] == 0
+
+
+def test_demotion_steps_exactly_one_rung_not_to_the_bottom():
+    """"Floored at the lowest rung" must not collapse to "always the lowest
+    rung": a three-rung ladder demoting from the top must land on the MIDDLE
+    rung, or the ordering information the ladder carries is thrown away."""
+    cfg = _cfg()
+    cfg['classes']['lcp']['ladder'] = [[0.05, 0.5], [0.10, 0.7], [0.20, 0.9]]
+    cfg['classes']['hcp']['ladder'] = [[0.05, 0.5], [0.10, 0.7], [0.20, 0.9]]
+    cube = _blank()
+    _set(cube, 'LCPINDEX2', 0.40)
+    _set(cube, 'HCPINDEX2', 0.30)   # top rung, non-dominant
+    _set(cube, 'R770', 0.2)
+    out = evaluate_rules(cube, NAMES, cfg)
+    assert out['lcp'][0, 0] == pytest.approx(0.9)
+    assert out['hcp'][0, 0] == pytest.approx(0.7), (
+        'demotion did not step exactly one rung: got '
+        f"{out['hcp'][0, 0]}, expected the 0.7 middle rung")
+
+
+def test_demotion_is_not_a_no_op_when_adjacent_rungs_share_a_precision():
+    """Ladder precisions are empirical and repeat. Stepping by rung INDEX
+    would demote 0.9 -> 0.9 here and leave the two pyroxenes tied."""
+    cfg = _cfg()
+    ladder = [[0.05, 0.5], [0.10, 0.9], [0.20, 0.9]]
+    cfg['classes']['lcp']['ladder'] = list(ladder)
+    cfg['classes']['hcp']['ladder'] = list(ladder)
+    cube = _blank()
+    _set(cube, 'LCPINDEX2', 0.40)
+    _set(cube, 'HCPINDEX2', 0.30)
+    _set(cube, 'R770', 0.2)
+    out = evaluate_rules(cube, NAMES, cfg)
+    assert out['hcp'][0, 0] == pytest.approx(0.5), (
+        'repeated precisions made the demotion a no-op: got '
+        f"{out['hcp'][0, 0]}")
+    assert out['lcp'][0, 0] > out['hcp'][0, 0]
+
+
+def test_pyx_is_unaffected_by_the_dominance_demotion():
+    """The merged-pyroxene vocabulary has no dominance term, so nothing in
+    this change may touch it: a both-high pixel keeps the full top rung."""
+    cfg = _cfg_pyx()
+    cfg['classes']['pyx']['ladder'] = [[0.05, LOWEST_LAYER], [0.10, 0.9]]
+    both = _blank()
+    _set(both, 'LCPINDEX2', 0.20)
+    _set(both, 'HCPINDEX2', 0.20)
+    _set(both, 'R770', 0.2)
+    one = _blank()
+    _set(one, 'LCPINDEX2', 0.20)
+    _set(one, 'R770', 0.2)
+    a = evaluate_rules(both, NAMES, cfg)['pyx'][0, 0]
+    b = evaluate_rules(one, NAMES, cfg)['pyx'][0, 0]
+    assert a == pytest.approx(0.9), f'pyx was demoted to {a}'
+    assert a == b
+    assert a >= LOWEST_LAYER
+    assert 'dominance_over' not in DEFAULT_RULES['classes']['pyx']
+
+
+def test_demote_one_rung_leaves_a_non_firing_zero_alone():
+    """The demotion is applied under `fires`; a 0.0 (no mineral) must stay 0.0
+    so the bland residual is unchanged."""
+    out = _demote_one_rung(np.array([[0.0, 0.9]], dtype=np.float32),
+                           [[0.05, 0.5], [0.10, 0.9]])
+    assert out[0, 0] == 0.0
+    assert out[0, 1] == pytest.approx(0.5)
 
 
 def test_unknown_parameter_name_raises_instead_of_scoring_zero():
