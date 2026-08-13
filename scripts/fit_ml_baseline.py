@@ -43,8 +43,10 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Identity/bookkeeping columns carried by the Task-2 sidecar and the labeled
-# parquet; everything else is a real mrrsu parameter name.
-KEY_COLS = ('tile_id', 'pixel_row', 'pixel_col', 'split')
+# parquet; everything else is a real mrrsu parameter name. `smooth` is a
+# provenance flag (Task 1), not a parameter -- it must never be fed to the
+# model as a feature.
+KEY_COLS = ('tile_id', 'pixel_row', 'pixel_col', 'split', 'smooth')
 
 
 def fit_models(X: np.ndarray, Y: np.ndarray, seed: int = 0) -> dict:
@@ -140,10 +142,17 @@ def fit_from_frames(feat: pd.DataFrame, lab: pd.DataFrame, vocab: list[str],
     Train on the TRAIN split only: fitting on val or test is leakage the
     floor test exists to rule out, and it leaves no trace in the artifact.
 
-    Returns ``{'models': fit_models(...), 'feature_cols': [...], 'vocab': [...]}``
-    -- `feature_cols` is the exact column order X was fitted on, and `vocab`
-    is the subset of the requested vocabulary actually present in `lab`
-    (same order).
+    Returns ``{'models': fit_models(...), 'feature_cols': [...], 'vocab': [...],
+    'smooth': bool}`` -- `feature_cols` is the exact column order X was fitted
+    on, `vocab` is the subset of the requested vocabulary actually present in
+    `lab` (same order), and `smooth` is the constant provenance flag Task 1
+    stamped onto every row of the features parquet: whether the 7x7 nan-aware
+    mean was applied before these parameters were sampled. It is read here
+    (never guessed) so it can be frozen into meta.json and checked against
+    ``--smooth`` at inference time -- fitting on smoothed features and
+    scoring unsmoothed (or vice versa) feeds the model a different feature
+    distribution than it was trained on, with no error anywhere else to catch
+    it.
     """
     if len(feat) != len(lab):
         raise ValueError(
@@ -151,6 +160,20 @@ def fit_from_frames(feat: pd.DataFrame, lab: pd.DataFrame, vocab: list[str],
             f'sidecar is not aligned with the labels')
     feat = feat.reset_index(drop=True)
     lab = lab.reset_index(drop=True)
+    if 'smooth' not in feat.columns:
+        raise ValueError(
+            'the features parquet has no "smooth" column -- re-run '
+            'scripts/extract_mrrsu_features.py (the version that records '
+            'smoothing provenance) before fitting; refusing to guess whether '
+            'these features were smoothed, since fitting on the wrong '
+            'assumption silently mismatches training and scoring')
+    smooth_vals = feat['smooth'].unique()
+    if len(smooth_vals) != 1:
+        raise ValueError(
+            f'"smooth" column is not constant across the features parquet: '
+            f'{list(smooth_vals)} -- it should be a single extraction run\'s '
+            f'choice, not a mixture')
+    smooth = bool(smooth_vals[0])
     if 'split' not in lab.columns:
         raise ValueError('the label frame has no "split" column; refusing '
                          'to fit on an unknown mixture of splits')
@@ -164,7 +187,8 @@ def fit_from_frames(feat: pd.DataFrame, lab: pd.DataFrame, vocab: list[str],
     Y = (lab.loc[mask, present].to_numpy(float) > 0.4).astype(int)
 
     models = fit_models(X, Y, seed=seed)
-    return {'models': models, 'feature_cols': feature_cols, 'vocab': present}
+    return {'models': models, 'feature_cols': feature_cols, 'vocab': present,
+           'smooth': smooth}
 
 
 def main() -> None:
@@ -203,6 +227,7 @@ def main() -> None:
         'feature_cols': out['feature_cols'],
         'seed': args.seed,
         'models': ['rf', 'histgb'],
+        'smooth': out['smooth'],
     }
     with open(os.path.join(args.out_dir, 'meta.json'), 'w') as f:
         json.dump(meta, f, indent=2)

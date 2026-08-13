@@ -12,7 +12,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from scripts.extract_mrrsu_features import extract_features, _smooth_nanmean
+from scripts.extract_mrrsu_features import (build_result, extract_features,
+                                             _smooth_nanmean)
 
 
 class FakeCube:
@@ -163,3 +164,45 @@ def test_smooth_true_produces_different_values_than_smooth_false():
     smoothed2 = extract_features(df2, {'t0001': 'x.img'}, smooth=True,
                                  reader=GradientCube().read)
     assert raw2['B0'].iloc[0] != smoothed2['B0'].iloc[0]
+
+
+# ── smoothing provenance ─────────────────────────────────────────────────────
+#
+# Nothing downstream records which of --smooth/no-smooth extracted a given
+# sidecar parquet. Training on smoothed features and scoring unsmoothed (or
+# vice versa) feeds the classifier a different feature distribution than it
+# was fitted on -- wrong predictions, plausible maps, no error anywhere. This
+# is the same bug class that already hit the MTRDR plagioclase caches (raw
+# reflectance served into a continuum-removed run) and a CR patch cache served
+# as raw. `build_result` is the single place the constant `smooth` column is
+# attached to the output parquet, so provenance travels with the artifact
+# instead of living only in a CLI flag nobody re-checks.
+
+def test_build_result_records_smooth_true_as_a_constant_column():
+    df = _df()
+    out = build_result(df, {'t0001': 'fake.img'}, smooth=True,
+                       reader=FakeCube().read)
+    assert 'smooth' in out.columns
+    assert out['smooth'].dtype == bool
+    assert out['smooth'].nunique() == 1
+    assert bool(out['smooth'].iloc[0]) is True
+
+
+def test_build_result_records_smooth_false_as_a_constant_column():
+    df = _df()
+    out = build_result(df, {'t0001': 'fake.img'}, smooth=False,
+                       reader=FakeCube().read)
+    assert 'smooth' in out.columns
+    assert bool(out['smooth'].iloc[0]) is False
+
+
+def test_build_result_preserves_row_alignment_and_feature_values():
+    """The new column must not disturb the row-alignment or feature values
+    `extract_features` already guarantees -- it is purely additive."""
+    df = _df()
+    out = build_result(df, {'t0001': 'fake.img'}, smooth=False,
+                       reader=FakeCube().read)
+    assert len(out) == len(df)
+    for i, r in df.iterrows():
+        assert out['B0'].iloc[i] == r['pixel_row'] * 1000 + r['pixel_col']
+    assert list(out['tile_id']) == list(df['tile_id'])

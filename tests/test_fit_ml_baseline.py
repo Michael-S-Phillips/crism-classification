@@ -122,12 +122,14 @@ def test_only_train_rows_influence_the_fit():
     cols = [f'f{i}' for i in range(X.shape[1])]
     vocab = ['olivine', 'pyx', 'both']
     feat = pd.DataFrame(X, columns=cols)
+    feat['smooth'] = False
     lab = pd.DataFrame(Y, columns=vocab)
     lab['split'] = 'train'
 
     # Poison rows: inverted features AND inverted labels, so if they leak
     # into the fit the resulting model changes in a way we can detect.
     poison_feat = pd.DataFrame(1.0 - X, columns=cols)
+    poison_feat['smooth'] = False
     poison_lab = pd.DataFrame(1 - Y, columns=vocab)
     poison_lab['split'] = 'val'
 
@@ -159,6 +161,7 @@ def test_feature_cols_records_the_fitted_column_order():
     feat['tile_id'] = 't0001'
     feat['pixel_row'] = 0
     feat['pixel_col'] = 0
+    feat['smooth'] = True
     lab = pd.DataFrame(Y, columns=vocab)
     lab['split'] = 'train'
 
@@ -166,3 +169,95 @@ def test_feature_cols_records_the_fitted_column_order():
     assert out['feature_cols'] == cols, (
         f'feature_cols {out["feature_cols"]} does not match the column order '
         f'passed in ({cols})')
+
+
+# ── smoothing provenance ─────────────────────────────────────────────────────
+#
+# Neither this script's meta.json nor classify_tile_baseline.py's --smooth
+# flag alone records which extraction produced the sidecar a model was
+# fitted on. Task 1's parquet now carries a constant `smooth` bool column;
+# this script must read it, refuse to guess when it's absent, propagate it
+# into meta.json, and never let it leak into feature_cols as if it were a
+# real mrrsu parameter.
+
+def _feat_lab(seed=0, smooth=True):
+    X, Y = _separable(n=200, seed=seed)
+    cols = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta']
+    vocab = ['olivine', 'pyx', 'both']
+    feat = pd.DataFrame(X, columns=cols)
+    feat['tile_id'] = 't0001'
+    feat['pixel_row'] = 0
+    feat['pixel_col'] = 0
+    feat['smooth'] = smooth
+    lab = pd.DataFrame(Y, columns=vocab)
+    lab['split'] = 'train'
+    return feat, lab, cols, vocab
+
+
+def test_smooth_true_is_recorded_and_excluded_from_feature_cols():
+    feat, lab, cols, vocab = _feat_lab(smooth=True)
+    out = fit_from_frames(feat, lab, vocab, seed=0)
+    assert out['smooth'] is True
+    assert 'smooth' not in out['feature_cols']
+    assert out['feature_cols'] == cols
+
+
+def test_smooth_false_is_recorded_and_excluded_from_feature_cols():
+    feat, lab, cols, vocab = _feat_lab(smooth=False)
+    out = fit_from_frames(feat, lab, vocab, seed=0)
+    assert out['smooth'] is False
+    assert 'smooth' not in out['feature_cols']
+
+
+def test_missing_smooth_column_raises_rather_than_guessing():
+    """A features parquet built before this change carries no `smooth`
+    column. Defaulting it to False (or True) would silently reintroduce the
+    exact train/score mismatch this change exists to prevent -- so a missing
+    column must be a loud, actionable error, not a guess."""
+    feat, lab, _cols, vocab = _feat_lab()
+    feat = feat.drop(columns=['smooth'])
+    with pytest.raises(ValueError, match='smooth'):
+        fit_from_frames(feat, lab, vocab, seed=0)
+
+
+def test_main_writes_smooth_into_meta_json(tmp_path):
+    """End-to-end at the CLI, mirroring test_fit_expert_rules.py's own
+    main()-level test: build a real CLASSES_7-shaped label frame (so
+    `_collapse_labels` doesn't choke on missing olivine_t1/t2) and confirm
+    the `smooth` column on the features parquet lands in meta.json."""
+    import json
+    import subprocess
+    import sys
+
+    from data.expert_rules import CLASSES_7
+
+    n = 200
+    rng = np.random.default_rng(0)
+    feat = pd.DataFrame(rng.random((n, 6)),
+                        columns=['a', 'b', 'c', 'd', 'e', 'f'])
+    feat['tile_id'] = 't0001'
+    feat['pixel_row'] = 0
+    feat['pixel_col'] = 0
+    feat['smooth'] = True
+
+    lab = pd.DataFrame({c: np.zeros(n, dtype=np.float32) for c in CLASSES_7})
+    lab.loc[:50, 'olivine'] = 1.0
+    lab['olivine_t1'] = lab['olivine']
+    lab['olivine_t2'] = 0.0
+    lab['split'] = 'train'
+
+    fpath = tmp_path / 'feat.parquet'
+    lpath = tmp_path / 'lab.parquet'
+    feat.to_parquet(fpath, index=False)
+    lab.to_parquet(lpath, index=False)
+    out_dir = tmp_path / 'ml_out'
+
+    r = subprocess.run(
+        [sys.executable, 'scripts/fit_ml_baseline.py',
+         '--features', str(fpath), '--labels', str(lpath),
+         '--vocab', '7cls', '--out_dir', str(out_dir)],
+        capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    meta = json.loads((out_dir / 'meta.json').read_text())
+    assert meta['smooth'] is True
+    assert 'smooth' not in meta['feature_cols']

@@ -100,12 +100,41 @@ def assemble_feature_matrix(cube: np.ndarray, names: list[str],
     return flat[:, idx]
 
 
+def resolve_smooth(artifact_smooth: bool, requested: bool | None) -> bool:
+    """Decide the smoothing state to score with: the artifact's training-time
+    state always wins.
+
+    `requested` is ``None`` when the caller passed no ``--smooth`` opinion, in
+    which case the artifact's own recorded state is used silently -- that is
+    the correct, non-guessing behaviour, not a gap. It only becomes a problem
+    when `requested` is an EXPLICIT, contradicting choice: scoring with the
+    wrong smoothing state feeds the model a feature distribution it was never
+    fitted on, and nothing else here would catch that, so a real contradiction
+    must raise loudly rather than quietly deferring to one side.
+    """
+    if requested is not None and bool(requested) != artifact_smooth:
+        raise ValueError(
+            f'--smooth={bool(requested)} contradicts the artifact, which '
+            f'was fitted/calibrated with smooth={artifact_smooth}; scoring '
+            f'with a different smoothing state than training would feed the '
+            f'model a different feature distribution than it was fitted on, '
+            f'with no other error to catch the mismatch')
+    return artifact_smooth
+
+
 def score_tile(tile: str, baseline: str, model: str = 'rules',
-               smooth: bool = False) -> dict:
+               smooth: bool | None = None) -> dict:
     """Score `tile` with `baseline` and return the npz payload.
 
     model='rules' reads a calibrated expert-rules JSON; 'rf'/'histgb' read an
     ML artifact directory (rf.joblib / histgb.joblib + meta.json).
+
+    `smooth` is the CLI's ``--smooth`` opinion (``None`` if not passed). The
+    smoothing state actually used to score always comes from the artifact's
+    own recorded `smooth` -- fit_ml_baseline.py / fit_expert_rules.py stamp it
+    in at train/calibration time -- and `smooth` here is used only to detect
+    an explicit contradiction (see `resolve_smooth`). An artifact with no
+    `smooth` key predates this change and is refused rather than guessed at.
     """
     import joblib
 
@@ -125,7 +154,30 @@ def score_tile(tile: str, baseline: str, model: str = 'rules',
         raise SystemExit(
             f'mrrsu {cube.shape[:2]} is not co-registered with mrral '
             f'{valid_mask.shape}')
-    if smooth:
+
+    if model == 'rules':
+        with open(baseline) as f:
+            cfg = json.load(f)
+        if 'smooth' not in cfg:
+            raise ValueError(
+                f'{baseline} has no "smooth" key -- it was calibrated before '
+                f'smoothing provenance was recorded; recalibrate with '
+                f'scripts/fit_expert_rules.py rather than guessing whether '
+                f'it was smoothed')
+        artifact_smooth = bool(cfg['smooth'])
+    else:
+        with open(os.path.join(baseline, 'meta.json')) as f:
+            meta = json.load(f)
+        if 'smooth' not in meta:
+            raise ValueError(
+                f'{baseline}/meta.json has no "smooth" key -- it was fitted '
+                f'before smoothing provenance was recorded; refit with '
+                f'scripts/fit_ml_baseline.py rather than guessing whether it '
+                f'was smoothed')
+        artifact_smooth = bool(meta['smooth'])
+
+    effective_smooth = resolve_smooth(artifact_smooth, smooth)
+    if effective_smooth:
         from scripts.extract_mrrsu_features import _smooth_nanmean
         cube = _smooth_nanmean(cube)
 
@@ -138,14 +190,10 @@ def score_tile(tile: str, baseline: str, model: str = 'rules',
 
     if model == 'rules':
         print(RULES_CAVEAT)
-        with open(baseline) as f:
-            cfg = json.load(f)
         vocab = list(cfg['vocab'])
         scores = evaluate_rules(cube, names, cfg)
         probs = np.stack([scores[c] for c in vocab], axis=-1)
     else:
-        with open(os.path.join(baseline, 'meta.json')) as f:
-            meta = json.load(f)
         vocab = list(meta['vocab'])
         feature_cols = list(meta['feature_cols'])
         art = joblib.load(os.path.join(baseline, f'{model}.joblib'))
@@ -171,10 +219,13 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument('--model', choices=('rules', 'rf', 'histgb'),
                     default='rules')
     ap.add_argument('--save_probs', required=True)
-    ap.add_argument('--smooth', action='store_true',
-                    help='7x7 NaN-aware mean before scoring; must MATCH how '
-                         'the training features were extracted (meta.json does '
-                         'not record it)')
+    ap.add_argument('--smooth', action='store_true', default=None,
+                    help='7x7 NaN-aware mean before scoring. Normally not '
+                         'needed: the artifact records whether it was fitted '
+                         'on smoothed features and that state is used '
+                         'automatically. Passing this explicitly only serves '
+                         'as an assertion -- it raises if it contradicts the '
+                         'artifact, rather than silently overriding it.')
     ap.add_argument('--no_plot', action='store_true',
                     help='accepted and ignored; this scorer never plots')
     ap.add_argument('--ckpt', default=None,

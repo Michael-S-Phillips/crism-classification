@@ -598,6 +598,8 @@ def test_main_writes_both_vocabulary_configs_from_the_train_split(tmp_path):
     held_feat = feat.copy()
     held_feat[NAMES] = 0.9
 
+    feat['smooth'] = True
+    held_feat['smooth'] = True
     feat_all = pd.concat([feat, held_feat], ignore_index=True)
     lab_all = pd.concat([lab, held], ignore_index=True)
     fpath = tmp_path / 'feat.parquet'
@@ -623,3 +625,97 @@ def test_main_writes_both_vocabulary_configs_from_the_train_split(tmp_path):
     assert 'pyx' in outs['pyx']['classes']
     assert set(outs['7cls']['junk']) == {'icer_high', 'co2_ice_high',
                                          'var_high', 'r770_max'}
+    assert outs['7cls']['smooth'] is True
+    assert outs['pyx']['smooth'] is True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# smoothing provenance
+#
+# extract_mrrsu_features.py's --smooth and this script's rule calibration
+# read the same sidecar parquet, but nothing recorded which extraction
+# produced it. A rule config calibrated on smoothed evidence but later scored
+# unsmoothed (or vice versa) places every cut point on a distribution the
+# engine never actually sees at inference -- the same silent train/score
+# mismatch this whole change closes for the ML rungs.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_calibrate_records_smooth_true():
+    feat, labels = _synth()
+    cfg = calibrate(feat, labels, CLASSES_7, smooth=True)
+    assert cfg['smooth'] is True
+
+
+def test_calibrate_records_smooth_false():
+    feat, labels = _synth()
+    cfg = calibrate(feat, labels, CLASSES_7, smooth=False)
+    assert cfg['smooth'] is False
+
+
+def test_main_raises_when_features_parquet_has_no_smooth_column(tmp_path):
+    """A features parquet built before this change carries no `smooth`
+    column. Defaulting it (to either value) would silently reintroduce the
+    exact mismatch this change exists to prevent."""
+    feat, labels = _synth()
+    lab = pd.DataFrame({c: labels[c] for c in CLASSES_7})
+    lab['olivine_t1'] = lab['olivine']
+    lab['olivine_t2'] = 0.0
+    lab['other'] = lab['bland']
+    lab['split'] = 'train'
+    # deliberately no 'smooth' column
+    fpath = tmp_path / 'feat.parquet'
+    lpath = tmp_path / 'lab.parquet'
+    feat.to_parquet(fpath, index=False)
+    lab.to_parquet(lpath, index=False)
+
+    r = subprocess.run(
+        [sys.executable, 'scripts/fit_expert_rules.py',
+         '--features', str(fpath), '--labels', str(lpath),
+         '--vocab', '7cls', '--out', str(tmp_path / 'out.json')],
+        capture_output=True, text=True)
+    assert r.returncode != 0
+    assert 'smooth' in r.stderr.lower()
+
+
+def test_smooth_column_is_excluded_from_the_frame_fit_from_frames_sees(
+        tmp_path, monkeypatch):
+    """`main()` must strip `smooth` out of the parameter columns before
+    calibrating -- it is provenance, not mrrsu evidence, and calibrate()'s
+    all-NaN-row coverage check (`feat.select_dtypes(include=[np.number])`)
+    would otherwise be one column away from folding it in as if it were real
+    coverage. Asserted by SPYING on the exact columns `fit_from_frames`
+    receives, not by inspecting the emitted JSON: a bool provenance column
+    happens to be invisible to `select_dtypes([np.number])` today, so
+    checking the JSON output alone would pass even if the leak were real."""
+    import sys as _sys
+
+    import scripts.fit_expert_rules as fer
+
+    feat, labels = _synth()
+    lab = pd.DataFrame({c: labels[c] for c in CLASSES_7})
+    lab['olivine_t1'] = lab['olivine']
+    lab['olivine_t2'] = 0.0
+    lab['other'] = lab['bland']
+    lab['split'] = 'train'
+    feat['smooth'] = True
+    fpath = tmp_path / 'feat.parquet'
+    lpath = tmp_path / 'lab.parquet'
+    feat.to_parquet(fpath, index=False)
+    lab.to_parquet(lpath, index=False)
+
+    seen = {}
+    orig = fer.fit_from_frames
+
+    def _spy(feat_arg, *a, **kw):
+        seen['columns'] = list(feat_arg.columns)
+        return orig(feat_arg, *a, **kw)
+
+    monkeypatch.setattr(fer, 'fit_from_frames', _spy)
+    monkeypatch.setattr(
+        _sys, 'argv',
+        ['fit_expert_rules.py', '--features', str(fpath), '--labels', str(lpath),
+         '--vocab', '7cls', '--out', str(tmp_path / 'out.json')])
+    fer.main()
+
+    assert 'smooth' not in seen['columns'], (
+        f'smooth leaked into the calibration frame: {seen["columns"]}')

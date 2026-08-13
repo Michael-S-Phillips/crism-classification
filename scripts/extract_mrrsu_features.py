@@ -91,6 +91,31 @@ def extract_features(df: pd.DataFrame, mrrsu_map: dict[str, str],
     return pd.DataFrame(out, columns=col_names, index=df.index)
 
 
+def build_result(df: pd.DataFrame, mrrsu_map: dict[str, str], smooth: bool,
+                 reader=None) -> pd.DataFrame:
+    """``extract_features`` plus a constant ``smooth`` provenance column.
+
+    Nothing downstream otherwise records whether a sidecar parquet was built
+    with ``--smooth``. Training on smoothed features and later scoring
+    unsmoothed (or vice versa) feeds the classifier a feature distribution it
+    was never fitted on -- wrong predictions, plausible maps, no error
+    anywhere. So the choice travels WITH the artifact: `smooth` is written as
+    a constant bool column here, and Tasks 5/6/7 read it back instead of
+    trusting a CLI flag to match by convention.
+
+    `smooth` is not a real mrrsu parameter, so any code deriving the feature
+    column list from this parquet (fit_ml_baseline.KEY_COLS, and the
+    equivalent exclusion in fit_expert_rules.py) must exclude it too, or it
+    would be fed to a model / rule calibration as if it were one.
+    """
+    feats = extract_features(df, mrrsu_map, smooth=smooth, reader=reader)
+    result = pd.concat([df.reset_index(drop=True),
+                        feats.reset_index(drop=True)], axis=1)
+    assert len(result) == len(df), 'row count changed — alignment broken'
+    result['smooth'] = bool(smooth)
+    return result
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--parquet', required=True)
@@ -112,13 +137,13 @@ def main() -> None:
                          columns=['tile_id', 'pixel_row', 'pixel_col', 'split'])
     print(f'{len(df):,} rows, {df.tile_id.nunique()} tiles, '
           f'{sum(t in mrrsu_map for t in df.tile_id.unique())} with an mrrsu tile')
-    feats = extract_features(df, mrrsu_map, smooth=args.smooth)
-    result = pd.concat([df.reset_index(drop=True),
-                        feats.reset_index(drop=True)], axis=1)
-    assert len(result) == len(df), 'row count changed — alignment broken'
+    result = build_result(df, mrrsu_map, smooth=args.smooth)
+    feat_cols = [c for c in result.columns if c not in
+                ('tile_id', 'pixel_row', 'pixel_col', 'split', 'smooth')]
     result.to_parquet(args.out, index=False)
-    n_all_nan = int(np.isnan(feats.to_numpy()).all(axis=1).sum())
-    print(f'wrote {args.out}  ({n_all_nan:,} rows all-NaN — no mrrsu coverage)')
+    n_all_nan = int(np.isnan(result[feat_cols].to_numpy()).all(axis=1).sum())
+    print(f'wrote {args.out}  ({n_all_nan:,} rows all-NaN — no mrrsu coverage) '
+          f'smooth={args.smooth}')
 
 
 if __name__ == '__main__':

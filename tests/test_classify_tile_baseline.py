@@ -77,6 +77,7 @@ def _rules_config():
     the plumbing, not the mineralogy, is what the test observes."""
     return {
         'vocab': list(CLASSES_7),
+        'smooth': False,
         'junk': {'icer_high': None, 'co2_ice_high': None, 'var_high': None,
                  'r770_max': None},
         'classes': {
@@ -285,7 +286,8 @@ def test_ml_path_feeds_the_model_the_fitted_column_order(monkeypatch, tmp_path):
     art = tmp_path / 'ml'
     art.mkdir()
     (art / 'meta.json').write_text(json.dumps(
-        {'vocab': list(CLASSES_7), 'feature_cols': cols, 'seed': 0}))
+        {'vocab': list(CLASSES_7), 'feature_cols': cols, 'seed': 0,
+         'smooth': False}))
 
     seen = {}
     monkeypatch.setattr(joblib, 'load', lambda p: 'STUB_MODEL')
@@ -306,6 +308,199 @@ def test_ml_path_feeds_the_model_the_fitted_column_order(monkeypatch, tmp_path):
             f'model column {j} should be {c} but holds {seen["X"][0, j]}')
     assert payload['probs'].shape == (H, W, 7)
     assert [str(x) for x in payload['class_names']] == list(CLASSES_7)
+
+
+# ── smoothing provenance must match training ─────────────────────────────────
+#
+# Nothing recorded which of extract_mrrsu_features.py's --smooth or this
+# script's own --smooth ran at training time. Fitting on smoothed features and
+# scoring unsmoothed (or vice versa) feeds the model a feature distribution it
+# was never trained on -- wrong predictions, plausible maps, no error
+# anywhere. This is the same silent-failure shape that already cost the
+# project real time twice (raw reflectance served into a continuum-removed
+# run; a CR patch cache served as raw). The artifact's own recorded `smooth`
+# must now be used to score, and an explicit, contradicting --smooth must
+# raise rather than let either side silently win.
+
+from scripts.classify_tile_baseline import resolve_smooth  # noqa: E402
+
+
+def test_resolve_smooth_uses_the_artifact_when_nothing_was_requested():
+    assert resolve_smooth(True, None) is True
+    assert resolve_smooth(False, None) is False
+
+
+def test_resolve_smooth_allows_an_explicit_choice_that_agrees():
+    assert resolve_smooth(True, True) is True
+    assert resolve_smooth(False, False) is False
+
+
+def test_resolve_smooth_raises_on_an_explicit_contradiction():
+    with pytest.raises(ValueError, match=r'True.*False|False.*True'):
+        resolve_smooth(True, False)
+    with pytest.raises(ValueError, match=r'True.*False|False.*True'):
+        resolve_smooth(False, True)
+
+
+def _gradient_cube():
+    """(H, W, 60) cube whose OLINDEX3 band is a spatial gradient -- so a
+    smoothed read is numerically distinguishable from an unsmoothed one,
+    unlike `_cube()`'s per-band CONSTANT fill (which a 7x7 mean leaves
+    unchanged and would let a broken smoothing path pass silently)."""
+    cube = _cube(fill=0.0)
+    rr, cc = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+    cube[:, :, NAMES.index('OLINDEX3')] = (rr + cc).astype(np.float32)
+    return cube
+
+
+def _write_meta(tmp_path, feature_cols, smooth):
+    art = tmp_path / 'ml'
+    art.mkdir()
+    (art / 'meta.json').write_text(json.dumps(
+        {'vocab': list(CLASSES_7), 'feature_cols': feature_cols, 'seed': 0,
+         'smooth': smooth}))
+    return art
+
+
+def _score_with_stub_predictor(monkeypatch, art, smooth_arg):
+    """score_tile() with predict_proba_multilabel stubbed to just record the
+    feature matrix it was handed, so the test can inspect what the model
+    actually saw."""
+    import joblib
+
+    import scripts.fit_ml_baseline as fml
+
+    seen = {}
+    monkeypatch.setattr(joblib, 'load', lambda p: 'STUB_MODEL')
+
+    def _fake_predict(model, X, n_classes):
+        seen['X'] = np.asarray(X).copy()
+        return np.zeros((len(X), n_classes), np.float32)
+
+    monkeypatch.setattr(fml, 'predict_proba_multilabel', _fake_predict)
+    score_tile('/nonexistent/t9999_mrral_00n000_0327_4.img', str(art),
+              model='rf', smooth=smooth_arg)
+    return seen['X']
+
+
+def test_ml_scoring_applies_the_artifacts_smooth_state_when_unrequested(
+        monkeypatch, tmp_path):
+    """meta.json says smooth=True and --smooth is not passed at all: the
+    scorer must smooth anyway, using the artifact's own recorded state, not
+    silently score raw values."""
+    from scripts.extract_mrrsu_features import _smooth_nanmean
+
+    cube = _gradient_cube()
+    _patch_tile_io(monkeypatch, np.ones((H, W), bool), cube)
+    art = _write_meta(tmp_path, ['OLINDEX3'], smooth=True)
+
+    X = _score_with_stub_predictor(monkeypatch, art, smooth_arg=None)
+    expected = _smooth_nanmean(cube).reshape(-1, cube.shape[-1])[
+        :, NAMES.index('OLINDEX3')]
+    assert np.allclose(X[:, 0], expected), (
+        'scoring did not apply the smoothing the artifact was fitted with')
+    # And it must actually differ from the raw (unsmoothed) reading --
+    # otherwise this test could pass even if smoothing silently no-ops.
+    raw = cube.reshape(-1, cube.shape[-1])[:, NAMES.index('OLINDEX3')]
+    assert not np.allclose(X[:, 0], raw)
+
+
+def test_ml_scoring_stays_unsmoothed_when_artifact_was_fitted_unsmoothed(
+        monkeypatch, tmp_path):
+    cube = _gradient_cube()
+    _patch_tile_io(monkeypatch, np.ones((H, W), bool), cube)
+    art = _write_meta(tmp_path, ['OLINDEX3'], smooth=False)
+
+    X = _score_with_stub_predictor(monkeypatch, art, smooth_arg=None)
+    raw = cube.reshape(-1, cube.shape[-1])[:, NAMES.index('OLINDEX3')]
+    assert np.allclose(X[:, 0], raw)
+
+
+def test_smoothed_artifact_scored_explicitly_unsmoothed_raises(
+        monkeypatch, tmp_path):
+    """THE load-bearing case: an artifact fitted on SMOOTHED features, scored
+    with an explicit request for UNSMOOTHED input, must RAISE rather than
+    silently produce predictions -- this is exactly the mismatch that costs a
+    plausible-looking map with no error anywhere."""
+    cube = _gradient_cube()
+    _patch_tile_io(monkeypatch, np.ones((H, W), bool), cube)
+    art = _write_meta(tmp_path, ['OLINDEX3'], smooth=True)
+
+    with pytest.raises(ValueError, match='contradicts'):
+        _score_with_stub_predictor(monkeypatch, art, smooth_arg=False)
+
+
+def test_unsmoothed_artifact_scored_explicitly_smoothed_raises(
+        monkeypatch, tmp_path):
+    cube = _gradient_cube()
+    _patch_tile_io(monkeypatch, np.ones((H, W), bool), cube)
+    art = _write_meta(tmp_path, ['OLINDEX3'], smooth=False)
+
+    with pytest.raises(ValueError, match='contradicts'):
+        _score_with_stub_predictor(monkeypatch, art, smooth_arg=True)
+
+
+def test_ml_meta_without_smooth_key_raises_rather_than_guessing(
+        monkeypatch, tmp_path):
+    """A meta.json written before this change predates smoothing provenance
+    -- guessing a default here would silently reintroduce the exact mismatch
+    this whole change exists to close."""
+    cube = _cube(fill=0.0)
+    _patch_tile_io(monkeypatch, np.ones((H, W), bool), cube)
+    art = tmp_path / 'ml'
+    art.mkdir()
+    (art / 'meta.json').write_text(json.dumps(
+        {'vocab': list(CLASSES_7), 'feature_cols': ['OLINDEX3'], 'seed': 0}))
+
+    with pytest.raises(ValueError, match='smooth'):
+        score_tile('/nonexistent/t9999_mrral_00n000_0327_4.img', str(art),
+                  model='rf')
+
+
+def test_rules_config_without_smooth_key_raises_rather_than_guessing(
+        monkeypatch, tmp_path):
+    _patch_tile_io(monkeypatch, np.ones((H, W), bool), _cube())
+    cfg = _rules_config()
+    del cfg['smooth']
+    cfg_path = tmp_path / 'rules.json'
+    cfg_path.write_text(json.dumps(cfg))
+
+    with pytest.raises(ValueError, match='smooth'):
+        score_tile('/nonexistent/t9999_mrral_00n000_0327_4.img',
+                  str(cfg_path), model='rules')
+
+
+def test_rules_scoring_applies_the_configs_smooth_state(monkeypatch, tmp_path):
+    """The reference is `evaluate_rules` itself (already tested elsewhere),
+    called here directly on a pre-smoothed cube -- so this test checks that
+    score_tile applies the SAME smoothing before scoring, not a hand-derived
+    expectation of the tier-ladder math."""
+    from data.expert_rules import evaluate_rules
+    from scripts.extract_mrrsu_features import _smooth_nanmean
+
+    cube = _gradient_cube()
+    _patch_tile_io(monkeypatch, np.ones((H, W), bool), cube)
+    cfg = _rules_config()
+    cfg['smooth'] = True
+    cfg['classes']['olivine']['primary']['threshold'] = -1e9
+    # A multi-rung ladder so smoothing (which changes the evidence value) can
+    # move a pixel to a different tier -- a single-rung ladder would give
+    # every firing pixel the same score regardless of smoothing and this test
+    # would pass even if smoothing were silently skipped.
+    cfg['classes']['olivine']['ladder'] = [[-1e9, 0.1], [2.0, 0.5], [5.0, 0.9]]
+    cfg_path = tmp_path / 'rules.json'
+    cfg_path.write_text(json.dumps(cfg))
+
+    payload = score_tile('/nonexistent/t9999_mrral_00n000_0327_4.img',
+                         str(cfg_path), model='rules')
+    olivine_ch = list(CLASSES_7).index('olivine')
+    expected = evaluate_rules(_smooth_nanmean(cube), list(NAMES), cfg)['olivine']
+    np.testing.assert_allclose(payload['probs'][:, :, olivine_ch], expected)
+
+    # And prove smoothing was not silently skipped: the unsmoothed evaluation
+    # must differ somewhere.
+    raw_scores = evaluate_rules(cube, list(NAMES), cfg)['olivine']
+    assert not np.allclose(expected, raw_scores)
 
 
 def test_ckpt_is_accepted_and_ignored():

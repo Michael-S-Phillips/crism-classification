@@ -389,7 +389,8 @@ def _junk_mask(feat: pd.DataFrame, junk_cfg: dict) -> np.ndarray:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def calibrate(feat: pd.DataFrame, labels: dict[str, np.ndarray],
-              vocab: list[str], retention: float = 0.90) -> dict:
+              vocab: list[str], retention: float = 0.90,
+              smooth: bool = False) -> dict:
     """Fit every cut point of the expert ruleset to `feat`/`labels`.
 
     Parameters
@@ -397,10 +398,18 @@ def calibrate(feat: pd.DataFrame, labels: dict[str, np.ndarray],
     feat : one row per labeled pixel, columns named by the REAL mrrsu
         parameter name (OLINDEX3, BD1300, ...). Only the rows passed in are
         read; the caller is responsible for having selected the train split.
+        Must NOT carry Task-1's `smooth` provenance column -- it is not a
+        parameter, and `calibrate` would otherwise fold it into the
+        all-NaN-row coverage check below as if it were real mrrsu evidence.
     labels : class name -> 0/1 array aligned row-for-row with `feat`.
     vocab : the class list to emit. Rule blocks outside it are dropped so an
         auditor never reads a threshold that is never applied.
     retention : fraction of a class's own positives every cut point must keep.
+    smooth : whether `feat` was extracted with the 7x7 nan-aware mean
+        (Task 1's `smooth` column). Recorded verbatim as `cfg['smooth']` so
+        classify_tile_baseline.py can refuse to score this config with a
+        contradicting --smooth instead of silently mismatching training and
+        scoring.
     """
     if not 0.0 < retention < 1.0:
         raise ValueError(f'retention must be in (0, 1), got {retention}')
@@ -420,6 +429,7 @@ def calibrate(feat: pd.DataFrame, labels: dict[str, np.ndarray],
     cfg = copy.deepcopy(DEFAULT_RULES)
     cfg['vocab'] = list(vocab)
     cfg['retention'] = float(retention)
+    cfg['smooth'] = bool(smooth)
     cfg['classes'] = {c: b for c, b in cfg['classes'].items() if c in vocab}
 
     warnings: list[str] = []
@@ -554,12 +564,17 @@ def calibrate(feat: pd.DataFrame, labels: dict[str, np.ndarray],
 
 
 def fit_from_frames(feat: pd.DataFrame, lab: pd.DataFrame, vocab: list[str],
-                    retention: float = 0.90, split: str = 'train') -> dict:
+                    retention: float = 0.90, split: str = 'train',
+                    smooth: bool = False) -> dict:
     """Select `split` from a row-aligned (features, labels) pair and calibrate.
 
     Calibration reads the TRAIN split only: fitting a cut point on val or test
     is leakage that the floor test exists to rule out and that leaves no trace
     in the output.
+
+    `smooth` is passed straight through to `calibrate` and is recorded in the
+    emitted config -- see `calibrate`'s docstring. `feat` here, like there,
+    must not carry Task-1's `smooth` column itself.
     """
     if len(feat) != len(lab):
         raise ValueError(
@@ -575,7 +590,7 @@ def fit_from_frames(feat: pd.DataFrame, lab: pd.DataFrame, vocab: list[str],
     if not mask.any():
         raise ValueError(f'no rows with split == {split!r}')
     labels = {c: lab.loc[mask, c].to_numpy() for c in vocab if c in lab.columns}
-    return calibrate(feat.loc[mask], labels, vocab, retention)
+    return calibrate(feat.loc[mask], labels, vocab, retention, smooth=smooth)
 
 
 def main() -> None:
@@ -595,12 +610,31 @@ def main() -> None:
     feat = pd.read_parquet(args.features)
     lab = _collapse_labels(pd.read_parquet(args.labels))
     vocab = CLASSES_7 if args.vocab == '7cls' else CLASSES_PYX
+
+    if 'smooth' not in feat.columns:
+        raise ValueError(
+            f'{args.features} has no "smooth" column -- re-run '
+            f'scripts/extract_mrrsu_features.py (the version that records '
+            f'smoothing provenance) before calibrating; refusing to guess '
+            f'whether these features were smoothed, since calibrating on the '
+            f'wrong assumption silently mismatches training and scoring')
+    smooth_vals = feat['smooth'].unique()
+    if len(smooth_vals) != 1:
+        raise ValueError(
+            f'"smooth" column is not constant across the features parquet: '
+            f'{list(smooth_vals)} -- it should be a single extraction run\'s '
+            f'choice, not a mixture')
+    smooth = bool(smooth_vals[0])
+
     # Feature columns already carry real parameter names (Task 2), so the
     # emitted JSON is human-auditable without a decoding step. Drop the
-    # sidecar's identity columns so only parameters remain.
+    # sidecar's identity columns (and the `smooth` provenance flag, which is
+    # not a parameter) so only real mrrsu parameters remain.
     params = [c for c in feat.columns
-              if c not in ('tile_id', 'pixel_row', 'pixel_col', 'split')]
-    cfg = fit_from_frames(feat[params], lab, vocab, args.retention, args.split)
+              if c not in ('tile_id', 'pixel_row', 'pixel_col', 'split',
+                          'smooth')]
+    cfg = fit_from_frames(feat[params], lab, vocab, args.retention, args.split,
+                          smooth=smooth)
     print(f"calibrated on {cfg['calibration']['n_rows']:,} "
           f"{args.split.upper()} rows (of {len(lab):,})")
     for w in cfg['calibration']['warnings']:
