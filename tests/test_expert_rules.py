@@ -394,6 +394,69 @@ def test_uncalibrated_none_thresholds_are_inert_rather_than_a_typeerror():
     assert out['bland'][0, 0] > 0
 
 
+def test_plagioclase_is_vetoed_by_hydration_even_inside_the_window():
+    """The dust veto. Plagioclase over-firing on featureless bright ground is a
+    live failure mode in this project (hand plag sits at SAM recall 0.29 and
+    competes with bland), so BD1900R2 above the veto must suppress it even when
+    RPEAK1 and BD1300 both look right. Mirror case: the same pixel dry fires."""
+    cube = _blank(2)
+    for i in (0, 1):
+        _set(cube, 'RPEAK1', 0.75, i)   # inside the window
+        _set(cube, 'BD1300', 0.05, i)   # above the primary threshold
+        _set(cube, 'R770', 0.2, i)
+    _set(cube, 'BD1900R2', 0.20, 0)     # hydrated: dust / hydrated phase
+    _set(cube, 'BD1900R2', 0.00, 1)     # dry
+    out = evaluate_rules(cube, NAMES, _cfg())
+    assert out['plagioclase'][0, 0] == 0, 'hydrated pixel scored plagioclase'
+    assert out['plagioclase'][0, 1] > 0, 'dry plagioclase stopped firing'
+
+
+def test_non_physical_r770_is_junk():
+    """Saturation / calibration blow-ups. The other half of what junk is for;
+    only the ice branch was covered."""
+    cube = _blank(2)
+    _set(cube, 'R770', 1.5, 0)    # above r770_max = 1.0
+    _set(cube, 'R770', 0.2, 1)    # control
+    out = evaluate_rules(cube, NAMES, _cfg())
+    assert out['junk'][0, 0] > 0, 'non-physical R770 was not flagged junk'
+    assert out['bland'][0, 0] == 0, 'a saturated pixel was called bland'
+    assert out['junk'][0, 1] == 0, 'an ordinary pixel was flagged junk'
+
+
+def test_extreme_var_is_junk():
+    """Dead / noisy spectra: VAR is the spectral-variance artifact flag."""
+    cube = _blank(2)
+    for i in (0, 1):
+        _set(cube, 'R770', 0.2, i)
+    _set(cube, 'VAR', 2e6, 0)     # above var_high = 1e6
+    _set(cube, 'VAR', 1.0, 1)     # control
+    out = evaluate_rules(cube, NAMES, _cfg())
+    assert out['junk'][0, 0] > 0, 'extreme VAR was not flagged junk'
+    assert out['bland'][0, 0] == 0, 'a noise-dominated pixel was called bland'
+    assert out['junk'][0, 1] == 0, 'an ordinary pixel was flagged junk'
+
+
+def test_alteration_group_strength_is_the_weakest_required_parameter():
+    """A group requires ALL its diagnostics, so its strength is its WEAKEST
+    member: a max-reduction would let one strong parameter carry a group whose
+    other requirement is barely met. Invisible under a single-rung ladder, so
+    this uses a multi-rung one — the shape Task 4 will actually emit."""
+    cfg = _cfg()
+    cfg['classes']['alteration']['ladder'] = [[0.05, 0.5], [0.20, 0.95]]
+    cube = _blank()
+    # femg_phyllosilicate requires D2300, BD2290, BD1900R2 — deliberately
+    # spread across two rungs.
+    _set(cube, 'D2300', 0.30)      # top rung
+    _set(cube, 'BD1900R2', 0.30)   # top rung
+    _set(cube, 'BD2290', 0.08)     # bottom rung: the weakest requirement
+    _set(cube, 'R770', 0.2)
+    out = evaluate_rules(cube, NAMES, cfg)
+    assert out['alteration'][0, 0] == pytest.approx(0.5), (
+        'alteration scored the rung of its STRONGEST parameter, not its '
+        f"weakest: got {out['alteration'][0, 0]}, expected 0.5 for min(0.30, "
+        '0.30, 0.08)')
+
+
 def test_unknown_parameter_name_raises_instead_of_scoring_zero():
     """A header missing a parameter a rule needs must fail loudly; silently
     scoring the class zero would produce a plausible, wrong map."""
