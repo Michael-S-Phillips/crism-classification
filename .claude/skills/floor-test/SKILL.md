@@ -7,7 +7,7 @@ description: Use when a new 7-class CRISM checkpoint needs acceptance testing â€
 
 ## Overview
 
-The floor test is the model acceptance check: classify the 6 standard tiles,
+The floor test is the model acceptance check: classify the 8 standard tiles,
 vectorize per-mineral threshold polygons, and judge the counts against known
 good/bad signatures. Core principle: **if a model doesn't look clean on
 terrain it trained on (t1250/t1322 are train tiles â€” deliberate), nothing
