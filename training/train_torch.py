@@ -382,6 +382,8 @@ def train_torch_model(
                                expect_repr=synth_repr))
     best_monitored = -1.0
     best_state = None
+    best_epoch = None
+    best_map_epoch = None
     best_map = -1.0       # secondary: always tracks val_mAP regardless of stop_metric
     best_map_state = None
     patience_counter = 0
@@ -510,6 +512,18 @@ def train_torch_model(
         if val_map > best_map:
             best_map = val_map
             best_map_state = copy.deepcopy(model.state_dict())
+            best_map_epoch = epoch
+            # Same walltime-safety as the primary best below: write on improvement
+            # rather than only after the loop. Kept even though the end-of-run
+            # block re-writes it, because the whole point is surviving a kill.
+            if checkpoint_dir and stop_metric != 'val_mAP':
+                os.makedirs(checkpoint_dir, exist_ok=True)
+                _pm = os.path.join(checkpoint_dir, f'{model_name}_best_map.pt')
+                _tm = f'{_pm}.tmp{os.getpid()}'
+                torch.save({'model_state': best_map_state,
+                            'stop_metric': 'val_mAP', 'best_monitored': best_map,
+                            'epoch': epoch}, _tm)
+                os.replace(_tm, _pm)
         flat = _flatten_metrics(metrics)
         flat['val_mAP_core'] = val_map_core
         # Pick the scalar we early-stop on. Default 'val_mAP_core'. Any flat
@@ -562,7 +576,28 @@ def train_torch_model(
         if monitored > best_monitored:
             best_monitored = monitored
             best_state = copy.deepcopy(model.state_dict())
+            best_epoch = epoch
             patience_counter = 0
+            # WRITE IT NOW, not after the loop. Until 2026-08-13 every
+            # checkpoint was written only once training had exited, with
+            # best_state held in memory the whole time -- so a job killed by
+            # the SLURM walltime saved NOTHING however good its best epoch was.
+            # ft_7cls_handcore_reviewup died that way at epoch 123/150 (job
+            # 23548837, CANCELLED DUE TO TIME LIMIT) and lost a full day of GPU
+            # with no artifact at all. Its sibling arm survived only because it
+            # early-stopped at 121 with ~30 min to spare.
+            # Atomic: write to a temp path in the same directory and rename, so
+            # a kill mid-write cannot leave a truncated .pt where a valid one
+            # used to be. Rename is atomic within a filesystem.
+            if checkpoint_dir:
+                os.makedirs(checkpoint_dir, exist_ok=True)
+                _p = os.path.join(checkpoint_dir, f'{model_name}_best.pt')
+                _tmp = f'{_p}.tmp{os.getpid()}'
+                torch.save({'model_state': best_state, 'stop_metric': stop_metric,
+                            'best_monitored': best_monitored, 'epoch': epoch}, _tmp)
+                os.replace(_tmp, _p)
+                logger.info(f"Checkpointed epoch {epoch}: {_p} "
+                            f"({stop_metric}={best_monitored:.4f})")
         elif monitored >= best_monitored - min_delta:
             # Inside tolerance — neither update best nor tick patience.
             pass
@@ -588,7 +623,7 @@ def train_torch_model(
         ckpt_path = os.path.join(checkpoint_dir, f'{model_name}_best.pt')
         torch.save(
             {'model_state': best_state, 'stop_metric': stop_metric,
-             'best_monitored': best_monitored},
+             'best_monitored': best_monitored, 'epoch': best_epoch},
             ckpt_path,
         )
         logger.info(f"Saved checkpoint: {ckpt_path} ({stop_metric}={best_monitored:.4f})")
@@ -601,7 +636,7 @@ def train_torch_model(
             map_ckpt = os.path.join(checkpoint_dir, f'{model_name}_best_map.pt')
             torch.save(
                 {'model_state': best_map_state, 'stop_metric': 'val_mAP',
-                 'best_monitored': best_map},
+                 'best_monitored': best_map, 'epoch': best_map_epoch},
                 map_ckpt,
             )
             logger.info(f"Saved checkpoint: {map_ckpt} (val_mAP={best_map:.4f})")
@@ -609,7 +644,8 @@ def train_torch_model(
         # Last epoch (raw final-epoch weights, before best-restore above)
         last_ckpt = os.path.join(checkpoint_dir, f'{model_name}_last.pt')
         torch.save(
-            {'model_state': last_state, 'stop_metric': 'last', 'best_monitored': None},
+            {'model_state': last_state, 'stop_metric': 'last',
+             'best_monitored': None, 'epoch': stopped_epoch},
             last_ckpt,
         )
         logger.info(f"Saved checkpoint: {last_ckpt} (last epoch, stopped_epoch={stopped_epoch})")
