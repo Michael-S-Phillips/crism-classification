@@ -24,7 +24,12 @@ PROBS_ROOT="/tmp/floor_test_${TAG}"
 REPORT_DIR="${PROJ}/reports/floor_tests/${TAG}"
 
 cd "$PROJ"
-[ -f "$CKPT" ] || { echo "ERROR: checkpoint not found: $CKPT" >&2; exit 1; }
+# A baseline run (CLASSIFY_CMD set) has no checkpoint: $CKPT is a placeholder
+# that the scorer accepts and ignores. Without CLASSIFY_CMD the check is
+# unchanged, so existing callers still fail loudly on a bad checkpoint path.
+if [ -z "${CLASSIFY_CMD:-}" ]; then
+    [ -f "$CKPT" ] || { echo "ERROR: checkpoint not found: $CKPT" >&2; exit 1; }
+fi
 mkdir -p "$REPORT_DIR"
 
 # Resolve the machine-local data root from config (portable: Mac /Volumes, HPC /xdisk).
@@ -44,7 +49,13 @@ run_region () {
         img=$(ls "${tile_dir}/${tid}"_mrral_*_0327_4.img 2>/dev/null | head -1)
         [ -n "$img" ] || { echo "ERROR: no mrral img for $tid in $tile_dir" >&2; exit 1; }
         echo "=== ${region} ${tid} ==="
-        $PYTHON scripts/classify_tile_supervised.py \
+        # CLASSIFY_CMD lets a BASELINE produce the same probs npz and run
+        # through this identical vectorization. Defaulting to the supervised
+        # classifier keeps every existing caller byte-identical. A forked copy
+        # of this script would drift, and a drifted vectorization silently
+        # stops being the same comparison. --ckpt is always passed, so a
+        # baseline scorer must accept and ignore it.
+        ${CLASSIFY_CMD:-$PYTHON scripts/classify_tile_supervised.py} \
             --tile "$img" --ckpt "$CKPT" \
             --save_probs "$npz" --no_plot ${CLASSIFY_EXTRA_ARGS:-}
     done
