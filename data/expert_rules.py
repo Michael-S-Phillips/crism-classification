@@ -14,8 +14,15 @@ are none between co-occurring minerals.
 
 Parameters are resolved through the band-name list that came from the tile's own
 header (data.mrrsu_bands), never by hardcoded position.
+
+An uncalibrated cut point (`None`) is read as +inf, i.e. a comparison that can
+never trigger: a `None` veto is inactive and a `None` detection threshold never
+fires. Task 4 writes `float('inf')` for a veto it cannot calibrate and leaves a
+class with no training positives at `None`, so both mean the same thing here.
 """
 from __future__ import annotations
+
+import functools
 
 import numpy as np
 
@@ -29,7 +36,11 @@ DERIVED = ('bland', 'junk')
 
 DEFAULT_RULES = {
     'vocab': CLASSES_7,
-    'junk': {'icer_high': None, 'var_high': None, 'r770_max': None},
+    # ICER1_2/ICER2_2 are ice-abundance RATIOS; BD1435/BD3200 are BAND DEPTHS.
+    # Different scales, so they get separate cut points -- one threshold shared
+    # between them would either never fire on CO2 ice or fire everywhere.
+    'junk': {'icer_high': None, 'co2_ice_high': None, 'var_high': None,
+             'r770_max': None},
     'classes': {
         'olivine':     {'primary': {'param': 'OLINDEX3',  'threshold': None},
                         'ladder': None},
@@ -37,6 +48,14 @@ DEFAULT_RULES = {
                         'dominance_over': 'HCPINDEX2', 'ladder': None},
         'hcp':         {'primary': {'param': 'HCPINDEX2', 'threshold': None},
                         'dominance_over': 'LCPINDEX2', 'ladder': None},
+        # Merged pyroxene (CLASSES_PYX). The merge exists BECAUSE LCPINDEX2 and
+        # HCPINDEX2 cross-respond and the 2 um band-centre discrimination is
+        # unreliable, so there is deliberately NO dominance term here: nothing
+        # is left to be dominant over. Evidence is the elementwise max of the
+        # two indices, i.e. the stronger pyroxene response either way.
+        'pyx':         {'primary': {'param': ['LCPINDEX2', 'HCPINDEX2'],
+                                    'reduce': 'max', 'threshold': None},
+                        'ladder': None},
         'plagioclase': {'primary': {'param': 'BD1300', 'threshold': None},
                         'rpeak1_window': None, 'hydration_veto': None,
                         'ladder': None},
@@ -63,14 +82,40 @@ DEFAULT_RULES = {
 }
 
 
+_REDUCERS = {'max': np.maximum, 'min': np.minimum}
+
+
 def _p(cube: np.ndarray, names: list[str], param: str) -> np.ndarray:
     return cube[..., band_index(names, param)]
+
+
+def _cut(threshold) -> float:
+    """An uncalibrated (`None`) cut point is +inf: the test never triggers."""
+    return np.inf if threshold is None else threshold
+
+
+def _primary_value(cube: np.ndarray, names: list[str], primary: dict
+                   ) -> np.ndarray:
+    """Evidence array for a rule's primary term, NaN mapped to -inf.
+
+    `param` is a parameter NAME, or a list of names plus a `reduce` ('max' or
+    'min') combining them elementwise. The scalar-string form is unchanged.
+    """
+    param = primary['param']
+    if isinstance(param, str):
+        return np.nan_to_num(_p(cube, names, param), nan=-np.inf)
+    how = primary.get('reduce', 'max')
+    if how not in _REDUCERS:
+        raise ValueError(f'unknown reduce {how!r}; expected one of '
+                         f'{sorted(_REDUCERS)}')
+    vals = [np.nan_to_num(_p(cube, names, p), nan=-np.inf) for p in param]
+    return functools.reduce(_REDUCERS[how], vals)
 
 
 def _tier_score(value: np.ndarray, fires: np.ndarray, ladder) -> np.ndarray:
     """Map a firing pixel to the precision of the highest rung it clears."""
     out = np.zeros(value.shape, dtype=np.float32)
-    for thresh, precision in sorted(ladder, key=lambda r: r[0]):
+    for thresh, precision in sorted(ladder or [], key=lambda r: r[0]):
         out = np.where(fires & (value >= thresh), np.float32(precision), out)
     return out
 
@@ -94,15 +139,19 @@ def evaluate_rules(cube: np.ndarray, names: list[str], config: dict
                       np.nan_to_num(_p(cube, names, 'BD3200'), nan=0.0))
     r770 = _p(cube, names, 'R770')
     var = np.nan_to_num(_p(cube, names, 'VAR'), nan=0.0)
-    is_junk = ((icer >= jc['icer_high']) | (co2_ice >= jc['icer_high'])
-               | (np.nan_to_num(r770, nan=0.0) > jc['r770_max'])
-               | (var >= jc['var_high'])) & finite
+    is_junk = ((icer >= _cut(jc['icer_high']))
+               | (co2_ice >= _cut(jc['co2_ice_high']))
+               | (np.nan_to_num(r770, nan=0.0) > _cut(jc['r770_max']))
+               | (var >= _cut(jc['var_high']))) & finite
     ok = finite & ~is_junk
 
     out: dict[str, np.ndarray] = {}
+    vocab = config['vocab']
 
     for cls, c in cfg.items():
-        if cls in DERIVED:
+        # Rule blocks outside this config's vocabulary are not scored: with the
+        # pyx vocabulary the lcp/hcp blocks are inert, and vice versa.
+        if cls in DERIVED or cls not in vocab:
             continue
 
         # ── alteration: disjunction of specific groups, ice vetoed ───────────
@@ -110,11 +159,12 @@ def evaluate_rules(cube: np.ndarray, names: list[str], config: dict
             any_group = np.zeros(shape, dtype=bool)
             strength = np.zeros(shape, dtype=np.float32)
             for g in c['groups']:
+                th = g['thresholds']
                 hit = ok.copy()
                 gmin = np.full(shape, np.inf, dtype=np.float32)
                 for param in g['requires']:
                     v = np.nan_to_num(_p(cube, names, param), nan=-np.inf)
-                    hit &= v >= g['thresholds'][param]
+                    hit &= v >= _cut(th[param] if th is not None else None)
                     gmin = np.minimum(gmin, v)
                 any_group |= hit
                 strength = np.where(hit, np.maximum(strength, gmin), strength)
@@ -122,18 +172,19 @@ def evaluate_rules(cube: np.ndarray, names: list[str], config: dict
                                    c['ladder']).astype(np.float32)
             continue
 
-        v = np.nan_to_num(_p(cube, names, c['primary']['param']), nan=-np.inf)
-        fires = ok & (v >= c['primary']['threshold'])
+        v = _primary_value(cube, names, c['primary'])
+        fires = ok & (v >= _cut(c['primary']['threshold']))
 
         # ── plagioclase: RPEAK1 window + BD1300, dust vetoed ─────────────────
         if 'rpeak1_window' in c:
             # RPEAK1 is a WAVELENGTH in um (~0.7-0.8 for plagioclase), so the
             # test is a two-sided window: "high" would admit everything above.
-            lo, hi = c['rpeak1_window']
+            lo, hi = c['rpeak1_window'] if c['rpeak1_window'] else (-np.inf,
+                                                                   np.inf)
             rp = _p(cube, names, 'RPEAK1')
             hyd = np.nan_to_num(_p(cube, names, 'BD1900R2'), nan=0.0)
             in_window = np.isfinite(rp) & (rp >= lo) & (rp <= hi)
-            fires = fires & in_window & (hyd < c['hydration_veto'])
+            fires = fires & in_window & (hyd < _cut(c['hydration_veto']))
 
         # ── mafic minerals: own evidence only, no exclusivity ────────────────
         score = _tier_score(v, fires, c['ladder'])

@@ -9,7 +9,7 @@ import copy
 import numpy as np
 import pytest
 
-from data.expert_rules import evaluate_rules, DEFAULT_RULES
+from data.expert_rules import CLASSES_PYX, evaluate_rules, DEFAULT_RULES
 
 NAMES = ['R770','RBR','BD530_2','SH600_2','SH770','BD640_2','BD860_2','BD920_2',
          'RPEAK1','BDI1000VIS','R440','IRR1','R530','R600','BDI1000IR','OLINDEX3',
@@ -31,12 +31,22 @@ def _cfg():
     c['classes']['plagioclase']['primary']['threshold'] = 0.01
     c['classes']['plagioclase']['hydration_veto'] = 0.10
     c['classes']['plagioclase']['ladder'] = [[0.01, 0.7]]
+    c['classes']['pyx']['primary']['threshold'] = 0.05
+    c['classes']['pyx']['ladder'] = [[0.05, 0.6], [0.10, 0.9]]
     c['junk']['icer_high'] = 0.5
+    c['junk']['co2_ice_high'] = 0.5
     c['junk']['var_high'] = 1e6
     c['junk']['r770_max'] = 1.0
     for g in c['classes']['alteration']['groups']:
         g['thresholds'] = {k: 0.05 for k in g['requires']}
     c['classes']['alteration']['ladder'] = [[0.05, 0.8]]
+    return c
+
+
+def _cfg_pyx():
+    """The same calibrated config under the merged-pyroxene vocabulary."""
+    c = _cfg()
+    c['vocab'] = CLASSES_PYX
     return c
 
 
@@ -282,6 +292,106 @@ def test_parameters_are_resolved_by_name_not_by_position():
     out = evaluate_rules(shuf_cube, shuffled, _cfg())
     assert out['olivine'][0, 0] > 0, 'OLINDEX3 not found via the name list'
     assert out['bland'][0, 0] == 0
+
+
+def test_pyx_fires_from_either_pyroxene_index_alone():
+    """The merged class exists because LCPINDEX2/HCPINDEX2 cross-respond and
+    the 2 um band-centre discrimination is unreliable, so either index alone is
+    sufficient evidence of pyroxene."""
+    cube = _blank(2)
+    for i in (0, 1):
+        _set(cube, 'R770', 0.2, i)
+    _set(cube, 'LCPINDEX2', 0.20, 0)   # LCP only
+    _set(cube, 'HCPINDEX2', 0.20, 1)   # HCP only
+    out = evaluate_rules(cube, NAMES, _cfg_pyx())
+    assert out['pyx'][0, 0] > 0, 'pyx missed an LCP-only pixel'
+    assert out['pyx'][0, 1] > 0, 'pyx missed an HCP-only pixel'
+    assert list(out.keys()) == list(CLASSES_PYX)
+    assert 'lcp' not in out and 'hcp' not in out
+
+
+def test_pyx_takes_the_max_not_the_min_of_the_two_indices():
+    """A `min` reduction would demand BOTH indices be high, which is exactly
+    the discrimination the merge exists to avoid relying on."""
+    cube = _blank()
+    _set(cube, 'LCPINDEX2', 0.20)
+    _set(cube, 'HCPINDEX2', 0.06)   # would land a rung lower under `min`
+    _set(cube, 'R770', 0.2)
+    out = evaluate_rules(cube, NAMES, _cfg_pyx())
+    assert out['pyx'][0, 0] == pytest.approx(0.9), (
+        'pyx did not score at the stronger index: got '
+        f"{out['pyx'][0, 0]}, expected the 0.9 rung of max(0.20, 0.06)")
+
+
+def test_pyx_is_not_demoted_when_both_indices_are_high():
+    """No dominance term on the merged class: there is nothing left to be
+    dominant over, so a both-high pixel must score the full top rung, the same
+    as a single-index pixel of the same strength."""
+    both = _blank()
+    _set(both, 'LCPINDEX2', 0.20)
+    _set(both, 'HCPINDEX2', 0.20)
+    _set(both, 'R770', 0.2)
+    one = _blank()
+    _set(one, 'LCPINDEX2', 0.20)
+    _set(one, 'R770', 0.2)
+    a = evaluate_rules(both, NAMES, _cfg_pyx())['pyx'][0, 0]
+    b = evaluate_rules(one, NAMES, _cfg_pyx())['pyx'][0, 0]
+    assert a == pytest.approx(0.9)
+    assert a == b, f'both-high pyx demoted: {a} vs {b} for a single index'
+    assert 'dominance_over' not in DEFAULT_RULES['classes']['pyx']
+
+
+def test_scalar_param_string_still_works_for_the_non_pyx_classes():
+    """The list+reduce form is additive: every other class keeps a plain
+    parameter-name string and its unchanged behaviour."""
+    for cls in ('olivine', 'lcp', 'hcp', 'plagioclase'):
+        param = DEFAULT_RULES['classes'][cls]['primary']['param']
+        assert isinstance(param, str), f'{cls} primary param became {param!r}'
+    cube = _blank()
+    _set(cube, 'OLINDEX3', 0.20)
+    _set(cube, 'LCPINDEX2', 0.20)
+    _set(cube, 'R770', 0.2)
+    out = evaluate_rules(cube, NAMES, _cfg())
+    assert out['olivine'][0, 0] == pytest.approx(0.9)
+    assert out['lcp'][0, 0] == pytest.approx(0.9)
+
+
+def test_co2_ice_and_ratio_ice_have_independent_thresholds():
+    """ICER1_2/ICER2_2 are ice-abundance RATIOS; BD1435/BD3200 are BAND DEPTHS.
+    One cut point shared between them cannot be right for both. Same pixel,
+    swapped thresholds, opposite verdicts."""
+    cube = _blank()
+    _set(cube, 'BD1435', 0.30)     # CO2-ice band depth
+    _set(cube, 'ICER1_2', 0.0)     # no ice ratio at all
+    _set(cube, 'R770', 0.2)
+
+    strict_co2 = _cfg()
+    strict_co2['junk']['icer_high'] = 0.9    # permissive on the ratio
+    strict_co2['junk']['co2_ice_high'] = 0.05  # strict on the band depth
+    assert evaluate_rules(cube, NAMES, strict_co2)['junk'][0, 0] > 0, \
+        'CO2-ice band depth did not trigger its own veto'
+
+    strict_ratio = _cfg()
+    strict_ratio['junk']['icer_high'] = 0.05   # strict on the ratio
+    strict_ratio['junk']['co2_ice_high'] = 0.9  # permissive on the band depth
+    assert evaluate_rules(cube, NAMES, strict_ratio)['junk'][0, 0] == 0, (
+        'the ice-RATIO threshold was applied to the CO2 band depth — the two '
+        'cut points are not independent')
+
+
+def test_uncalibrated_none_thresholds_are_inert_rather_than_a_typeerror():
+    """DEFAULT_RULES ships with every cut point None, and Task 4 leaves a class
+    with no training positives at None. That must mean "never fires", not
+    `TypeError: '>=' not supported between float and NoneType`."""
+    cube = _blank()
+    _set(cube, 'OLINDEX3', 0.20)
+    _set(cube, 'ICER1_2', 0.9)
+    _set(cube, 'BD1435', 0.9)
+    _set(cube, 'R770', 0.2)
+    out = evaluate_rules(cube, NAMES, copy.deepcopy(DEFAULT_RULES))
+    for c in ('olivine', 'lcp', 'hcp', 'plagioclase', 'alteration', 'junk'):
+        assert out[c][0, 0] == 0, f'{c} fired on an uncalibrated ruleset'
+    assert out['bland'][0, 0] > 0
 
 
 def test_unknown_parameter_name_raises_instead_of_scoring_zero():
