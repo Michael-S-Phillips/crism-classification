@@ -231,12 +231,43 @@ echo "=== spectra audit ==="
 $PYTHON scripts/audit_spectra_quality.py "$PARQUET" --fail_tile_over 5 || {
     echo "ERROR: $PARQUET failed the spectra audit. Refusing to train."; exit 1; }
 
+# ── RESUME (OPT-IN) ──────────────────────────────────────────────────────────
+# --checkpoint_every 5 writes ${CKPT_DIR}/${RUN_NAME}_resume.pt every 5 epochs:
+# weights + optimizer + LR scheduler + best/patience bookkeeping, i.e. everything
+# needed to CONTINUE this run in a second job. 150 epochs does not fit the 24h
+# walltime (runs reach ~117-123), and ft_7cls_handcore_reviewup was CANCELLED DUE
+# TO TIME LIMIT at 123/150.
+#
+# Resume is OPT-IN — `RESUME=1 sbatch scripts/hpc_finetune_dualcr.slurm`. Plain
+# sbatch ALWAYS starts fresh. Auto-resuming whenever the file happens to exist
+# would silently continue a stale experiment when a new one was intended; and
+# RESUME=1 with no file present fails here rather than quietly starting over,
+# which would burn another 24h producing a run nobody asked for.
+#
+# --epochs is TOTAL across jobs, not additional: 150 stays 150, so a job resumed
+# at 123 runs 27 more epochs.
+RESUME=${RESUME:-0}
+RESUME_CKPT=${CKPT_DIR}/${RUN_NAME}_resume.pt
+INIT_ARGS=(--pretrain_ckpt "$ENCODER")
+if [ "$RESUME" = "1" ]; then
+    [ -f "$RESUME_CKPT" ] || {
+        echo "ERROR: RESUME=1 but $RESUME_CKPT does not exist."
+        echo "       Submit without RESUME=1 to start this run from scratch."
+        exit 1; }
+    # --resume and --pretrain_ckpt are mutually exclusive (train.py refuses the
+    # pair): the resume file carries its own encoder weights, further trained.
+    INIT_ARGS=(--resume "$RESUME_CKPT")
+    echo "RESUMING $RUN_NAME from $RESUME_CKPT (encoder comes from the resume file)"
+else
+    echo "Fresh start for $RUN_NAME (use RESUME=1 sbatch ... to continue a killed run)"
+fi
+
 echo "=== $RUN_NAME start $(date) ==="
 
 $PYTHON -u scripts/train.py \
     --model spatial_vit_aux \
     --run_name "$RUN_NAME" \
-    --pretrain_ckpt "$ENCODER" \
+    "${INIT_ARGS[@]}" \
     --seven_class \
     --continuum_removed --cache_is_cr --dual_cr --brightness_aux \
     --mrral_parquets "$PARQUET" \
@@ -248,6 +279,7 @@ $PYTHON -u scripts/train.py \
     --synth_val_parquet "$SYNTH_VAL_ROWS" \
     --lr 5e-4 --encoder_lr_scale 0.001 \
     --epochs 150 --patience 40 --min_delta 0.0005 \
+    --checkpoint_every 5 \
     --batch_size 256 \
     --embed_dim ${EMBED_DIM} --n_heads 4 --n_layers 6 \
     --patch_size 7 \

@@ -133,6 +133,24 @@ def _build_parser():
                              'warm start for the FULL classifier (encoder + head). '
                              'Use this to continue a finished finetune run for more '
                              'epochs. Mutually exclusive with --pretrain_ckpt.')
+    parser.add_argument('--checkpoint_every', type=int, default=0,
+                        help='Write <run_name>_resume.pt (full trainer state: '
+                             'weights, optimizer, scheduler, best_*/patience '
+                             'bookkeeping) every N epochs, so a job killed by the '
+                             'SLURM walltime can be continued with --resume. '
+                             '0 (default) writes nothing. Suggested: 5. This is '
+                             'MACHINERY, not a result — <run_name>_last.pt remains '
+                             'the final-epoch weights for evaluation.')
+    parser.add_argument('--resume', type=str, default=None,
+                        help='Path to a <run_name>_resume.pt written by '
+                             '--checkpoint_every. Restores weights, optimizer, LR '
+                             'scheduler and the best_*/patience bookkeeping, and '
+                             'continues from the saved epoch + 1. NOTE: --epochs '
+                             'counts TOTAL epochs across both jobs, not additional '
+                             'ones — resuming at epoch 123 with --epochs 150 runs '
+                             '27 more. Mutually exclusive with --pretrain_ckpt / '
+                             '--init_ckpt, which initialise weights instead of '
+                             'restoring a run.')
     parser.add_argument('--n_classes', type=int, default=5,
                         help='Number of output classes (default 5). Use 1 in '
                              'binary mode (--binary_target_class).')
@@ -250,6 +268,15 @@ def build_args():
         parser.error('--init_ckpt and --pretrain_ckpt are mutually exclusive '
                      '(--init_ckpt loads the full classifier; --pretrain_ckpt '
                      'loads only the encoder).')
+    if args.resume and (args.init_ckpt or args.pretrain_ckpt):
+        # Contradictory: --init_ckpt/--pretrain_ckpt INITIALISE weights for a new
+        # run, --resume RESTORES a run in progress (weights + optimizer +
+        # scheduler + best/patience state). Accepting both would apply the
+        # initialisation and then silently overwrite it from the resume file.
+        parser.error('--resume is mutually exclusive with --init_ckpt and '
+                     '--pretrain_ckpt (those initialise weights for a NEW run; '
+                     '--resume restores a full run in progress, its own weights '
+                     'included).')
     if args.seven_class and args.with_alteration:
         parser.error('--seven_class and --with_alteration are mutually exclusive.')
     if args.pyx and (args.seven_class or args.with_alteration):
@@ -471,6 +498,8 @@ def main():
                 aug_noise_std=args.aug_noise_std,
                 aug_band_dropout=args.aug_band_dropout,
                 aug_shift_std=args.aug_shift_std,
+                checkpoint_every=args.checkpoint_every,
+                resume_from=args.resume,
             )
 
         elif args.model in ('cnn', 'vit'):
@@ -519,6 +548,8 @@ def main():
                 aug_noise_std=args.aug_noise_std,
                 aug_band_dropout=args.aug_band_dropout,
                 aug_shift_std=args.aug_shift_std,
+                checkpoint_every=args.checkpoint_every,
+                resume_from=args.resume,
             )
 
         elif args.model in ('spectral_cnn', 'spectral_vit'):
@@ -569,6 +600,8 @@ def main():
                 encoder_lr_scale=args.encoder_lr_scale,
                 class_weights=class_weights_tensor,
                 min_delta=args.min_delta,
+                checkpoint_every=args.checkpoint_every,
+                resume_from=args.resume,
             )
 
         elif args.model == 'spectral_hybrid':
@@ -625,6 +658,8 @@ def main():
                 encoder_lr_scale=args.encoder_lr_scale,
                 class_weights=class_weights_tensor,
                 min_delta=args.min_delta,
+                checkpoint_every=args.checkpoint_every,
+                resume_from=args.resume,
             )
 
 
@@ -759,6 +794,8 @@ def main():
                 continuum_removed=args.continuum_removed,
                 cache_is_cr=args.cache_is_cr,
                 dual_cr=args.dual_cr,
+                checkpoint_every=args.checkpoint_every,
+                resume_from=args.resume,
             )
 
         elif args.model == 'spatial_vit_aux':
@@ -833,6 +870,8 @@ def main():
                 cache_is_cr=args.cache_is_cr,
                 dual_cr=args.dual_cr,
                 is_aux_model=True,
+                checkpoint_every=args.checkpoint_every,
+                resume_from=args.resume,
             )
 
         elif args.model == 'decomp_spatial_vit':
@@ -904,6 +943,8 @@ def main():
                 decomp_lambda_b=args.decomp_lambda_b,
                 decomp_lambda_smooth=args.decomp_lambda_smooth,
                 freeze_encoder=args.freeze_encoder,
+                checkpoint_every=args.checkpoint_every,
+                resume_from=args.resume,
             )
 
         elif args.model == 'decomp_spatial_vit_adv':
@@ -974,6 +1015,8 @@ def main():
                 decomp_lambda_smooth=args.decomp_lambda_smooth,
                 lambda_adv_max=args.lambda_adv_max,
                 freeze_encoder=args.freeze_encoder,
+                checkpoint_every=args.checkpoint_every,
+                resume_from=args.resume,
             )
 
     print(f"\n=== {run_name if args.model in TORCH_MODELS else args.model} Results ===")

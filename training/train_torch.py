@@ -69,6 +69,87 @@ def _expected_synth_repr(continuum_removed: bool, dual_cr: bool) -> str:
     return 'hull' if continuum_removed else 'raw'
 
 
+# Shapes that MUST agree between a _resume.pt and the model being trained.
+# (state-dict key, dim to compare, what a mismatch means)
+# A resume checkpoint whose tensors happen to be load-compatible is otherwise
+# indistinguishable from the right one: a 118-channel run resumed from a 59-channel
+# file, or a 7-class run resumed from a 6-class one, would train against the wrong
+# representation / mislabelled targets and complete without ever erroring.
+_RESUME_GUARDS = (
+    ('encoder.band_embed.weight', -1,
+     'input channel count (59 = raw/hull-CR, 118 = dual-CR)'),
+    ('head.weight', 0, 'label vocabulary width (n_classes)'),
+)
+
+
+def _check_resume_compat(saved_state: dict, current_state: dict, resume_from: str) -> None:
+    """Refuse a _resume.pt that belongs to a differently-configured run.
+
+    Raises ValueError naming the offending key and both widths. Keys absent from
+    both state dicts are skipped, so models without an `encoder.band_embed` (MLP,
+    CNN, the test doubles) are unaffected.
+    """
+    for key, dim, what in _RESUME_GUARDS:
+        in_saved, in_current = key in saved_state, key in current_state
+        if not in_saved and not in_current:
+            continue
+        if in_saved != in_current:
+            where = 'checkpoint' if in_saved else 'model being trained'
+            raise ValueError(
+                f'resume checkpoint mismatch: {key} is present only in the {where} '
+                f'({resume_from}). The checkpoint was written by a different model '
+                f'architecture; refusing to resume.'
+            )
+        saved_shape = tuple(saved_state[key].shape)
+        current_shape = tuple(current_state[key].shape)
+        if saved_shape[dim] != current_shape[dim]:
+            raise ValueError(
+                f'resume checkpoint mismatch on {key}: {what} is '
+                f'{saved_shape[dim]} in the checkpoint but {current_shape[dim]} '
+                f'in the model being trained (shapes {saved_shape} vs '
+                f'{current_shape}). {resume_from} belongs to a different run; '
+                f'refusing to resume.'
+            )
+
+
+def _save_resume_state(path: str, *, model, optimizer, scheduler, epoch: int,
+                       best_monitored: float, best_map: float,
+                       best_epoch, best_map_epoch,
+                       patience_counter: int, stop_metric: str) -> None:
+    """Write the full trainer state needed to CONTINUE this run, atomically.
+
+    Deliberately a different file from `{model_name}_last.pt`: _last.pt is a
+    RESULT (final-epoch weights, for evaluation), this is MACHINERY. Overloading
+    one file for both makes it impossible to tell whether the weights in it are
+    the ones to evaluate or the ones to keep training.
+
+    Everything that a fresh process cannot re-derive goes in here. Dropping any
+    single field produces a resumed run that completes and looks fine while being
+    wrong: no scheduler_state re-runs warmup and restarts the cosine (wrong LR for
+    the rest of the run); no best_monitored lets the first resumed epoch overwrite
+    a genuinely better _best.pt; no patience_counter means early stopping never
+    fires again.
+
+    Atomic: temp path in the SAME directory then os.replace, so a kill mid-write
+    cannot leave a truncated .pt where a valid one used to be.
+    """
+    payload = {
+        'model_state': model.state_dict(),
+        'optimizer_state': optimizer.state_dict(),
+        'scheduler_state': scheduler.state_dict(),
+        'epoch': epoch,
+        'best_monitored': best_monitored,
+        'best_map': best_map,
+        'best_epoch': best_epoch,
+        'best_map_epoch': best_map_epoch,
+        'patience_counter': patience_counter,
+        'stop_metric': stop_metric,
+    }
+    tmp = f'{path}.tmp{os.getpid()}'
+    torch.save(payload, tmp)
+    os.replace(tmp, path)
+
+
 def train_torch_model(
     model: torch.nn.Module,
     df: pd.DataFrame,
@@ -118,6 +199,8 @@ def train_torch_model(
     dual_cr: bool = False,
     min_delta: float = 0.0,
     stop_metric: str = 'val_mAP_core',
+    checkpoint_every: int = 0,
+    resume_from: Optional[str] = None,
     decomp_lambda_recon: float = 1.0,
     decomp_lambda_eps: float = 0.1,
     decomp_lambda_T: float = 0.01,
@@ -133,6 +216,17 @@ def train_torch_model(
 
     Automatically uses CRISMPatchDataset when mrrsu_map is provided (CNN/ViT),
     otherwise uses CRISMPixelDataset (MLP).
+
+    checkpoint_every: write `{model_name}_resume.pt` (full trainer state) every N
+        epochs. 0 (default) disables it entirely — nothing is written and the run
+        is byte-identical to one from before this option existed.
+    resume_from: path to a `{model_name}_resume.pt` to CONTINUE from. Restores
+        weights, optimizer, scheduler, best_*/patience bookkeeping and starts at
+        the saved epoch + 1.
+
+    max_epochs is TOTAL ACROSS JOBS, not additional: resuming at epoch 123 with
+    max_epochs=150 runs 27 more epochs, not 150 more. A resume whose epoch is
+    already >= max_epochs logs and returns without training.
     """
     if device is None:
         device = get_device()
@@ -399,7 +493,62 @@ def train_torch_model(
                     "(junk excluded; equal to val_mAP for 5/6-class runs)")
     logger.info(f"Early-stop metric: {stop_metric} (patience={patience})")
 
-    for epoch in range(1, max_epochs + 1):
+    # --- Resume a killed run -------------------------------------------------
+    # Restores EVERY piece of state the loop below carries across epochs. Placed
+    # after the stop_metric promotion above so the saved and requested metrics are
+    # compared in the same (promoted) form, and after the optimizer/scheduler are
+    # built so their state dicts can be loaded into the real objects.
+    start_epoch = 1
+    if resume_from is not None:
+        ck = torch.load(resume_from, map_location=device, weights_only=False)
+        _check_resume_compat(ck['model_state'], model.state_dict(), resume_from)
+        saved_metric = ck.get('stop_metric')
+        if saved_metric != stop_metric:
+            # best_monitored is a value OF the stop metric. Carrying it across a
+            # metric change would compare apples to oranges and either freeze
+            # _best.pt forever or overwrite it on the first epoch.
+            raise ValueError(
+                f'resume checkpoint mismatch on stop_metric: {resume_from} was '
+                f'written monitoring {saved_metric!r} but this run monitors '
+                f'{stop_metric!r}; best_monitored is not comparable across the '
+                f'two. Refusing to resume.'
+            )
+        model.load_state_dict(ck['model_state'])
+        optimizer.load_state_dict(ck['optimizer_state'])
+        # LOAD-BEARING. Without this the resumed run re-runs LinearLR warmup and
+        # restarts the cosine from scratch, so it trains at the wrong learning
+        # rate for every remaining epoch and says nothing about it.
+        scheduler.load_state_dict(ck['scheduler_state'])
+        best_monitored = float(ck['best_monitored'])
+        best_map = float(ck['best_map'])
+        best_epoch = ck['best_epoch']
+        best_map_epoch = ck['best_map_epoch']
+        patience_counter = int(ck['patience_counter'])
+        resumed_epoch = int(ck['epoch'])
+        start_epoch = resumed_epoch + 1
+        stopped_epoch = max_epochs
+        logger.info(
+            f"Resumed {resume_from}: continuing at epoch {start_epoch}/{max_epochs} "
+            f"(max_epochs is TOTAL across jobs, so {max(max_epochs - resumed_epoch, 0)} "
+            f"epochs remain) | {stop_metric} best={best_monitored:.4f} @ "
+            f"epoch {best_epoch} | val_mAP best={best_map:.4f} @ epoch "
+            f"{best_map_epoch} | patience_counter={patience_counter}/{patience} | "
+            f"lr={optimizer.param_groups[0]['lr']:.6g}"
+        )
+        if start_epoch > max_epochs:
+            logger.info(
+                f"Nothing to do: {resume_from} is already at epoch {resumed_epoch} "
+                f"and max_epochs={max_epochs} counts TOTAL epochs across jobs. "
+                f"Raise --epochs above {resumed_epoch} to train further. Exiting "
+                f"without touching any checkpoint."
+            )
+            if use_wandb:
+                import wandb as wb
+                wb.finish()
+            return {stop_metric: best_monitored, 'stopped_epoch': resumed_epoch,
+                    'resumed_already_complete': True}
+
+    for epoch in range(start_epoch, max_epochs + 1):
         # --- Train ---
         model.train()
         train_losses = []
@@ -573,6 +722,7 @@ def train_torch_model(
         # Early stopping with tolerance band on the monitored metric. Values
         # near the running best (within `min_delta`) are treated as plateau,
         # not regression — patience only ticks on a meaningful drop.
+        stop_now = False
         if monitored > best_monitored:
             best_monitored = monitored
             best_state = copy.deepcopy(model.state_dict())
@@ -606,7 +756,25 @@ def train_torch_model(
             if patience_counter >= patience:
                 logger.info(f"Early stopping at epoch {epoch} ({stop_metric} plateaued at {best_monitored:.4f})")
                 stopped_epoch = epoch
-                break
+                stop_now = True
+
+        # --- Periodic full-state resume checkpoint ---
+        # AFTER the early-stopping block on purpose: best_monitored / best_epoch /
+        # patience_counter must be this epoch's values. Written a epoch early they
+        # would be one epoch stale, and a resume from stale bookkeeping from stale bookkeeping overwrites
+        # a better _best.pt on its first epoch. Inert when checkpoint_every == 0.
+        if checkpoint_dir and checkpoint_every and epoch % checkpoint_every == 0:
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            _rp = os.path.join(checkpoint_dir, f'{model_name}_resume.pt')
+            _save_resume_state(
+                _rp, model=model, optimizer=optimizer, scheduler=scheduler,
+                epoch=epoch, best_monitored=best_monitored, best_map=best_map,
+                best_epoch=best_epoch, best_map_epoch=best_map_epoch,
+                patience_counter=patience_counter, stop_metric=stop_metric)
+            logger.info(f"Wrote resume state at epoch {epoch}: {_rp}")
+
+        if stop_now:
+            break
 
     # Capture last-epoch weights before restoring best
     last_state = copy.deepcopy(model.state_dict())
@@ -621,12 +789,23 @@ def train_torch_model(
 
         # Primary: best on stop_metric
         ckpt_path = os.path.join(checkpoint_dir, f'{model_name}_best.pt')
-        torch.save(
-            {'model_state': best_state, 'stop_metric': stop_metric,
-             'best_monitored': best_monitored, 'epoch': best_epoch},
-            ckpt_path,
-        )
-        logger.info(f"Saved checkpoint: {ckpt_path} ({stop_metric}={best_monitored:.4f})")
+        if best_state is not None:
+            torch.save(
+                {'model_state': best_state, 'stop_metric': stop_metric,
+                 'best_monitored': best_monitored, 'epoch': best_epoch},
+                ckpt_path,
+            )
+            logger.info(f"Saved checkpoint: {ckpt_path} ({stop_metric}={best_monitored:.4f})")
+        else:
+            # Only reachable on a RESUMED run in which no epoch beat the restored
+            # best_monitored. best_state is None then, and writing it would replace
+            # the good _best.pt from the earlier job with {'model_state': None} —
+            # silently destroying the very checkpoint resume exists to protect.
+            logger.info(
+                f"No epoch improved on the resumed best {stop_metric}="
+                f"{best_monitored:.4f} (epoch {best_epoch}); leaving {ckpt_path} "
+                f"as written by the earlier job."
+            )
 
         # Secondary: best val_mAP — only written when it actually diverges from
         # the monitored metric, so the two files are never identical copies

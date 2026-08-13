@@ -382,7 +382,14 @@ def test_train_py_kwargs_are_identical_to_base_except_dual_cr():
                     'DecompSpVitAdv', 'SpectralTransformer', 'SpectralCNN1D',
                     'SpectralViT', 'SpectralSpatialCNN', 'MLP',
                     'SpectralHybridClassifier')
-    ALLOWED_NEW = {'dual_cr': 'args.dual_cr'}
+    # Sanctioned since 2026-08-13: training resume. Both are inert at their
+    # defaults (--checkpoint_every 0 writes nothing, --resume None restores
+    # nothing), so they cannot change what any existing command trains; they are
+    # passed to EVERY train_torch_model call site precisely so no branch accepts
+    # the flags and silently drops them.
+    ALLOWED_NEW = {'dual_cr': 'args.dual_cr',
+                   'checkpoint_every': 'args.checkpoint_every',
+                   'resume_from': 'args.resume'}
     ALLOWED_CHANGED = {'n_bands': ('59', '118 if args.dual_cr else 59')}
 
     for fn in CONSTRUCTORS:

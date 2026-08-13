@@ -218,12 +218,45 @@ echo "=== spectra audit ==="
 $PYTHON scripts/audit_spectra_quality.py "$PARQUET" --fail_tile_over 5 || {
     echo "ERROR: $PARQUET failed the spectra audit. Refusing to train."; exit 1; }
 
+# ── RESUME (OPT-IN) ──────────────────────────────────────────────────────────
+# --checkpoint_every 5 writes ${CKPT_DIR}/${RUN_NAME}_resume.pt every 5 epochs:
+# weights + optimizer + LR scheduler + best/patience bookkeeping, i.e. everything
+# needed to CONTINUE this run in a second job. 150 epochs does not fit the 24h
+# walltime — arm 1 (ft_7cls_handcore_reviewup, job 23548837) was CANCELLED DUE TO
+# TIME LIMIT at epoch 123/150 and, before 75007a2, saved nothing at all.
+#
+# Resume is OPT-IN — `RESUME=1 sbatch scripts/hpc_finetune_handcore.slurm`. Plain
+# sbatch ALWAYS starts fresh. Auto-resuming whenever the file happens to exist
+# would silently continue a stale experiment when a new one was intended; and
+# RESUME=1 with no file present fails here rather than quietly starting over.
+# This is an --array=0-1 job, so each arm resumes from its OWN ${RUN_NAME}_resume.pt
+# and an arm with no resume file fails loudly instead of restarting behind the
+# other one's back. Resubmit a single arm with `RESUME=1 sbatch --array=1 ...`.
+#
+# --epochs is TOTAL across jobs, not additional: 150 stays 150, so an arm resumed
+# at 123 runs 27 more epochs.
+RESUME=${RESUME:-0}
+RESUME_CKPT=${CKPT_DIR}/${RUN_NAME}_resume.pt
+INIT_ARGS=(--pretrain_ckpt "$ENCODER")
+if [ "$RESUME" = "1" ]; then
+    [ -f "$RESUME_CKPT" ] || {
+        echo "ERROR: RESUME=1 but $RESUME_CKPT does not exist (arm $SLURM_ARRAY_TASK_ID)."
+        echo "       Submit without RESUME=1 to start this arm from scratch."
+        exit 1; }
+    # --resume and --pretrain_ckpt are mutually exclusive (train.py refuses the
+    # pair): the resume file carries its own encoder weights, further trained.
+    INIT_ARGS=(--resume "$RESUME_CKPT")
+    echo "RESUMING $RUN_NAME from $RESUME_CKPT (encoder comes from the resume file)"
+else
+    echo "Fresh start for $RUN_NAME (use RESUME=1 sbatch ... to continue a killed run)"
+fi
+
 echo "=== arm $SLURM_ARRAY_TASK_ID: $RUN_NAME (weight_scheme=$SCHEME) ==="
 
 $PYTHON -u scripts/train.py \
     --model spatial_vit_aux \
     --run_name "$RUN_NAME" \
-    --pretrain_ckpt "$ENCODER" \
+    "${INIT_ARGS[@]}" \
     --seven_class \
     --continuum_removed --cache_is_cr --brightness_aux \
     --mrral_parquets "$PARQUET" \
@@ -235,6 +268,7 @@ $PYTHON -u scripts/train.py \
     --synth_val_parquet "$MTRDR_VAL_ROWS" \
     --lr 5e-4 --encoder_lr_scale 0.001 \
     --epochs 150 --patience 40 --min_delta 0.0005 \
+    --checkpoint_every 5 \
     --batch_size 256 \
     --embed_dim ${EMBED_DIM} --n_heads 4 --n_layers 6 \
     --patch_size 7 \
