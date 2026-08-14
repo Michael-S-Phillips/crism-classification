@@ -73,6 +73,24 @@ _MINERAL_NAMES_PYX = ['olivine', 'pyx', 'plagioclase', 'alteration']
 _MINERAL_NAMES_PYX_ALT = ['olivine', 'pyx', 'plagioclase', 'alteration']
 
 UNIFORM_THRESHOLDS = [0.50, 0.60, 0.75, 0.85, 0.90, 0.95, 0.97, 0.99]
+
+
+def _fmt_thresh(t: float) -> str:
+    """Shortest unambiguous name for a threshold, 2 dp minimum.
+
+    Two decimals for every value in the default grid, so existing layer names
+    are byte-identical and the `thresh_0.NN` references already recorded in
+    review decisions.csv keep resolving. Extra decimals ONLY when 2 dp would
+    collide -- a 0.995/0.999 ladder would otherwise render as `0.99` and `1.00`,
+    making the two strictest layers indistinguishable in QGIS, which is exactly
+    the distinction such a ladder exists to draw. polygon_queue's
+    `thresh_(?:\d+_)?(\d+(?:\.\d+)?)` already accepts either width.
+    """
+    for nd in (2, 3, 4):
+        s = f'{t:.{nd}f}'
+        if abs(float(s) - t) < 1e-12:
+            return s
+    return f'{t:.6f}'
 PER_MINERAL_THRESHOLDS = {m: list(UNIFORM_THRESHOLDS) for m in MINERAL_NAMES}
 
 MEDIAN_SIZE  = 3
@@ -344,6 +362,7 @@ def read_wavelengths_nm(mrral_path: str) -> list:
 
 def main():
     global PROBS_DIR, TILE_DIR, OUT_DIR, NILI_TILES
+    global UNIFORM_THRESHOLDS, PER_MINERAL_THRESHOLDS
 
     parser = argparse.ArgumentParser(
         description='Per-mineral, per-threshold vectorization for the 4 Nili '
@@ -361,11 +380,27 @@ def main():
     parser.add_argument('--tiles', nargs='+', default=None,
                         help='Override tile list (e.g. t0434 t0435). '
                              'Default: the 4 Nili tiles.')
+    parser.add_argument('--thresholds', nargs='+', type=float, default=None,
+                        metavar='T',
+                        help='Override the threshold ladder, e.g. '
+                             '0.5 0.85 0.97 0.99 0.995 0.999. Values above 0.99 '
+                             'probe whether a saturated model has any headroom '
+                             'left; a class whose polygon count barely falls '
+                             'from 0.99 to 0.999 is not becoming more selective, '
+                             'it is saturated. Default: the standard 8-rung grid.')
     args = parser.parse_args()
 
     PROBS_DIR = args.probs_dir
     TILE_DIR  = args.tile_dir
     OUT_DIR   = args.out_dir
+    if args.thresholds:
+        # Override UNIFORM_THRESHOLDS, not PER_MINERAL_THRESHOLDS: for a pyx or
+        # 7-class npz, _check_npz_channels() REBUILDS PER_MINERAL_THRESHOLDS
+        # from UNIFORM_THRESHOLDS further down, so setting the derived dict here
+        # would be silently clobbered for exactly those vocabularies.
+        UNIFORM_THRESHOLDS = sorted(args.thresholds)
+        PER_MINERAL_THRESHOLDS = {m: list(UNIFORM_THRESHOLDS)
+                                  for m in MINERAL_NAMES}
     if args.tiles:
         NILI_TILES = args.tiles
     wavelengths_sidecar = os.path.join(OUT_DIR, 'vector_nili_6cls_wavelengths.json')
@@ -376,7 +411,7 @@ def main():
     print(f'tiles:     {NILI_TILES}')
     print()
     print(f'Threshold grid (all minerals): '
-          + ', '.join(f'{t:.2f}' for t in UNIFORM_THRESHOLDS))
+          + ', '.join(_fmt_thresh(t) for t in UNIFORM_THRESHOLDS))
     print()
 
     tiles = discover_tiles()
@@ -434,12 +469,12 @@ def main():
             for layer_idx, thresh in enumerate(PER_MINERAL_THRESHOLDS[mineral]):
                 frames = accum[mineral][thresh]
                 if not frames:
-                    print(f'  thresh_{thresh:.2f}: 0 polygons (skipping layer)')
+                    print(f'  thresh_{_fmt_thresh(thresh)}: 0 polygons (skipping layer)')
                     continue
                 merged = pd.concat(frames, ignore_index=True)
                 merged = gpd.GeoDataFrame(merged, geometry='geometry', crs=COMMON_CRS)
                 rank = len(PER_MINERAL_THRESHOLDS[mineral]) - layer_idx
-                layer_name = f'thresh_{rank:02d}_{thresh:.2f}'
+                layer_name = f'thresh_{rank:02d}_{_fmt_thresh(thresh)}'
                 merged.to_file(tmp_path, layer=layer_name, driver='GPKG')
                 per_mineral_total += len(merged)
                 written_layer_colors[layer_name] = _threshold_color_rgb255(mineral, layer_idx)

@@ -48,3 +48,8 @@ data/mc13_review_7cls_v3.backup-pre-t1444-repair/
 # joblib models. Reproducible from scripts/extract_mrrsu_features.py +
 # fit_ml_baseline.py; the auditable ruleset config/expert_rules_*.json IS tracked.
 data/baselines/
+
+# Full-chart deployment outputs: ~8 GB of probs npz per model run.
+# Regenerable from classify_tile_supervised.py; the gpkgs under reports/ are the
+# reviewable product.
+data/mc_deploy_*/
