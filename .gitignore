@@ -43,3 +43,8 @@ hpc_tile_list.txt
 # Exceptions: small label/metadata files that must stay tracked
 !data/*relabels*.csv
 data/mc13_review_7cls_v3.backup-pre-t1444-repair/
+
+# Baseline comparator artifacts: a 686 MB feature table and 2.4 GB of fitted
+# joblib models. Reproducible from scripts/extract_mrrsu_features.py +
+# fit_ml_baseline.py; the auditable ruleset config/expert_rules_*.json IS tracked.
+data/baselines/
