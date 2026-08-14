@@ -1,0 +1,401 @@
+{
+  "vocab": [
+    "olivine",
+    "lcp",
+    "hcp",
+    "plagioclase",
+    "bland",
+    "alteration",
+    "junk"
+  ],
+  "junk": {
+    "icer_high": 0.054815422743558884,
+    "co2_ice_high": 0.06801371276378632,
+    "var_high": 0.001372072845697403,
+    "r770_max": 0.33263352513313293
+  },
+  "classes": {
+    "olivine": {
+      "primary": {
+        "param": "OLINDEX3",
+        "threshold": 0.09579376876354218
+      },
+      "ladder": [
+        [
+          0.09579376876354218,
+          0.4066
+        ],
+        [
+          0.12859,
+          0.65
+        ],
+        [
+          0.145665,
+          0.7814
+        ],
+        [
+          0.158224,
+          0.8668
+        ],
+        [
+          0.175331,
+          0.9628
+        ],
+        [
+          0.191484,
+          0.9767
+        ],
+        [
+          0.228943,
+          0.9558
+        ]
+      ]
+    },
+    "lcp": {
+      "primary": {
+        "param": "LCPINDEX2",
+        "threshold": 0.0034077134914696217
+      },
+      "dominance_over": "HCPINDEX2",
+      "ladder": [
+        [
+          0.0034077134914696217,
+          0.3335
+        ],
+        [
+          0.012761,
+          0.4871
+        ],
+        [
+          0.020843,
+          0.7033
+        ],
+        [
+          0.027522,
+          0.8474
+        ],
+        [
+          0.038652,
+          0.9704
+        ],
+        [
+          0.049022,
+          0.9982
+        ],
+        [
+          0.065149,
+          1.0
+        ]
+      ]
+    },
+    "hcp": {
+      "primary": {
+        "param": "HCPINDEX2",
+        "threshold": -0.00966422539204359
+      },
+      "dominance_over": "LCPINDEX2",
+      "ladder": [
+        [
+          -0.00966422539204359,
+          0.4132
+        ],
+        [
+          0.001566,
+          0.4478
+        ],
+        [
+          0.010702,
+          0.4153
+        ],
+        [
+          0.015477,
+          0.4001
+        ],
+        [
+          0.023159,
+          0.3138
+        ],
+        [
+          0.029263,
+          0.2997
+        ],
+        [
+          0.036077,
+          0.3533
+        ]
+      ]
+    },
+    "plagioclase": {
+      "primary": {
+        "param": "BD1300",
+        "threshold": -0.013645386323332787
+      },
+      "rpeak1_window": [
+        0.7067639827728271,
+        0.868094801902771
+      ],
+      "hydration_veto": -0.0013160001253709197,
+      "ladder": [
+        [
+          -0.013645386323332787,
+          0.3061
+        ],
+        [
+          -0.00344,
+          0.339
+        ],
+        [
+          0.002517,
+          0.36
+        ],
+        [
+          0.005874,
+          0.3695
+        ],
+        [
+          0.01055,
+          0.3577
+        ],
+        [
+          0.014434,
+          0.3258
+        ],
+        [
+          0.023792,
+          0.2916
+        ]
+      ]
+    },
+    "alteration": {
+      "groups": [
+        {
+          "name": "femg_phyllosilicate",
+          "requires": [
+            "D2300",
+            "BD2290",
+            "BD1900R2"
+          ],
+          "thresholds": {
+            "D2300": -0.006342313718050718,
+            "BD2290": -0.01134304516017437,
+            "BD1900R2": -0.01553088054060936
+          }
+        },
+        {
+          "name": "al_phyllosilicate",
+          "requires": [
+            "BD2210_2",
+            "BD1900R2"
+          ],
+          "thresholds": {
+            "BD2210_2": 0.004851693753153086,
+            "BD1900R2": -0.01553088054060936
+          }
+        },
+        {
+          "name": "hydrated_silica",
+          "requires": [
+            "MIN2200",
+            "BD1900R2"
+          ],
+          "thresholds": {
+            "MIN2200": -0.0013192326296120882,
+            "BD1900R2": -0.01553088054060936
+          }
+        },
+        {
+          "name": "sulfate",
+          "requires": [
+            "SINDEX2",
+            "BD1900R2"
+          ],
+          "thresholds": {
+            "SINDEX2": 0.0037518052849918604,
+            "BD1900R2": -0.01553088054060936
+          }
+        },
+        {
+          "name": "carbonate",
+          "requires": [
+            "BD2500_2",
+            "D2300"
+          ],
+          "thresholds": {
+            "BD2500_2": -0.04134257137775421,
+            "D2300": -0.006342313718050718
+          }
+        }
+      ],
+      "ladder": [
+        [
+          0.0,
+          0.0509
+        ],
+        [
+          0.003483,
+          0.0098
+        ]
+      ]
+    }
+  },
+  "retention": 0.9,
+  "smooth": true,
+  "calibration": {
+    "retention": 0.9,
+    "split": "train",
+    "n_rows": 1951686,
+    "n_rows_dropped_all_nan": 0,
+    "junk": {
+      "icer_high": {
+        "params": [
+          "ICER1_2",
+          "ICER2_2"
+        ],
+        "reduce": "max",
+        "threshold": 0.054815422743558884,
+        "n_protected": 1951226,
+        "retained": 0.9708,
+        "rejects_frac_of_train": 0.0292
+      },
+      "co2_ice_high": {
+        "params": [
+          "BD1435",
+          "BD3200"
+        ],
+        "reduce": "max",
+        "threshold": 0.06801371276378632,
+        "n_protected": 1951226,
+        "retained": 0.9708,
+        "rejects_frac_of_train": 0.0292
+      },
+      "var_high": {
+        "params": [
+          "VAR"
+        ],
+        "reduce": null,
+        "threshold": 0.001372072845697403,
+        "n_protected": 1951226,
+        "retained": 0.9708,
+        "rejects_frac_of_train": 0.0292
+      },
+      "r770_max": {
+        "params": [
+          "R770"
+        ],
+        "reduce": null,
+        "threshold": 0.33263352513313293,
+        "n_protected": 1951226,
+        "retained": 0.9708,
+        "rejects_frac_of_train": 0.0292
+      }
+    },
+    "classes": {
+      "olivine": {
+        "n_positives": 639344,
+        "param": "OLINDEX3",
+        "threshold": 0.09579376876354218,
+        "retained_after_vetoes": 0.8578,
+        "ladder_precisions": [
+          0.4066,
+          0.65,
+          0.7814,
+          0.8668,
+          0.9628,
+          0.9767,
+          0.9558
+        ]
+      },
+      "lcp": {
+        "n_positives": 465973,
+        "param": "LCPINDEX2",
+        "threshold": 0.0034077134914696217,
+        "retained_after_vetoes": 0.8246,
+        "ladder_precisions": [
+          0.3335,
+          0.4871,
+          0.7033,
+          0.8474,
+          0.9704,
+          0.9982,
+          1.0
+        ]
+      },
+      "hcp": {
+        "n_positives": 306517,
+        "param": "HCPINDEX2",
+        "threshold": -0.00966422539204359,
+        "retained_after_vetoes": 0.8705,
+        "ladder_precisions": [
+          0.4132,
+          0.4478,
+          0.4153,
+          0.4001,
+          0.3138,
+          0.2997,
+          0.3533
+        ]
+      },
+      "plagioclase": {
+        "n_positives": 322417,
+        "rpeak1_window": [
+          0.7067639827728271,
+          0.868094801902771
+        ],
+        "hydration_veto": -0.0013160001253709197,
+        "per_gate_retention": 0.966053,
+        "param": "BD1300",
+        "threshold": -0.013645386323332787,
+        "retained_after_vetoes": 0.8689,
+        "ladder_precisions": [
+          0.3061,
+          0.339,
+          0.36,
+          0.3695,
+          0.3577,
+          0.3258,
+          0.2916
+        ]
+      },
+      "alteration": {
+        "n_positives": 90836,
+        "groups": {
+          "femg_phyllosilicate": {
+            "D2300": -0.006342313718050718,
+            "BD2290": -0.01134304516017437,
+            "BD1900R2": -0.01553088054060936
+          },
+          "al_phyllosilicate": {
+            "BD2210_2": 0.004851693753153086,
+            "BD1900R2": -0.01553088054060936
+          },
+          "hydrated_silica": {
+            "MIN2200": -0.0013192326296120882,
+            "BD1900R2": -0.01553088054060936
+          },
+          "sulfate": {
+            "SINDEX2": 0.0037518052849918604,
+            "BD1900R2": -0.01553088054060936
+          },
+          "carbonate": {
+            "BD2500_2": -0.04134257137775421,
+            "D2300": -0.006342313718050718
+          }
+        },
+        "retained_after_vetoes": 0.9755,
+        "ladder_precisions": [
+          0.0509,
+          0.0098
+        ]
+      }
+    },
+    "warnings": [
+      "olivine: precision is NON-MONOTONIC along the ladder [0.4066, 0.65, 0.7814, 0.8668, 0.9628, 0.9767, 0.9558] \u2014 the index is badly behaved here",
+      "hcp: precision is NON-MONOTONIC along the ladder [0.4132, 0.4478, 0.4153, 0.4001, 0.3138, 0.2997, 0.3533] \u2014 the index is badly behaved here",
+      "plagioclase: precision is NON-MONOTONIC along the ladder [0.3061, 0.339, 0.36, 0.3695, 0.3577, 0.3258, 0.2916] \u2014 the index is badly behaved here",
+      "alteration: precision is NON-MONOTONIC along the ladder [0.0509, 0.0098] \u2014 the index is badly behaved here"
+    ],
+    "junk_per_veto_retention": 0.970756,
+    "junk_joint_retention": 0.9,
+    "junk_rejects_frac": 0.1
+  }
+}
