@@ -37,6 +37,11 @@ from models.spatial_spectral_transformer import SpatialSpectralClassifier
 
 NODATA = 65535.0
 CLIP_MAX = 0.5
+# Reflectance above this is physically impossible and marks a corrupt band.
+# MUST match data.dataset.CRISMSpectralPatchDataset.PHYS_MAX -- the classifier
+# is trained through that dataset, so any divergence feeds it values it never
+# saw. tests/test_load_tile_phys_max.py pins the two together.
+PHYS_MAX = 1.0
 # TWO different band counts, deliberately kept separate. They were one constant
 # (N_BANDS) until --dual_cr made them diverge:
 #   N_SRC_BANDS      how many bands to read out of the mrral tile. ALWAYS 59 —
@@ -235,7 +240,17 @@ def load_tile(img_path):
         data = src.read(list(range(1, N_SRC_BANDS + 1))).astype(np.float32)
         transform = src.transform
         crs = src.crs
-    nodata_mask = (data == NODATA) | ~np.isfinite(data)
+    # PHYS_MAX is part of the nodata test, NOT something the clip handles.
+    # Band 0 (410.1 nm) carries a blue-edge artefact reaching ~3900 I/F on some
+    # tiles. Clipping it yields 0.5 -- a plausible-looking reflectance -- so the
+    # pixel silently survives as data. The training dataset masks it instead
+    # (data/dataset.py: `| (patch > self.PHYS_MAX)] = 0.0`, audit 2026-06-15),
+    # and that fix never propagated here, so the classifier was trained on 0.0
+    # and deployed on 0.5. It matters beyond one channel because band 0 anchors
+    # the continuum-removal hull, distorting the whole spectrum: measured 10x
+    # inflation of apparent band depth. 826,522 px (0.272%) across 70 of the 183
+    # deployed tiles, up to 4.59% on t1389.
+    nodata_mask = (data == NODATA) | ~np.isfinite(data) | (data > PHYS_MAX)
     data = np.clip(data, 0.0, CLIP_MAX)
     data[nodata_mask] = 0.0
     valid_mask = ~nodata_mask.any(axis=0)
