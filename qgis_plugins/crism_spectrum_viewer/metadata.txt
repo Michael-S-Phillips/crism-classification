@@ -2,10 +2,10 @@
 name=CRISM Spectrum Viewer
 qgisMinimumVersion=3.0
 description=Click a polygon to view its CRISM reflectance spectrum in a dock widget.
-version=1.0.0
+version=1.1.0
 author=Phillips Lab, University of Arizona
 email=phillipsm@arizona.edu
-about=Displays CRISM MRDR reflectance spectra stored as band_00..band_58 attributes on polygon features. Wavelength axis is loaded from a sidecar *_wavelengths.json file. Supports up to 5 overlaid traces with a Clear button.
+about=Displays CRISM MRDR reflectance spectra stored as band_00..band_58 attributes on polygon features. Wavelength axis is loaded from a sidecar *_wavelengths.json file. Supports up to 5 overlaid traces with a Clear button, continuum-removal view modes (upper-hull and linear), bad-band masking and an adjustable wavelength range.
 tracker=https://github.com/example/crism_spectrum_viewer/issues
 repository=https://github.com/example/crism_spectrum_viewer
 tags=remote sensing,spectroscopy,CRISM,Mars,raster

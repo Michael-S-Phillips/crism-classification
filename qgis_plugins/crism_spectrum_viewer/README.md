@@ -31,6 +31,34 @@ Then in QGIS: **Plugins → Manage and Install Plugins → Installed** — tick
 6. Click **Clear** in the dock to reset.
 7. Click the toolbar button again to deactivate the picker.
 
+## View modes, bad bands and x-range
+
+The dock has three extra controls, all shared by every trace and all transient
+(nothing is persisted between sessions):
+
+- **View** — `Reflectance` · `Hull-CR` · `Linear-CR`. The CR modes divide out a
+  continuum: an upper convex hull, or a per-spectrum least-squares line. The
+  maths is `crism_cr.py`, a numpy-only port of the pipeline's
+  `data/continuum_removal.py` — the plugin runs in QGIS's interpreter and cannot
+  import the repo. `tests/test_plugin_cr_parity.py` (run in the `crism` env)
+  asserts the two agree to float tolerance on real spectra and on the degenerate
+  cases; **if you change either implementation, run it.**
+
+  `band_NN` values are polygon *means*, so a CR view is the CR of the mean
+  spectrum, not the mean of per-pixel CRs. The y-axis label says so.
+
+  On a layer whose band count is not 59 (e.g. VRDR, 87 bands) the CR modes are
+  disabled — CR is defined on the 59-band model wavelength grid and computing it
+  elsewhere would give a plausible, wrong spectrum. Reflectance is unaffected.
+
+- **Mask bad bands** (default **on**) — hides band 0, the 410.1 nm blue-edge
+  artefact that reaches ~1180 I/F and flattens every autoscaled y-axis, and
+  bands 16–19, the 1000–1065 nm detector-overlap window excluded from the
+  continuum fit. Masked bands are drawn as gaps (NaN), not removed, so the plot
+  never joins across them with a line that looks like data. 59-band layers only.
+
+- **x** *min* / *max* in nm, with **Full** to go back to autoscale.
+
 ## Wavelength sidecar file
 
 The plugin looks for a JSON file in the **same directory** as the `.gpkg`:
