@@ -68,13 +68,14 @@ def bad_band_mask():
     return m
 
 
-def _upper_hull_continuum(y):
+def _upper_hull_continuum(y, x=None):
     """Upper convex hull of (good_wl, y) interpolated back onto the good bands.
 
     y: (n_good,) reflectance on the good-band wavelengths (increasing). Returns
     the continuum (>= y everywhere) on those same bands.
     """
-    x = _GOOD_WL
+    if x is None:
+        x = _GOOD_WL
     n = len(x)
     hull = []
     for i in range(n):
@@ -93,33 +94,60 @@ def _upper_hull_continuum(y):
     return np.interp(x, x[hull], y[hull])
 
 
-def _cr_one(spec59):
+def _cr_one(spec59, good_idx=None):
     """Continuum-remove a single 59-band spectrum -> (59,), CR<=1, excluded->1."""
     out = np.ones(N_BANDS, dtype=np.float32)
-    y = spec59[_GOOD_IDX].astype(np.float64)
+    if good_idx is None:
+        good_idx = _GOOD_IDX
+    y = spec59[good_idx].astype(np.float64)
     # Degenerate/near-empty pixel (NODATA->0, flat): no bands.
     if not np.all(np.isfinite(y)) or float(np.max(y)) <= 1e-6:
         return out
-    cont = _upper_hull_continuum(y)
+    cont = _upper_hull_continuum(y, WAVELENGTHS_59[good_idx])
     cont = np.where(cont <= 1e-6, 1.0, cont)
     cr = y / cont
     cr = np.clip(np.nan_to_num(cr, nan=1.0, posinf=1.0, neginf=1.0), 0.0, 1.0)
-    out[_GOOD_IDX] = cr.astype(np.float32)
+    out[good_idx] = cr.astype(np.float32)
     return out
 
 
-def hull_cr(spec):
+def hull_cr(spec, extra_exclude=None):
     """Upper-hull CR of a spectrum or batch. spec: (..., 59) -> same shape.
 
     NaN/Inf-safe; excluded and degenerate bands -> 1.0.
+
+    extra_exclude: optional (59,) bool mask of ADDITIONAL bands to keep out of
+    the hull fit. Default None reproduces data/continuum_removal.py exactly and
+    is what the parity test pins.
+
+    Why this exists. An upper hull is anchored by its extremes, so a single
+    artefact band drags the whole continuum. Band 0 (410.1 nm) carries the
+    blue-edge artefact, and the vectorizer CLIPS it to CLIP_MAX = 0.5 rather
+    than discarding it, so polygon means routinely carry band_00 = 0.5000 beside
+    a band_01 of 0.04. Feeding that to the hull inflated the deepest apparent
+    band from 0.043 to 0.416 -- a 10x exaggeration, max deviation 0.639 across
+    the spectrum. The pipeline never sees this because load_tile marks any pixel
+    with a band above 1.0 I/F as INVALID, so the artefact never reaches the
+    model; it survives only into the display means the viewer reads. Masking
+    such a band for DISPLAY after the fit is useless -- it has already set the
+    continuum. It must be excluded from the fit itself.
     """
     spec = np.asarray(spec)
     if spec.shape[-1] != N_BANDS:
         raise ValueError('expected last dim %d, got %s' % (N_BANDS, spec.shape))
     flat = spec.reshape(-1, N_BANDS)
     out = np.empty_like(flat, dtype=np.float32)
+    if extra_exclude is None:
+        idx = _GOOD_IDX
+    else:
+        keep = _GOOD & ~np.asarray(extra_exclude, dtype=bool)
+        idx = np.where(keep)[0]
+        if idx.size < 3:
+            raise ValueError(
+                'extra_exclude leaves %d usable bands; a hull needs at least 3'
+                % idx.size)
     for i in range(flat.shape[0]):
-        out[i] = _cr_one(flat[i])
+        out[i] = _cr_one(flat[i], idx)
     return out.reshape(spec.shape).astype(np.float32)
 
 

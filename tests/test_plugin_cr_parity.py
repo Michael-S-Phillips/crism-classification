@@ -272,3 +272,59 @@ def test_parity_on_random_spectra():
         np.testing.assert_allclose(port.linear_cr(arr),
                                    pipeline.linear_continuum_removed(arr),
                                    rtol=0, atol=ATOL)
+
+
+# --------------------------------------------------------------------------
+# Bad bands must leave the CR FIT, not merely the plot
+# --------------------------------------------------------------------------
+
+def test_extra_exclude_removes_a_band_from_the_hull_fit():
+    """An upper hull is anchored by its extremes, so one artefact band drags the
+    whole continuum. Band 0 (410.1 nm) carries the blue-edge artefact and the
+    vectorizer CLIPS it to 0.5 rather than discarding it, so polygon means
+    routinely pair band_00 = 0.5 with a band_01 near 0.04. Masking it for
+    display AFTER the fit is useless -- it has already set the continuum.
+
+    Measured on a real deployed polygon: deepest band 0.4161 -> 0.0426, a 10x
+    exaggeration removed.
+    """
+    hull_cr, bad_band_mask = port.hull_cr, port.bad_band_mask
+    WAVELENGTHS_59 = port.WAVELENGTHS_59
+
+    wl = np.asarray(WAVELENGTHS_59)
+    # Baseline near 0.05 with band 0 clipped to 0.5, matching a real deployed
+    # polygon (band_00 0.5000 beside band_01 0.0403). Measured ratio 5.7x here,
+    # 9.8x on that polygon. Under the bug -- masking after the fit -- the two
+    # numbers are IDENTICAL, so any threshold above 1.0 discriminates; 2.5x is
+    # comfortably inside the real effect and clear of the boundary.
+    spec = 0.045 + 0.01 * (wl - wl.min()) / (wl.max() - wl.min())
+    spec[wl > 1400] -= 0.008 * np.exp(-0.5 * ((wl[wl > 1400] - 1900) / 200) ** 2)
+    spec[0] = 0.5                      # the clipped blue-edge artefact
+
+    diag = wl >= 1000.0
+    with_artefact = 1.0 - hull_cr(spec)[diag].min()
+    without = 1.0 - hull_cr(spec, extra_exclude=bad_band_mask())[diag].min()
+    assert with_artefact > 2.5 * without, (
+        f'band 0 did not distort the hull as expected: {with_artefact:.4f} vs '
+        f'{without:.4f} — is it still entering the fit?')
+
+
+def test_extra_exclude_none_is_byte_identical_to_the_pipeline_path():
+    """The default path must remain exactly what the parity tests pin."""
+    hull_cr = port.hull_cr
+    rng = np.random.default_rng(3)
+    spec = (0.08 + 0.15 * rng.random((16, 59))).astype(np.float64)
+    assert np.array_equal(hull_cr(spec), hull_cr(spec, extra_exclude=None))
+
+
+def test_a_clean_band0_spectrum_is_unaffected_by_the_exclusion():
+    """The fix must not silently change spectra that were never broken."""
+    hull_cr, bad_band_mask = port.hull_cr, port.bad_band_mask
+    WAVELENGTHS_59 = port.WAVELENGTHS_59
+    wl = np.asarray(WAVELENGTHS_59)
+    spec = 0.10 + 0.02 * (wl - wl.min()) / (wl.max() - wl.min())
+    spec[wl > 1400] -= 0.03 * np.exp(-0.5 * ((wl[wl > 1400] - 1900) / 200) ** 2)
+    diag = wl >= 1000.0
+    a = 1.0 - hull_cr(spec)[diag].min()
+    b = 1.0 - hull_cr(spec, extra_exclude=bad_band_mask())[diag].min()
+    assert abs(a - b) < 0.01, f'clean spectrum changed materially: {a:.4f} vs {b:.4f}'

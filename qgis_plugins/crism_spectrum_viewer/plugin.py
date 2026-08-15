@@ -294,11 +294,21 @@ class SpectrumDock(QDockWidget):
         """
         y = np.asarray(trace[2], dtype=np.float64)
         on_grid = self._trace_on_grid(trace)
+        # Bad bands must leave the CR FIT, not merely the plot. An upper hull
+        # is anchored by its extremes: band 0 (410.1 nm) carries the blue-edge
+        # artefact and the vectorizer clips it to 0.5 rather than discarding it,
+        # so a polygon mean often has band_00 = 0.5 beside a band_01 of 0.04.
+        # Fitting the hull through that inflated the deepest apparent band from
+        # 0.043 to 0.416. Masking it afterwards is too late -- it has already
+        # set the continuum.
+        mask_bad = self._badbands_chk.isChecked() and on_grid
+        extra = crism_cr.bad_band_mask() if mask_bad else None
         if mode == MODE_HULL_CR and on_grid:
-            y = np.asarray(crism_cr.hull_cr(y), dtype=np.float64)
+            y = np.asarray(crism_cr.hull_cr(y, extra_exclude=extra),
+                           dtype=np.float64)
         elif mode == MODE_LINEAR_CR and on_grid:
             y = np.asarray(crism_cr.linear_cr(y), dtype=np.float64)
-        if self._badbands_chk.isChecked() and on_grid:
+        if mask_bad:
             # The bad-band indices are grid-specific, so they are only applied
             # to the 59-band grid they were derived on.
             y = y.copy()
