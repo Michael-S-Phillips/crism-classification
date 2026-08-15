@@ -47,14 +47,29 @@ if [ "${#AFFECTED[@]}" -eq 0 ]; then
 fi
 echo "re-running ${#AFFECTED[@]} affected tiles with $CKPT"
 
-# --- stage 1: seed $NEW_PROBS with symlinks to every unaffected tile ---------
-# Symlink, not copy: these files are ~48 MB each and byte-identical to the
-# originals, which remain the authoritative copy.
+# --- stage 1: seed $NEW_PROBS with every unaffected tile ---------------------
+# Prefer a symlink: these files are ~48 MB each and byte-identical to the
+# originals, which remain the authoritative copy. The data volume here is a
+# Windows-backed mount under WSL where symlink() returns EPERM, so fall back to
+# copying rather than failing -- only the unaffected tiles take this path.
 declare -A IS_AFFECTED=()
 for p in "${AFFECTED[@]}"; do
   t="$(basename "$p")"; t="${t%%_mrral*}"
   IS_AFFECTED["$t"]=1
 done
+
+# Provenance manifest: stage 2 appends a tile here only after classify_tile
+# succeeds. Both stages consult it, so "was this file regenerated or seeded?"
+# has one unambiguous answer. Without it, stage 1 cannot tell a stale seed from
+# a finished re-run, and either deletes hours of completed work or serves the
+# old probs as corrected -- and this run takes ~18 hours, so an interruption is
+# likely rather than hypothetical.
+MANIFEST="$NEW_PROBS/.regenerated"
+mkdir -p "$NEW_PROBS"
+touch "$MANIFEST"
+declare -A DONE=()
+while read -r t; do [ -n "$t" ] && DONE["$t"]=1; done < "$MANIFEST"
+echo "manifest lists ${#DONE[@]} tiles already regenerated"
 
 n_link=0
 for src in "$OLD_PROBS"/*/*_probs.npz; do
@@ -63,12 +78,13 @@ for src in "$OLD_PROBS"/*/*_probs.npz; do
   mkdir -p "$NEW_PROBS/$mc"
   dst="$NEW_PROBS/$mc/${t}_probs.npz"
   if [ -n "${IS_AFFECTED[$t]:-}" ]; then
-    # An affected tile must be regenerated, never linked. If a stale link or
-    # file is sitting here from an interrupted run, drop it -- otherwise stage 2
-    # would skip the tile and the "corrected" product would carry the old probs.
-    rm -f "$dst"
+    # An affected tile must be regenerated, never seeded. Drop anything here
+    # that the manifest does not vouch for -- otherwise stage 2 would skip the
+    # tile and the "corrected" product would quietly carry the old probs.
+    [ -n "${DONE[$t]:-}" ] || rm -f "$dst"
   elif [ ! -e "$dst" ]; then
-    ln -s "$(cd "$(dirname "$src")" && pwd)/$(basename "$src")" "$dst"
+    abs="$(cd "$(dirname "$src")" && pwd)/$(basename "$src")"
+    ln -s "$abs" "$dst" 2>/dev/null || cp "$abs" "$dst"
     n_link=$((n_link + 1))
   fi
 done
@@ -82,15 +98,20 @@ for img in "${AFFECTED[@]}"; do
   mc="$(basename "$(dirname "$img")")"
   out="$NEW_PROBS/$mc/${t}_probs.npz"
   mkdir -p "$NEW_PROBS/$mc"
-  if [ -s "$out" ] && [ ! -L "$out" ]; then
+  if [ -n "${DONE[$t]:-}" ] && [ -s "$out" ]; then
     echo "[$i/${#AFFECTED[@]}] $t already regenerated, skipping"
     continue
   fi
   echo "[$i/${#AFFECTED[@]}] classifying $t ($mc)"
-  conda run -n crism python scripts/classify_tile_supervised.py \
+  conda run --no-capture-output -n crism python scripts/classify_tile_supervised.py \
     --tile "$img" --ckpt "$CKPT" --save_probs "$out" \
     --no_plot --continuum_removed --dual_cr --brightness_aux --pyx \
     --embed_dim 256
+  # Record only after a clean exit, so a tile killed mid-write is re-run rather
+  # than trusted. `set -e` already aborts the script on a non-zero exit.
+  [ -s "$out" ] || { echo "classify produced no output for $t" >&2; exit 1; }
+  echo "$t" >> "$MANIFEST"
+  DONE["$t"]=1
 done
 
 # --- stage 3: re-vectorize every MC on the corrected probs -------------------
