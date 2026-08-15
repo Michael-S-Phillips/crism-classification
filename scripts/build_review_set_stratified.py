@@ -176,9 +176,37 @@ def mean_band_depth(band_means: np.ndarray) -> np.ndarray:
     band_means = np.asarray(band_means, dtype=np.float32)
     if band_means.ndim != 2 or band_means.shape[1] != N_BANDS:
         raise ValueError(f'expected (N, {N_BANDS}), got {band_means.shape}')
-    cr = continuum_removed(band_means)
+    cr = _hull_cr_excluding_bad_bands(band_means)
     good = good_band_mask_59()
     return (1.0 - cr[:, good].mean(axis=1)).astype(np.float64)
+
+
+def _hull_cr_excluding_bad_bands(band_means: np.ndarray) -> np.ndarray:
+    """Hull CR with band 0 kept OUT OF THE FIT.
+
+    An upper hull is anchored by its extremes, so one artefact band sets the
+    continuum for the whole spectrum. Band 0 (410.1 nm) carries the blue-edge
+    artefact, and the vectorizer CLIPS it to CLIP_MAX = 0.5 rather than
+    discarding it (the model pipeline instead marks such pixels INVALID, so it
+    never sees them). Real deployed polygons therefore pair band_00 = 0.5000
+    with band_01 = 0.0403, and fitting through that inflated the deepest
+    apparent band from 0.043 to 0.416 -- a 10x error that would have made
+    genuinely flat spectra look mineral-bearing and corrupted the bland-adjacent
+    pool this function exists to select.
+
+    Reuses the spectrum-viewer's port rather than duplicating the maths: it is
+    numpy-only, and tests/test_plugin_cr_parity.py pins it against
+    data/continuum_removal.py, so the two cannot drift apart silently.
+    """
+    import importlib.util
+    port_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        'qgis_plugins', 'crism_spectrum_viewer', 'crism_cr.py')
+    spec = importlib.util.spec_from_file_location('_crism_cr_port', port_path)
+    port = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(port)
+    return np.asarray(port.hull_cr(band_means,
+                                   extra_exclude=port.bad_band_mask()))
 
 
 # --------------------------------------------------------------------------
