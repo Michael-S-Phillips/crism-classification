@@ -8,14 +8,21 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from dataclasses import dataclass
 from typing import Iterator, Optional
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 import fiona
 import geopandas as gpd
 import pandas as pd
 import pyproj
 from shapely.geometry.base import BaseGeometry
+
+from scripts.threshold_names import fmt_threshold
 
 # Mars 2000 sphere — used to compute polygon areas in m² when the source gpkg
 # is in geographic degrees (mc13 vector outputs are). 3396190 m matches the
@@ -62,8 +69,16 @@ def _canonical_layer(prob: float) -> str:
     physical gpkg layer name. Physical layers may carry a rank prefix
     (`thresh_01_0.99`) for QGIS ordering, but polygon_uid always uses this form
     (`thresh_0.99`) so decisions.csv references stay valid across re-vectorizations
-    that change only the physical layer names."""
-    return f'thresh_{prob:.2f}'
+    that change only the physical layer names.
+
+    Uses the shared shortest-round-tripping formatter rather than a fixed
+    `:.2f`: on the high-threshold ladder (0.99 / 0.995 / 0.999 / 0.9999) two
+    decimals COLLIDE (0.999 and 0.9999 both render `thresh_1.00`), which would
+    make polygon_uid — and therefore every decisions.csv row — ambiguous across
+    exactly the rungs the ladder exists to separate, and would silently drop
+    layers from `_canon_to_physical`. The classic grid (0.50/0.85/0.97/0.99)
+    still formats to 2 dp, so legacy uids are unchanged."""
+    return f'thresh_{fmt_threshold(prob)}'
 
 
 class PolygonQueue:

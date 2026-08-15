@@ -40,6 +40,10 @@ from pyproj import CRS
 from shapely.geometry import shape as shapely_shape
 
 PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJ not in sys.path:
+    sys.path.insert(0, PROJ)
+
+from scripts.threshold_names import fmt_threshold
 
 DEFAULT_PROBS_DIR = '/tmp/6cls_mc13'
 DEFAULT_TILE_DIR  = '/Volumes/Mars_GIS/CRISM/MRDR/mc13'
@@ -75,22 +79,11 @@ _MINERAL_NAMES_PYX_ALT = ['olivine', 'pyx', 'plagioclase', 'alteration']
 UNIFORM_THRESHOLDS = [0.50, 0.60, 0.75, 0.85, 0.90, 0.95, 0.97, 0.99]
 
 
-def _fmt_thresh(t: float) -> str:
-    """Shortest unambiguous name for a threshold, 2 dp minimum.
-
-    Two decimals for every value in the default grid, so existing layer names
-    are byte-identical and the `thresh_0.NN` references already recorded in
-    review decisions.csv keep resolving. Extra decimals ONLY when 2 dp would
-    collide -- a 0.995/0.999 ladder would otherwise render as `0.99` and `1.00`,
-    making the two strictest layers indistinguishable in QGIS, which is exactly
-    the distinction such a ladder exists to draw. polygon_queue's
-    `thresh_(?:\d+_)?(\d+(?:\.\d+)?)` already accepts either width.
-    """
-    for nd in (2, 3, 4):
-        s = f'{t:.{nd}f}'
-        if abs(float(s) - t) < 1e-12:
-            return s
-    return f'{t:.6f}'
+# Shortest unambiguous name for a threshold, 2 dp minimum. Now shared with
+# polygon_queue._canonical_layer (which builds the polygon_uid token) so the
+# physical layer name and the uid token can never disagree about how many
+# decimals a rung needs. See scripts/threshold_names.py.
+_fmt_thresh = fmt_threshold
 PER_MINERAL_THRESHOLDS = {m: list(UNIFORM_THRESHOLDS) for m in MINERAL_NAMES}
 
 MEDIAN_SIZE  = 3
