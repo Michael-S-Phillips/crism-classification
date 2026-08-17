@@ -150,10 +150,20 @@ Inherited from the hard-negatives spec so all arms share one yardstick:
 - **Hard negatives from the dust spec** are labelled bland, so `y_gate = 0`.
   They therefore train the gate directly, which is the mechanism by which the two
   interventions reinforce rather than merely coexist.
-- **Checkpoint compatibility.** The 8-wide head will not load into a 7-class
-  classifier and vice versa; size mismatch raises regardless of `strict`, so this
-  fails loudly rather than silently. `classify_tile_supervised` needs a matching
-  `--gated_head` flag, and `MODELS.md` must record which checkpoints are gated.
+- **Checkpoint compatibility — verified, and it fails loudly.**
+  `classify_tile_supervised._set_n_classes` infers the vocabulary from
+  `head.weight.shape[0]` and ends in
+  `raise ValueError(f'unsupported head size {n} (expected 5, 6, or 7)')`. An
+  8-wide gated head therefore **aborts at load** rather than being misread as an
+  8-class model — the dangerous outcome (silently inventing a class and shifting
+  every downstream index) cannot happen.
+
+  Inference needs a `--gated_head` flag that does two things: rebind the vocab to
+  the seven real classes despite the 8-wide head, and apply the `g * c` /
+  `(1-g) * b` composition before writing probabilities. Without the composition
+  the npz would contain raw conditionals, which look like probabilities, sum
+  plausibly, and are wrong. `MODELS.md` must record which checkpoints are gated,
+  because the file name will not say so.
 
 ## Risks
 
