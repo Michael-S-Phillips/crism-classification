@@ -118,3 +118,40 @@ def test_thinning_is_deterministic():
     a = thin_mask(mask, min_sep=2, max_per_tile=50, seed=7)
     b = thin_mask(mask, min_sep=2, max_per_tile=50, seed=7)
     assert np.array_equal(a, b)
+
+
+def test_uniformly_mafic_tile_is_never_mined():
+    """Regression: a flat (zero-variance) mafic/dusty band used to tie its own
+    percentile under inclusive <=/>=, so an unambiguously mafic tile selected
+    every pixel instead of none. A degenerate band carries no percentile
+    signal at all and must fall back to an absolute check, not an
+    unconditional pass."""
+    h = w = 20
+    cube = _mrrsu(h, w)
+    cube[MRRSU_IDX['OLINDEX3']][:] = 0.15     # flat, unambiguously mafic
+    cube[MRRSU_IDX['LCPINDEX2']][:] = 0.15
+    cube[MRRSU_IDX['HCPINDEX2']][:] = 0.15
+    cube[MRRSU_IDX['RBR']][:] = 6.0           # flat, dusty
+    cube[MRRSU_IDX['R770']][:] = 0.27
+    valid = np.ones((h, w), bool)
+    mask = select_dust_negatives(cube, _probs(h, w), CLASSES, valid)
+    assert mask.sum() == 0, 'a uniformly mafic tile must never be mined'
+
+
+def test_uniformly_altered_tile_is_never_mined():
+    """Regression: the zero-variance pass-through in the alteration veto
+    tested variance only, never magnitude, so a tile flat at a strongly
+    altered value slipped through as a "dust" hard negative."""
+    h = w = 20
+    cube = _mrrsu(h, w)
+    cube[MRRSU_IDX['OLINDEX3']][:] = 0.0      # no mafic signature
+    cube[MRRSU_IDX['LCPINDEX2']][:] = 0.0
+    cube[MRRSU_IDX['HCPINDEX2']][:] = 0.0
+    cube[MRRSU_IDX['RBR']][:] = 6.0           # dusty
+    cube[MRRSU_IDX['R770']][:] = 0.27
+    cube[MRRSU_IDX['D2300']][:] = 0.5         # flat, uniformly strong alteration
+    cube[MRRSU_IDX['BD1900_2']][:] = 0.5
+    cube[MRRSU_IDX['BD2210_2']][:] = 0.5
+    valid = np.ones((h, w), bool)
+    mask = select_dust_negatives(cube, _probs(h, w), CLASSES, valid)
+    assert mask.sum() == 0, 'a uniformly altered tile must never be mined'

@@ -54,6 +54,20 @@ DUSTY_PCTL = 60.0
 HARD_P = 0.90
 NON_MINERAL = frozenset({'bland', 'other', 'junk'})
 
+# Absolute sanity bounds used ONLY when a band is degenerate (zero variance
+# across the tile's valid pixels). A perfectly flat band equals its own
+# percentile by construction, so the tile-relative test carries no signal at
+# all in that case -- it would admit (or veto) the WHOLE tile regardless of
+# what the flat value actually is, including a uniformly mafic or uniformly
+# altered one. These bounds are a coarse fallback for that pathological case
+# only; they are deliberately not tight, science-grade cutoffs, and are never
+# consulted on a real (non-flat) mrrsu tile. See the module docstring on why
+# an absolute cut cannot replace the tile-relative percentile in the normal,
+# continuous case (t1249's whole-tile LCPINDEX2 median exceeds t1321's p90).
+MAFIC_ABS_MAX = 0.05        # OLINDEX3 / LCPINDEX2 / HCPINDEX2: "no mafic signature"
+ALTERATION_ABS_MAX = 0.05   # BD1900_2 / D2300 / BD2210_2: "no alteration signature"
+DUSTY_ABS_MIN = {'RBR': 1.0, 'R770': 0.1}   # different physical scales, so separate
+
 
 def _pctl(band: np.ndarray, valid: np.ndarray, q: float) -> float:
     v = band[valid]
@@ -61,41 +75,66 @@ def _pctl(band: np.ndarray, valid: np.ndarray, q: float) -> float:
     return float(np.percentile(v, q)) if v.size else np.inf
 
 
-def _below_pctl(b: np.ndarray, valid: np.ndarray, q: float) -> np.ndarray:
-    """True where b is at-or-below its tile p-th percentile.
+def _is_degenerate(b: np.ndarray, valid: np.ndarray) -> bool:
+    """True if b carries no discriminating signal across the tile's valid,
+    finite pixels (zero variance, or no valid data at all)."""
+    v = b[valid]
+    v = v[np.isfinite(v)]
+    return v.size == 0 or bool(np.ptp(v) == 0)
 
-    Inclusive on purpose: a clean tile-relative split (half the tile pinned to
-    one value, half to another -- the exact shape a real dust mantle abutting
-    mafic terrain produces) lands the percentile exactly on one group's own
-    value. MAFIC/DUSTY define the *wanted* profile, so a tie must still count
-    as qualifying, or a 50/50 split silently excludes the population the
-    percentile was meant to admit.
+
+def _below_pctl(b: np.ndarray, valid: np.ndarray, q: float, abs_max: float
+               ) -> np.ndarray:
+    """True where b qualifies as a "low" (wanted) value.
+
+    Tile-relative and inclusive for a continuous band: a clean tile-relative
+    split (half the tile pinned to one value, half to another -- the exact
+    shape a real dust mantle abutting mafic terrain produces) lands the
+    percentile exactly on one group's own value. MAFIC/DUSTY define the
+    *wanted* profile, so a tie must still count as qualifying, or a 50/50
+    split silently excludes the population the percentile was meant to admit.
+
+    A degenerate (zero-variance) band cannot be judged by percentile at all,
+    since every pixel equals the percentile by construction. That case falls
+    back to an absolute bound instead of an unconditional pass, so a tile
+    that is genuinely (uniformly) mafic is excluded rather than admitted
+    outright.
     """
+    if _is_degenerate(b, valid):
+        return np.isfinite(b) & valid & (b <= abs_max)
     return np.isfinite(b) & (b <= _pctl(b, valid, q))
 
 
-def _above_pctl(b: np.ndarray, valid: np.ndarray, q: float) -> np.ndarray:
-    """True where b is at-or-above its tile p-th percentile (see _below_pctl)."""
+def _above_pctl(b: np.ndarray, valid: np.ndarray, q: float, abs_min: float
+               ) -> np.ndarray:
+    """True where b qualifies as a "high" (wanted) value (see _below_pctl)."""
+    if _is_degenerate(b, valid):
+        return np.isfinite(b) & valid & (b >= abs_min)
     return np.isfinite(b) & (b >= _pctl(b, valid, q))
 
 
-def _no_alteration_signature(b: np.ndarray, valid: np.ndarray, q: float) -> np.ndarray:
-    """True where b is strictly below its tile p-th percentile.
+def _no_alteration_signature(b: np.ndarray, valid: np.ndarray, q: float,
+                             abs_max: float) -> np.ndarray:
+    """True where b shows no alteration signature.
 
-    Alteration is a veto, not a target profile: a tied boundary must resolve
-    toward exclusion, or a large altered block sitting exactly at its own
-    percentile slips through as a "dust" hard negative -- teaching the model
-    to miss real alteration, which is the one failure this filter exists to
-    prevent. The single exception is a perfectly flat band (zero variance
-    across valid pixels): every pixel then equals the percentile by
-    construction, carrying no signal at all, and a strict '<' would veto the
-    whole tile for nothing. That happens on real bland/featureless ground and
-    is exactly what the default-filled synthetic test tiles exercise.
+    Alteration is a veto, not a target profile: on a continuous band a tied
+    boundary must resolve toward exclusion, or a large altered block sitting
+    exactly at its own percentile slips through as a "dust" hard negative --
+    teaching the model to miss real alteration, which is the one failure this
+    filter exists to prevent. So the continuous case uses a strict '<'.
+
+    A degenerate (zero-variance) band cannot be judged by percentile at all
+    (every pixel equals the percentile by construction), so a strict '<'
+    would veto the whole tile regardless of whether the flat value is real
+    bland background or a strong, uniform alteration signature -- silently
+    no-opping the veto in exactly the case it exists to catch. The fallback
+    checks the flat value itself against an absolute bound: only a flat
+    value that is ALSO physically low passes through; a flat but strong
+    signature still vetoes the tile, per the invariant that ties resolve
+    toward exclusion.
     """
-    v = b[valid]
-    v = v[np.isfinite(v)]
-    if v.size == 0 or np.ptp(v) == 0:
-        return np.isfinite(b) & valid
+    if _is_degenerate(b, valid):
+        return np.isfinite(b) & valid & (b <= abs_max)
     return np.isfinite(b) & (b < _pctl(b, valid, q))
 
 
@@ -103,11 +142,14 @@ def select_dust_negatives(mrrsu, probs, class_names, valid) -> np.ndarray:
     """Bool (H, W) mask of dust hard negatives. Tile-relative throughout."""
     keep = valid.copy()
     for name in MAFIC:
-        keep &= _below_pctl(mrrsu[MRRSU_IDX[name]], valid, MAFIC_PCTL)
+        keep &= _below_pctl(mrrsu[MRRSU_IDX[name]], valid, MAFIC_PCTL,
+                            MAFIC_ABS_MAX)
     for name in ALTERATION:
-        keep &= _no_alteration_signature(mrrsu[MRRSU_IDX[name]], valid, ALTERATION_PCTL)
+        keep &= _no_alteration_signature(mrrsu[MRRSU_IDX[name]], valid,
+                                         ALTERATION_PCTL, ALTERATION_ABS_MAX)
     for name in DUSTY:
-        keep &= _above_pctl(mrrsu[MRRSU_IDX[name]], valid, DUSTY_PCTL)
+        keep &= _above_pctl(mrrsu[MRRSU_IDX[name]], valid, DUSTY_PCTL,
+                            DUSTY_ABS_MIN[name])
     mineral_cols = [i for i, c in enumerate(class_names) if c not in NON_MINERAL]
     if not mineral_cols:
         raise ValueError(f'no mineral classes among {class_names}')
