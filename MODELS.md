@@ -15,6 +15,16 @@ unit-balanced split rebuild, which *lowered* honest val_mAP and added
 `val_mAP_core` = mAP excluding junk). The **floor test** (6 fixed Nili/Argyre tiles)
 is the only leakage-immune cross-era comparator. See `reports/floor_tests/`.
 
+**Floor-test caveat — everything before 2026-08-17 ran with a buggy reader.** Until `82afe80`,
+`classify_tile_supervised.load_tile` clipped physically impossible reflectance to 0.5 instead of
+masking it, so inference saw values the model was never trained on (fine-tuning always masked
+them). All six floor-test tiles sit in the affected quadrants. Measured effect on the deployed
+maps: **olivine −13% to −20% at 0.97–0.995**, pyroxene ~unchanged, and on the worst single tile
+(t1389) *every* ≥0.99 olivine detection was artefact (84,371 px → 0). `dualcr_level_e87` is the
+first floor test run with the fix; comparisons against any earlier floor test therefore confound
+the model change with the reader change. To compare cleanly, re-run the older checkpoint rather
+than trusting its stored summary.
+
 Files live in `checkpoints/`. `_best.pt` = best on the stop metric; `_best_map.pt`
 = best on plain `val_mAP`; `_last.pt` = final epoch.
 
@@ -117,7 +127,7 @@ backbone, encoder_lr_scale 0.01. A name should tell you what the model *is*.
   `ft_7cls_v3b_lrscale01_best.pt` (core 0.7883 @ep6, then degraded)
 - status: honest-splits recovery sweep siblings of the winner above.
 
-### ft_7cls_cr_lrscale0001  — **current best so far** (7-class, continuum-removed)
+### ft_7cls_cr_lrscale0001  — best of the single-CR era (7-class, continuum-removed)
 - file: `ft_7cls_cr_lrscale0001_best.pt`  (classify with `--continuum_removed --brightness_aux --embed_dim 256`)
 - representation: **continuum-removed mrral** (59-band upper-hull CR, fed UN-z-scored to
   preserve absolute band depth) + per-pixel brightness as aux (aux_dim=1); CR-native 256d encoder.
@@ -130,7 +140,9 @@ backbone, encoder_lr_scale 0.01. A name should tell you what the model *is*.
   collapse). Nili oliv 1,092→475, hcp 879→208, alt 1,027→1, plag 0. Argyre: **olivine diffuse**
   (425 @0.50 → 44 @0.99, peaks low) — the known CR weakness; lcp 312→8, hcp 743→15.
 - deployed: full MC11 map at `data/vector_mc11_cr_lrscale0001/`.
-- status: **current best so far (visual/floor judgment, 2026-07-30).** Solves the LCP OOD collapse —
+- status: best-so-far as of 2026-07-30 (visual/floor judgment); **superseded 2026-08-14 by the
+  dual-CR line below** — `ft_6cls_handcore_dualcr_pyx_level` is what ships the current maps.
+  Kept as the entry that established CR as the right representation. Solves the LCP OOD collapse —
   the project's biggest open problem — at the cost of diffuse Argyre olivine. val_mAP is low and
   non-comparable; do not rank it against raw runs on val. (pyx-merge line under evaluation — see
   floor tests `pyx_lrscale001`/`pyx_lrscale0001`, not yet promoted.)
@@ -162,6 +174,91 @@ backbone, encoder_lr_scale 0.01. A name should tell you what the model *is*.
   `patch_cache_base_cr` (train-only). The dataset silently fell back to on-the-fly reads while
   `cache_is_cr` suppressed CR — see `c6e12fd`. Any earlier run pairing `--cache_is_cr` with an
   incomplete cache and *no* `--brightness_aux` would have trained on raw patches **silently**.
+
+### The handcore lineage (parents of the dual-CR line)
+
+Not previously registered; recorded here because the dual-CR entries below are
+unreadable without them. Data build `mrral_pixels_7cls_handcore.parquet`
+(2,753,758 rows / 128 tiles) — hand-cored labels, `weight scheme: level`.
+
+- `ft_7cls_handcore_level_best.pt` — val_mAP_core **0.7219**, floor `handcore_level` (2026-08-10)
+- `ft_7cls_handcore_reviewup_best.pt` — val_mAP_core **0.7239** @ep127, floor `handcore_reviewup`
+  (2026-08-10). This is the run that hit the 24 h walltime and **saved nothing**; the
+  checkpoint-on-improvement + resume machinery (`75007a2`, `bec520b`) was written in response,
+  and the checkpoints now present are from the re-run.
+- Both are 59-band single-CR (`--continuum_removed --brightness_aux --embed_dim 256`).
+- **Nili HCP @0.50: 2,329 and 2,560** — i.e. the HCP flood that the dual-CR children inherit
+  starts here. It is a property of this label set, not of the dual representation.
+
+### ft_7cls_handcore_dualcr_level  — dual-CR, 7-class · **highest monitored metric on record**
+- files: `ft_7cls_handcore_dualcr_level_best.pt` (ep87) · `_best_map.pt` (ep87, val_mAP 0.8413)
+  · `_last.pt` (ep127) · `_resume.pt` (ep125, carries optimizer + scheduler + patience state)
+- classify with `--continuum_removed --dual_cr --brightness_aux --embed_dim 256`
+- backbone: `spatial_mae_dualcr_denoising_256d_6l_best.pt` (loaded clean — Missing [], Unexpected [])
+- representation: **118-channel dual continuum removal** — hull-CR in channels 0–58 ⊕
+  **linear-CR** (per-spectrum least-squares line) in 59–117, standardised per block
+  (`hull_std` 0.070541, `linear_std` 0.172122, measured over 51,463 spectra); plus the
+  per-pixel brightness scalar as aux (1 → 16-d MLP, so `head` is 7×**272** = 256+16).
+  Motivation: hull-CR destroys alteration's broad 1–2 µm arch, which made alteration a false
+  attractor; linear-CR preserves it. See `docs/superpowers/specs/` dual-CR design.
+- data: train cache 1,988,871 × 7×7×118, val 392,113; + MTRDR plag 8,671 and
+  extra_plag_roi 1,817 dual patches with brightness sidecars
+- classes (7): olivine · lcp · hcp · plagioclase · bland · alteration · junk
+- val_mAP_core **0.8796** @ep87 (stop=val_mAP_core, patience 40) · val_mAP 0.8413
+- per-class val AP — **final epoch (127), NOT the best checkpoint.** The run only emits
+  per-class AP in the wandb end-of-run summary, so no per-class numbers exist for ep87:
+  oliv 0.987 · lcp 0.967 · hcp 0.830 · plag 0.769 · alt 0.635 · bland 0.968 · junk 0.591
+- floor (`dualcr_level_e87`, 2026-08-17): **HCP FAIL** — Nili 2,179 @0.50 / 10.5 MB,
+  Argyre 1,111 / 6.1 MB, against the known-bad v2 flood of 2,772 / 10.5 MB. All four other
+  criteria PASS: Nili LCP alive (1,675 @0.50), Nili olivine confident (763 @0.99), Argyre
+  olivine peaks @0.85 (1,427), Argyre plag 0 at every rung ≥0.95.
+- vs `dualcr_level_e68` (same file, 19 epochs earlier): **down at 0.50, up at 0.99** in every
+  class and region — Nili lcp @0.99 1,113→1,493, hcp 336→480, oliv 713→763. Nothing moved >2×.
+  Sharper, but "more mass at 0.99" is not self-evidently better for a model that saturates.
+- status: **not deployed.** Best monitored metric on record, but the HCP flood is unresolved and
+  is a lineage property — diagnose it at the label-set level before spending another training arm.
+
+### ft_6cls_handcore_dualcr_pyx_level  — dual-CR + pyx merge · **the currently deployed model**
+- files: `ft_6cls_handcore_dualcr_pyx_level_best.pt` (ep34) · `_best_map.pt` (ep24, val_mAP 0.8134)
+  · `_last.pt` (ep75) · `_resume.pt` (ep75)
+- classify with `--continuum_removed --dual_cr --brightness_aux --embed_dim 256 --pyx`
+- backbone / representation / data build: identical to `ft_7cls_handcore_dualcr_level` above,
+  differing only in the vocabulary (`head` is 6×272).
+- classes (6, `--pyx`): olivine · **pyx** (lcp+hcp merged) · plagioclase · bland · alteration · junk
+- val_mAP_core **0.8458** @ep34 · val_mAP 0.8080. Trained to ep75 without improving on ep34.
+- per-class val AP — again **final epoch (75), not ep34**: oliv 0.986 · pyx 0.961 ·
+  plag 0.763 · alt 0.546 · bland 0.964 · junk 0.562
+- floor (`dualcr_pyx_e34` + `dualcr_pyx_e34_hi`, 2026-08-14): Nili @0.99 oliv 692 · pyx 1,681 ·
+  plag 9 · alt 32. The merge recovers pyroxene the split model loses at the lcp/hcp boundary
+  (1,681 vs 1,113+336=1,449 on Nili).
+- **saturation, confirmed:** on Nili, pyx counts are flat-to-RISING across the ladder
+  (1,555 @0.50 → 1,806 @0.97 → 1,681 @0.99). Thresholds must never create regions. This is the
+  same family trait already recorded for `ft_5cls_pyxalt_cr` and `ft_6cls_pyxcr` — dual-CR did
+  **not** fix it. Practical consequence: the ladder only separates signal above ~0.999, which is
+  why the deployed products use the extended ladder
+  `[0.5, 0.85, 0.97, 0.99, 0.995, 0.999, 0.9995, 0.9999]` rather than the default 8-rung grid.
+- deployed: **MC11 + MC13 + MC26**, 183 tiles. Corrected products (post-`PHYS_MAX` fix) at
+  `data/mc_deploy_pyx_physmax/probs/` and `reports/mc_deploy_pyx_physmax/`; the superseded
+  pre-fix run is retained at `data/mc_deploy_pyx/` + `reports/mc_deploy_pyx/` for comparison.
+- status: **the model behind the current maps.** Preferred over the 7-class arm on visual
+  judgment despite a lower monitored metric (0.8458 vs 0.8796) — note the two are **not
+  directly comparable**, different vocabularies.
+
+> ### ⚠ Plagioclase val AP jumped to ~0.77 in the handcore/dual-CR line — read it carefully
+>
+> Plag AP sat at **0.069–0.152** across every architecture before this line; both dual-CR runs
+> report **~0.77**. This is *not* the `e83a827` synthetic-patch leak — that fix (2026-08-08)
+> predates these runs and `train_torch.py:351` passes `split='train'`, so train and val synth
+> patches are disjoint.
+>
+> The likelier reading is a **change of measurement, not of skill**: val plag positives now
+> include MTRDR- and ROI-derived patches, which a spectral-angle test puts at recall 0.87–0.97
+> versus 0.29–0.41 for hand-labelled plagioclase (see the audit box above). The logs also warn
+> `AP[plagioclase]: no positive val examples` repeatedly, so the metric rests on sparse positives.
+>
+> The floor test is the check, and it disagrees with the val number: Nili plag **16 polygons
+> @0.99**, Argyre **0 at every rung ≥0.95**. Treat plag ~0.77 as "finds MTRDR plag," not as a
+> solved class.
 
 ### ft_6cls_mc11val_denoise  — best MC11-alteration model (6-class)
 - file: `ft_6cls_mc11val_denoise_best.pt`
@@ -210,8 +307,25 @@ backbone, encoder_lr_scale 0.01. A name should tell you what the model *is*.
 | SPEND MAE | `spatial_mae_spend_128d_6l_best.pt` | SPEND, ep199, loss 0.0236 | smoothing bias; feeds mc11val_spend |
 | plag-aware MAE | `plag_aware_mae_128d_6l_best.pt` | multi-task (recon+aux), ep40, monitor_plag_AP 0.899 | plag-aware pretraining |
 | cont1 encoder | `cont1_encoder_only.pt` | encoder extracted from ft_bland_v3_cont1 | convenience export |
+| CR denoising MAE (256d) | `spatial_mae_cr_denoising_256d_6l_best.pt` | DenoisingSpatialSpectralMAE, 256d/6L, **59-ch hull-CR** | feeds `ft_7cls_cr_*`, `ft_6cls_pyxcr_*`, `ft_5cls_pyxalt_cr_*` |
+| **dual-CR denoising MAE** | `spatial_mae_dualcr_denoising_256d_6l_best.pt` | DenoisingSpatialSpectralMAE, 256d/6L/4-head, decoder 64d×2, mask 0.75, **118-ch dual-CR** (`n_channel_blocks=2`), ep**154** of 200, mae_loss **0.0469** | feeds BOTH dual-CR classifiers; epoch snapshots at 50/100/150/200 |
 
-All encoders are 128-dim, 6-layer, 59-band mrral input (warm-startable across all FT lines).
+Injected pretrain noise for the dual-CR MAE: `sigma_gauss` 0.0087, `sigma_spike` 0.0058,
+`sigma_column` 0.0049, spike centred on band 15 with FWHM 3 bands.
+
+Encoder input width is **not** uniform: the original line is 128-dim / 59-band raw mrral; the
+CR line is 256-dim / 59-channel hull-CR; the dual-CR line is 256-dim / **118**-channel. A
+checkpoint only warm-starts a classifier of matching width — `band_embed.weight` is
+`(embed_dim, n_channels)`, so read that tensor's shape if a checkpoint's lineage is unclear.
+
+> **⚠ The dual-CR MAE was pretrained on unmasked blue-edge pixels.**
+> `scripts/build_global_patch_cache.py:119–121` masks only `== 65535` and non-finite, then clips
+> to `CLIP_MAX = 0.5`. It does **not** apply `PHYS_MAX = 1.0`, so a 410 nm blue-edge value of
+> ~2400–3900 I/F entered the pretrain cache as a plausible-looking **0.5** rather than being
+> masked to 0.0 the way `CRISMSpectralPatchDataset` does on the labeled path. Scope on deployed
+> tiles: 832,731 px, 0.274%, in 159 of 183 tiles (`reports/phys_max_contamination.csv`).
+> Fine-tuning and (since `82afe80`) inference both mask correctly; **pretraining still does not.**
+> Rebuilding the global cache and re-pretraining is an open decision, not a done fix.
 
 ---
 
@@ -229,4 +343,5 @@ line above. Kept on disk for reproducibility; see wiki `Experiments & Results.md
 
 ---
 
-*Last updated: 2026-07-13 (initial registry).*
+*Last updated: 2026-08-17 — added the dual-CR line (encoder + both classifiers), the handcore parents, the
+PHYS_MAX reader caveat, and the plagioclase-AP caveat. Previous: 2026-07-13 (initial registry).*
