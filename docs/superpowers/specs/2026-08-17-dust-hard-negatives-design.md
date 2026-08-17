@@ -83,8 +83,19 @@ A pixel is a dust hard negative when all five hold:
 large dust mantle cannot supply the whole negative set. Without this the model
 learns one location rather than one spectral class.
 
-**Exclusion.** Drop any `(tile_id, pixel_row, pixel_col)` already present in the
-labeled parquet. Never contradict a hand label.
+**Exclusion — labels.** Drop any `(tile_id, pixel_row, pixel_col)` already present
+in the labeled parquet. Never contradict a hand label.
+
+**Exclusion — the floor-test tiles.** Mine nothing from t1249, t1250, t1321,
+t1322, t0434, t0435, t1086, t1087. All eight sit in mc11/mc13/mc26 and would
+otherwise be mined, and training on them would turn the floor test into a partial
+train-on-test — destroying the one property `MODELS.md` relies on it for ("the
+only leakage-immune cross-era comparator"). t1321 is the sharpest case: it is
+simultaneously the tile the diagnosis came from, prime dust-mining territory, and
+the tile carrying the primary success metric.
+
+This costs mining yield, and that is the correct trade. The three MC quadrants
+hold 183 tiles; losing eight leaves 175.
 
 Output: `data/hard_negatives_dust.parquet` — `tile_id`, `pixel_row`,
 `pixel_col`, `band_00..band_58`, and the `mrrsu` values used, so the selection is

@@ -12,13 +12,14 @@ floor/visual verdict. If it drifts, it's useless.
 **Metrics caveat:** `val_mAP` numbers are **not comparable across data-build eras** —
 splits, class vocab, and val composition changed (esp. the 2026-07-09 honest
 unit-balanced split rebuild, which *lowered* honest val_mAP and added
-`val_mAP_core` = mAP excluding junk). The **floor test** (6 fixed Nili/Argyre tiles)
+`val_mAP_core` = mAP excluding junk). The **floor test** (8 fixed tiles: 4 Nili, 2 Argyre,
+2 MC11 — see `scripts/floor_test.sh`)
 is the only leakage-immune cross-era comparator. See `reports/floor_tests/`.
 
 **Floor-test caveat — everything before 2026-08-17 ran with a buggy reader.** Until `82afe80`,
 `classify_tile_supervised.load_tile` clipped physically impossible reflectance to 0.5 instead of
 masking it, so inference saw values the model was never trained on (fine-tuning always masked
-them). All six floor-test tiles sit in the affected quadrants. Measured effect on the deployed
+them). All eight floor-test tiles sit in the affected quadrants. Measured effect on the deployed
 maps: **olivine −13% to −20% at 0.97–0.995**, pyroxene ~unchanged, and on the worst single tile
 (t1389) *every* ≥0.99 olivine detection was artefact (84,371 px → 0). `dualcr_level_e87` is the
 first floor test run with the fix; comparisons against any earlier floor test therefore confound
