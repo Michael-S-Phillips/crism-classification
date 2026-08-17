@@ -20,7 +20,17 @@ CKPT="${1:?usage: floor_test.sh <checkpoint.pt> [tag]}"
 TAG="${2:-$(basename "${CKPT%.pt}")}"
 PROJ="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON="conda run -n crism python"
-PROBS_ROOT="/tmp/floor_test_${TAG}"
+# PROBS_ROOT is overridable so a re-VECTORIZATION can reuse an existing run's
+# cached probs instead of spending ~35 min re-classifying identical tiles. Use it
+# with a fresh TAG when only the vectorizer changed (e.g. adding --bland_gate):
+#   PROBS_ROOT=/tmp/floor_test_dualcr_level_e87 \
+#   VECTORIZE_EXTRA_ARGS="--bland_gate 0.03" \
+#   bash scripts/floor_test.sh <ckpt> dualcr_level_e87_gated
+# The probs are a function of (checkpoint, tile, classify args) only, so sharing
+# them across tags is safe as long as those three are unchanged -- pass a
+# DIFFERENT checkpoint with a borrowed PROBS_ROOT and you will silently score the
+# old model under the new name.
+PROBS_ROOT="${PROBS_ROOT:-/tmp/floor_test_${TAG}}"
 REPORT_DIR="${PROJ}/reports/floor_tests/${TAG}"
 
 cd "$PROJ"
@@ -59,9 +69,10 @@ run_region () {
             --tile "$img" --ckpt "$CKPT" \
             --save_probs "$npz" --no_plot ${CLASSIFY_EXTRA_ARGS:-}
     done
+    # shellcheck disable=SC2086  # VECTORIZE_EXTRA_ARGS is a deliberate word-split list
     $PYTHON scripts/vectorize_per_mineral_thresholds_nili_6cls.py \
         --probs_dir "$probs_dir" --out_dir "$out_dir" \
-        --tile_dir "$tile_dir" --tiles "$@" \
+        --tile_dir "$tile_dir" --tiles "$@" ${VECTORIZE_EXTRA_ARGS:-} \
         | tee "${REPORT_DIR}/${region}_vectorize.log"
 }
 
