@@ -59,6 +59,7 @@ OUT_DIR   = DEFAULT_OUT_DIR
 N_BANDS  = 59
 NODATA   = 65535
 CLIP_MAX = 0.5
+PHYS_MAX = 1.0   # above this is not reflectance; mask it, do not clip it
 
 MARS_GEO_WKT = (
     'GEOGCS["GCS_Mars_2000",'
@@ -77,6 +78,18 @@ _MINERAL_NAMES_PYX = ['olivine', 'pyx', 'plagioclase', 'alteration']
 _MINERAL_NAMES_PYX_ALT = ['olivine', 'pyx', 'plagioclase', 'alteration']
 
 UNIFORM_THRESHOLDS = [0.50, 0.60, 0.75, 0.85, 0.90, 0.95, 0.97, 0.99]
+
+# The bland gate. A pixel counts as a mineral only if the model ALSO thinks it is
+# not bland. Measured motivation (dual-CR e87, Nili t1321): 35% of the 125,757 px
+# firing lcp >= 0.99 have LCPINDEX2 ~ 0 and are bright red dust (RBR 6.0 vs 3.8,
+# R770 0.26 vs 0.16 against the pixels that do show the band). The bland channel
+# separates those two populations at AUC 0.93 -- the model knows -- but at
+# absolute values of 0.087 vs 0.0067, far below any threshold, because
+# multi-label sigmoids never force p_lcp down when p_bland rises.
+#
+# The gate reads that latent signal out without retraining. It is OFF by default:
+# every product built before 2026-08-17 was ungated and must stay reproducible.
+GATE_CHANNEL_CANDIDATES = ('bland', 'other')   # 7/6-class vs 5-class vocab name
 
 
 # Shortest unambiguous name for a threshold, 2 dp minimum. Now shared with
@@ -154,6 +167,32 @@ def discover_tiles() -> list[dict]:
     return tiles
 
 
+def bland_gate_mask(
+    valid_mask: np.ndarray,
+    smoothed_probs: np.ndarray,
+    channels: list[str] | tuple[str, ...],
+    bland_gate: float | None,
+) -> np.ndarray:
+    """AND `p_bland < bland_gate` into `valid_mask`. Purely subtractive.
+
+    Pass the SMOOTHED probs, the same array the mineral threshold is read from:
+    gating a smoothed mineral channel with an unsmoothed bland channel would
+    compare two different spatial supports and nibble the edges of every polygon.
+
+    Raises if no bland-like channel exists, rather than returning the input
+    unchanged — a silent no-op would let a run advertise a gate it never applied.
+    """
+    if bland_gate is None:
+        return valid_mask
+    ci = next((channels.index(c) for c in GATE_CHANNEL_CANDIDATES if c in channels),
+              None)
+    if ci is None:
+        raise ValueError(
+            f'bland gate requested ({bland_gate}) but no bland channel: tried '
+            f'{GATE_CHANNEL_CANDIDATES}, probs carry {list(channels)}')
+    return valid_mask & (smoothed_probs[:, :, ci] < bland_gate)
+
+
 def vectorize_one_tile_one_threshold(
     tid: str,
     smoothed_mineral_prob: np.ndarray,
@@ -229,6 +268,7 @@ def vectorize_one_tile_one_threshold(
 def process_tile_all_thresholds(
     tid: str,
     mrral_path: str,
+    bland_gate: float | None = None,
 ) -> dict[str, dict[float, gpd.GeoDataFrame]]:
     npz_path = os.path.join(PROBS_DIR, f'{tid}_probs.npz')
     data = np.load(npz_path)
@@ -249,9 +289,16 @@ def process_tile_all_thresholds(
 
     with rasterio.open(mrral_path) as src:
         mrral = src.read(list(range(1, N_BANDS + 1))).astype(np.float32)
-    nd_mask = (mrral == NODATA) | ~np.isfinite(mrral)
-    mrral[nd_mask] = 0.0
+    # PHYS_MAX belongs in the nodata test, not the clip -- same defect fixed in
+    # classify_tile_supervised.load_tile (82afe80). Without it a 410 nm blue-edge
+    # value of ~2400 I/F clips to 0.5 and survives as data, and these are the
+    # band_NN polygon MEANS people read in QGIS to judge a detection, so the
+    # contamination lands directly in the spectra used for review.
+    nd_mask = (mrral == NODATA) | ~np.isfinite(mrral) | (mrral > PHYS_MAX)
     np.clip(mrral, 0.0, CLIP_MAX, out=mrral)
+    mrral[nd_mask] = 0.0
+
+    gated_valid = bland_gate_mask(valid_mask, smooth, PROB_CHANNELS, bland_gate)
 
     out: dict[str, dict[float, gpd.GeoDataFrame]] = {}
     for mineral in MINERAL_NAMES:
@@ -262,7 +309,7 @@ def process_tile_all_thresholds(
             gdf = vectorize_one_tile_one_threshold(
                 tid=tid,
                 smoothed_mineral_prob=smoothed_mineral,
-                valid_mask=valid_mask,
+                valid_mask=gated_valid,
                 src_transform=src_transform,
                 src_crs=src_crs,
                 mrral_cube=mrral,
@@ -381,7 +428,17 @@ def main():
                              'left; a class whose polygon count barely falls '
                              'from 0.99 to 0.999 is not becoming more selective, '
                              'it is saturated. Default: the standard 8-rung grid.')
+    parser.add_argument('--bland_gate', type=float, default=None, metavar='P',
+                        help='Require p_bland < P for a pixel to count as ANY '
+                             'mineral. Reads out a signal the model already has '
+                             'but cannot express: on Nili t1321 the bland channel '
+                             'separates real lcp from dust-driven false lcp at '
+                             'AUC 0.93, at absolute values 0.087 vs 0.0067. '
+                             'Suggested 0.03. Default: off, so pre-2026-08-17 '
+                             'products stay reproducible.')
     args = parser.parse_args()
+    if args.bland_gate is not None and not 0.0 < args.bland_gate <= 1.0:
+        parser.error(f'--bland_gate must be in (0, 1]; got {args.bland_gate}')
 
     PROBS_DIR = args.probs_dir
     TILE_DIR  = args.tile_dir
@@ -425,7 +482,8 @@ def main():
 
     for i, t in enumerate(tiles, start=1):
         print(f'[{i}/{len(tiles)}] Vectorizing {t["tid"]} …')
-        tile_results = process_tile_all_thresholds(t['tid'], t['mrral'])
+        tile_results = process_tile_all_thresholds(t['tid'], t['mrral'],
+                                                   bland_gate=args.bland_gate)
         total = 0
         for mineral in MINERAL_NAMES:
             for thresh in PER_MINERAL_THRESHOLDS[mineral]:
