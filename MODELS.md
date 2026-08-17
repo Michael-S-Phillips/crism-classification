@@ -76,6 +76,55 @@ backbone, encoder_lr_scale 0.01. A name should tell you what the model *is*.
 > at 0.069–0.152 across every architecture tried; mislabelled hand polygons
 > explain that better than class imbalance or model capacity.
 
+> ## ⚠ ASL's probability clip stops the loss correcting confident false positives
+>
+> **Measured 2026-08-17.** Affects **every run trained with `--asl_loss`**, which
+> is the whole CR and dual-CR line. `scripts/train.py` defaults are
+> `--asl_gamma_neg 4.0 --asl_gamma_pos 0.0 --asl_clip 0.05` and no slurm job
+> overrides them.
+>
+> ASL scores a negative with `log(1 - (p - clip))`. As `p → 1` that saturates at
+> `1/clip` instead of diverging as `1/(1-p)`, so it stops cancelling the sigmoid
+> derivative `p(1-p) → 0` and the gradient dies. Plain BCE keeps
+> `|dL/dlogit| = p` because the cancellation is exact.
+>
+> `|dL/dlogit|` on a NEGATIVE, as a fraction of what BCE applies:
+>
+> | p | 0.05 | 0.20 | 0.50 | 0.90 | 0.99 | 0.999 |
+> |---|---|---|---|---|---|---|
+> | `clip=0.05` (default) | 0.0% | 0.2% | 14.6% | 81.4% | 22.4% | **2.6%** |
+> | `clip=0.0` | 0.0% | 0.7% | 23.6% | 132.8% | 113.9% | **102.4%** |
+>
+> The correction **peaks near p≈0.85–0.9 and collapses above it** — the loss
+> pushes hardest on the pixels it is least wrong about. A pixel the model is
+> 99.9% sure of, wrongly, gets 2.6% of BCE's correction; 0.3% at 0.9999.
+>
+> **`gamma_neg` is not the cause** — halving it to 2.0 leaves the 0.999 gradient
+> at 2.3%. Do not tune gamma expecting to fix this.
+>
+> **Removing the clip does not reintroduce trivial-negative noise**, which was the
+> clip's stated purpose: at `clip=0`, `gamma_neg=4` alone still suppresses easy
+> negatives (0.0% at p=0.05, 0.7% at p=0.20) while restoring hard-negative focus
+> (133% at p=0.9). That is why `clip=0` is a targeted fix rather than a reversion
+> to BCE.
+>
+> **The trade-off is real.** The clip's other role is tolerating mislabelled
+> positives sitting in the negative set. At `clip=0` a wrong label the model is
+> confident about receives the full push — and this project's hand labels are
+> known-noisy (see the plagioclase audit above). That population overlaps the
+> genuine errors, so error correction and label-noise tolerance cannot both be
+> had here.
+>
+> **This explains persistence, not origin.** Dust false positives *arise* because
+> bright dusty terrain is under-represented as a hard negative in the hand-core
+> label set; they *survive* because the clip stops the loss correcting them. The
+> two fixes are complementary — see the hard-negatives and ASL-clip specs of
+> 2026-08-17.
+>
+> Pinned by `tests/test_asl_clip_gradient.py`. Ablation arm:
+> `scripts/hpc_finetune_dualcr_noclip.slurm` (`ft_7cls_handcore_dualcr_noclip`),
+> identical to the e87 job but for `--asl_clip 0.0`.
+
 ## Tier 1 — Milestone classifiers
 
 ### ft_review_mtrdr  — champion (5-class)
