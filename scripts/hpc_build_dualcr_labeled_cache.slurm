@@ -35,10 +35,31 @@ DATA_ROOT=/xdisk/sbyrne/phillipsm/CRISM_MRDR                    # ALL bulk data
 DATA_DIR=${DATA_ROOT}/crism_classification/data
 PYTHON=/groups/sbyrne/phillipsm/micromamba/envs/crism/bin/python
 
-PARQUET=${DATA_DIR}/mrral_pixels_7cls_handcore.parquet
-RAW_CACHE=${DATA_DIR}/patch_cache_handcore
-DUAL_CACHE=${DATA_DIR}/patch_cache_handcore_dualcr
+# Overridable from the environment so a SECOND arm can build its own cache with
+# the same, already-hardened job. The defaults are exactly the values this job
+# has always used, so every existing caller (`sbatch scripts/...`) is unchanged.
+# The hard-negative arm (scripts/hpc_finetune_dualcr_hardneg.slurm) needs
+# patch_cache_handcore_dualcr_hardneg built from the merged parquet:
+#
+#   PARQUET=${DATA_DIR}/mrral_pixels_7cls_handcore_hardneg.parquet \
+#   RAW_CACHE=${DATA_DIR}/patch_cache_handcore_hardneg \
+#   DUAL_CACHE=${DATA_DIR}/patch_cache_handcore_dualcr_hardneg \
+#     sbatch --export=ALL,PARQUET,RAW_CACHE,DUAL_CACHE \
+#            scripts/hpc_build_dualcr_labeled_cache.slurm
+#
+# All three move together: the raw cache is row-aligned to ITS parquet, so
+# pointing PARQUET at a different file while RAW_CACHE still names the old one
+# would hand the dual step a cache whose rows belong to another dataset. The
+# build lock is derived from DUAL_CACHE, so two arms building concurrently take
+# two different locks rather than blocking each other.
+PARQUET=${PARQUET:-${DATA_DIR}/mrral_pixels_7cls_handcore.parquet}
+RAW_CACHE=${RAW_CACHE:-${DATA_DIR}/patch_cache_handcore}
+DUAL_CACHE=${DUAL_CACHE:-${DATA_DIR}/patch_cache_handcore_dualcr}
 SPLITS="train val test"
+
+echo "PARQUET=$PARQUET"
+echo "RAW_CACHE=$RAW_CACHE"
+echo "DUAL_CACHE=$DUAL_CACHE"
 
 cd "$WORK_DIR" || { echo "ERROR: cannot cd $WORK_DIR"; exit 1; }
 mkdir -p logs

@@ -70,6 +70,8 @@ ENCODER=${CKPT_DIR}/spatial_mae_dualcr_denoising_${EMBED_DIM}d_6l_best.pt
 
 PARQUET=${DATA_DIR}/mrral_pixels_7cls_handcore_hardneg.parquet
 CACHE_DIR=${DATA_DIR}/patch_cache_handcore_dualcr_hardneg
+# Only used to print the exact cache-build command if CACHE_DIR is missing.
+RAW_CACHE=${DATA_DIR}/patch_cache_handcore_hardneg
 RUN_NAME=ft_7cls_handcore_dualcr_hardneg
 
 # MTRDR plagioclase — the same pixels ft_7cls_handcore_level uses, in this arm's
@@ -102,7 +104,13 @@ for split in train val; do
              "${CACHE_DIR}/mrral_${split}_patches_p7_brightness.npy"; do
         [ -f "$f" ] || {
             echo "ERROR: dual-CR patch cache incomplete — missing $f"
-            echo "Build it: sbatch scripts/hpc_build_dualcr_labeled_cache.slurm"
+            echo "Build it (the cache job's paths are env-overridable; the bare"
+            echo "sbatch would build the COMPARATOR's cache, not this arm's):"
+            echo "  PARQUET=$PARQUET \\"
+            echo "  RAW_CACHE=${RAW_CACHE} \\"
+            echo "  DUAL_CACHE=$CACHE_DIR \\"
+            echo "    sbatch --export=ALL,PARQUET,RAW_CACHE,DUAL_CACHE \\"
+            echo "           scripts/hpc_build_dualcr_labeled_cache.slurm"
             exit 1; }
     done
 done
