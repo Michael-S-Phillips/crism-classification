@@ -317,7 +317,13 @@ $PYTHON -u scripts/train.py \
 echo "=== $RUN_NAME end $(date) ==="
 echo "Floor-test with (--dual_cr is REQUIRED; classify_tile_supervised verifies the"
 echo "checkpoint's own first-layer width against it and aborts on a mismatch):"
-# No vocab flag: classify_tile_supervised._set_n_classes reads head.weight and a
-# 7-wide head auto-selects the 7-class vocab. --seven_class does not exist there.
-echo "  CLASSIFY_EXTRA_ARGS=\"--continuum_removed --dual_cr --brightness_aux --embed_dim ${EMBED_DIM}\" \\"
+# --gated_head is REQUIRED here and is this arm's only departure from the noclip
+# command. classify_tile_supervised._set_n_classes reads head.weight; this arm's
+# head is 8 wide (1 gate logit + 7 conditionals), which without the flag is
+# indistinguishable from an unsupported 8-class head and aborts with
+# "unsupported head size 8". The flag also switches the probability write from a
+# raw sigmoid to the g*c / (1-g)*c composition -- without it the numbers would be
+# raw conditionals, not probabilities. Still no vocab flag: --gated_head selects
+# the 7-class vocab itself, and --seven_class does not exist there.
+echo "  CLASSIFY_EXTRA_ARGS=\"--continuum_removed --dual_cr --brightness_aux --gated_head --embed_dim ${EMBED_DIM}\" \\"
 echo "    bash scripts/floor_test.sh ${CKPT_DIR}/${RUN_NAME}_best.pt ${RUN_NAME}"
