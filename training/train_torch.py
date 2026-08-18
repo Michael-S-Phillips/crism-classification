@@ -233,6 +233,19 @@ def train_torch_model(
         raise ValueError('--gated_head requires --asl_loss (GatedAsymmetricLoss '
                          'is the only gated loss implemented)')
 
+    # Gate partition, resolved ONCE and shared by the loss and the validation
+    # metric. The composition g*c / (1-g)*c has exactly one implementation
+    # (models.gated_classifier.compose_gated_probs) with three call sites:
+    # this loss, this validation loop, and scripts/classify_tile_supervised.py.
+    # A validation loop that scored raw conditionals instead would silently
+    # compare the gate logit against the olivine label and shift every column
+    # after it -- no crash, just 24 hours of checkpoint selection on noise.
+    gate_partition = None
+    if gated_head:
+        from data.dataset import LABEL_COLS as _GATE_LABEL_COLS
+        from models.gated_classifier import class_partition, compose_gated_probs
+        gate_partition = class_partition(_GATE_LABEL_COLS)
+
     if device is None:
         device = get_device()
     device = torch.device(device)
@@ -449,10 +462,8 @@ def train_torch_model(
             f"λ_b={decomp_lambda_b}, λ_smooth={decomp_lambda_smooth}"
         )
     elif use_asl_loss and gated_head:
-        from data.dataset import LABEL_COLS
-        from models.gated_classifier import class_partition
         from training.gated_losses import GatedAsymmetricLoss
-        mineral_idx, non_mineral_idx = class_partition(LABEL_COLS)
+        mineral_idx, non_mineral_idx = gate_partition
         loss_fn = GatedAsymmetricLoss(
             mineral_idx, non_mineral_idx, gamma_neg=asl_gamma_neg,
             gamma_pos=asl_gamma_pos, clip=asl_clip, lambda_gate=1.0)
@@ -633,6 +644,7 @@ def train_torch_model(
         val_T_means, val_b_means, val_eps_norms = [], [], []
         val_disc_correct, val_disc_total = 0.0, 0
         val_n_norms = []
+        val_gates = []      # gated-only; stays empty otherwise
 
         with torch.no_grad():
             for batch in val_loader:
@@ -661,7 +673,16 @@ def train_torch_model(
                     val_eps_norms.append(eps_hat.norm(dim=-1).mean().item())
                 else:
                     logits = model(features, aux2) if is_aux_model else model(features)
-                all_logits.append(torch.sigmoid(logits).cpu().numpy())
+                if gate_partition is not None:
+                    # Compose exactly as the loss and inference do. Appending
+                    # raw sigmoids here would hand compute_map an (N, 8) array
+                    # with the GATE in column 0 to score against (N, 7) labels
+                    # -- silently misaligned, never an error.
+                    probs, gate = compose_gated_probs(logits, *gate_partition)
+                    all_logits.append(probs.cpu().numpy())
+                    val_gates.append(gate.cpu().numpy())
+                else:
+                    all_logits.append(torch.sigmoid(logits).cpu().numpy())
                 all_labels.append(labels.numpy())
 
         y_score = np.concatenate(all_logits)
@@ -691,6 +712,25 @@ def train_torch_model(
                 os.replace(_tm, _pm)
         flat = _flatten_metrics(metrics)
         flat['val_mAP_core'] = val_map_core
+
+        # Gate health (gated runs only). design.md:171-173 flags both failure
+        # modes as the arm's main risk: a gate saturating near 1 degenerates
+        # to the flat head this arm exists to replace, and one near 0 kills
+        # every mineral at once. The gate BCE is unweighted and runs ~3.6x the
+        # main ASL term at lambda_gate=1.0, so saturation is a live risk --
+        # without these numbers it would stay invisible until a tile is
+        # classified a day after the job ends. Quantiles, not just the mean:
+        # a bimodal gate (half shut, half open) has an unremarkable mean.
+        gate_stats = ''
+        if val_gates:
+            _g = np.concatenate(val_gates)
+            _p10, _p50, _p90 = np.percentile(_g, [10, 50, 90])
+            flat['val_gate_mean'] = float(_g.mean())
+            flat['val_gate_p10'] = float(_p10)
+            flat['val_gate_p50'] = float(_p50)
+            flat['val_gate_p90'] = float(_p90)
+            gate_stats = (f" | gate_mean={_g.mean():.4f} "
+                          f"(p10={_p10:.4f} p50={_p50:.4f} p90={_p90:.4f})")
         # Pick the scalar we early-stop on. Default 'val_mAP_core'. Any flat
         # key works ('val_mAP' itself is promoted to core above).
         if stop_metric == 'val_mAP_core':
@@ -706,7 +746,7 @@ def train_torch_model(
         logger.info(
             f"Epoch {epoch}/{max_epochs} | train_loss={np.mean(train_losses):.4f} | "
             f"val_mAP={val_map:.4f} | val_mAP_core={val_map_core:.4f} | "
-            f"{stop_metric}={monitored:.4f}"
+            f"{stop_metric}={monitored:.4f}{gate_stats}"
         )
 
         if use_wandb:
