@@ -86,6 +86,13 @@ PYX_ALT_MODE = False
 _CLASS_NAMES_PYX_ALT = ['olivine', 'pyx', 'plagioclase', 'other', 'alteration']
 _CLASS_COLORS_PYX_ALT = ['#e6194b', '#0000ff', '#f58231', '#aaaaaa', '#cc8899']
 
+# hierarchical mineral gate (Task 4): an 8-wide head (1 gate logit + 7
+# conditionals) is otherwise indistinguishable from an unsupported 8-class
+# head. --gated_head sets GATED_MODE=True before the checkpoint loads to
+# disambiguate, and also switches the probability write from raw sigmoid to
+# the g*c / (1-g)*c composition (models/gated_classifier.compose_gated_probs).
+GATED_MODE = False
+
 
 def _set_n_classes(state):
     """Rebind N_CLASSES / CLASS_NAMES / CLASS_COLORS from a checkpoint
@@ -115,6 +122,11 @@ def _set_n_classes(state):
         N_CLASSES, CLASS_NAMES, CLASS_COLORS = 7, _CLASS_NAMES_7, _CLASS_COLORS_7
     elif n == 5:
         pass
+    elif n == 8 and GATED_MODE:
+        # 8 = 1 gate + 7 conditionals. Without --gated_head this falls through
+        # to the raise below, which is the correct outcome: reading it as 8
+        # classes would invent a class and shift every downstream index.
+        N_CLASSES, CLASS_NAMES, CLASS_COLORS = 7, _CLASS_NAMES_7, _CLASS_COLORS_7
     else:
         raise ValueError(f'unsupported head size {n} (expected 5, 6, or 7)')
     print(f'  checkpoint head: {N_CLASSES}-class {CLASS_NAMES}')
@@ -433,6 +445,15 @@ def run_supervised(tile, model, device, batch_size=4096, aux_rasters=None,
         extract_patches_batched(cr_padded, batch_size, already_padded=True)
         if continuum_removed else extract_patches_batched(tile, batch_size))
 
+    # Gated heads emit 8 logits (1 gate + 7 conditionals) that must be composed
+    # into 7 probabilities via g*c / (1-g)*c -- never written to the npz as raw
+    # conditionals, which look like probabilities and are wrong. See
+    # models/gated_classifier.py.
+    mineral_idx = non_mineral_idx = None
+    if GATED_MODE:
+        from models.gated_classifier import class_partition, compose_gated_probs
+        mineral_idx, non_mineral_idx = class_partition(CLASS_NAMES)
+
     from tqdm import tqdm
     with torch.no_grad():
         for patches, idx in tqdm(patch_iter, total=n_batches, desc='Classifying'):
@@ -450,7 +471,11 @@ def run_supervised(tile, model, device, batch_size=4096, aux_rasters=None,
                 logits = model(x, aux_batch)              # aux path (aux_dim=2)
             else:
                 logits = model(x)                         # (B, N)
-            p = torch.sigmoid(logits).cpu().numpy()       # (B, N)
+            if GATED_MODE:
+                p_batch, _gate = compose_gated_probs(logits, mineral_idx, non_mineral_idx)
+                p = p_batch.cpu().numpy()                 # (B, 7), composed g*c / (1-g)*c
+            else:
+                p = torch.sigmoid(logits).cpu().numpy()   # (B, N)
             probs[idx] = p
 
     return probs
@@ -641,6 +666,14 @@ def main():
                              "(olivine/pyx/plagioclase/other/alteration). Forces a "
                              '5-class head to _CLASS_NAMES_PYX_ALT instead of the '
                              'default lcp/hcp vocab. Must be set before load.')
+    parser.add_argument('--gated_head', action='store_true',
+                        help='Checkpoint uses the hierarchical mineral gate '
+                             '(8-wide head: 1 gate + 7 conditionals). '
+                             'Probabilities are composed as g*c / (1-g)*c '
+                             '(models/gated_classifier.py) rather than a plain '
+                             'sigmoid. Requires --mrrsu_aux or --brightness_aux '
+                             '(GatedSpatialSpectralClassifierAux is an aux-head '
+                             'model). Must be set before the checkpoint is loaded.')
     args = parser.parse_args()
 
     if args.brightness_aux and not args.continuum_removed:
@@ -653,6 +686,9 @@ def main():
     if args.dual_cr:
         print(f'  dual-CR ON: {model_n_bands(True)}-channel input '
               f'(hull 0-58 ⊕ linear 59-117)')
+    if args.gated_head and not (args.mrrsu_aux or args.brightness_aux):
+        parser.error('--gated_head requires --mrrsu_aux or --brightness_aux '
+                     '(GatedSpatialSpectralClassifierAux is an aux-head model).')
 
     if args.pyx:
         global PYX_MODE
@@ -660,6 +696,9 @@ def main():
     if args.pyx_alt:
         global PYX_ALT_MODE
         PYX_ALT_MODE = True
+    if args.gated_head:
+        global GATED_MODE
+        GATED_MODE = True
 
     tile_name = os.path.splitext(os.path.basename(args.tile))[0]
     device = get_device()
@@ -672,7 +711,10 @@ def main():
 
     print(f'Loading classifier: {args.ckpt}')
     if args.mrrsu_aux or args.brightness_aux:
-        from models.spatial_spectral_classifier_aux import SpatialSpectralClassifierAux
+        if GATED_MODE:
+            from models.gated_classifier import GatedSpatialSpectralClassifierAux as _ClassifierAuxCls
+        else:
+            from models.spatial_spectral_classifier_aux import SpatialSpectralClassifierAux as _ClassifierAuxCls
         state = torch.load(args.ckpt, map_location=device, weights_only=False)
         if isinstance(state, dict) and 'model_state' in state:
             val_map = state.get('val_mAP', None)
@@ -682,7 +724,10 @@ def main():
         assert_ckpt_channels(state, args.dual_cr)
         # brightness aux is a single 1-D scalar (aux_dim=1); mrrsu aux is 2-D.
         aux_dim = 1 if args.brightness_aux else 2
-        model = SpatialSpectralClassifierAux(
+        # N_CLASSES is already 7 here (rebound by _set_n_classes for the gated
+        # 8-wide head); GatedSpatialSpectralClassifierAux adds its own +1 for
+        # the gate logit internally, matching the checkpoint's 8-wide head.
+        model = _ClassifierAuxCls(
             n_bands=model_n_bands(args.dual_cr), patch_size=PATCH_SIZE, n_classes=N_CLASSES,
             embed_dim=args.embed_dim, n_heads=4, n_layers=args.n_layers, aux_dim=aux_dim,
         ).to(device)
