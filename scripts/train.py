@@ -295,6 +295,18 @@ def build_args():
         parser.error('--brightness_aux requires --continuum_removed.')
     if args.brightness_aux and args.model != 'spatial_vit_aux':
         parser.error('--brightness_aux requires --model spatial_vit_aux.')
+    if args.gated_head and args.model != 'spatial_vit_aux':
+        # GatedSpatialSpectralClassifierAux (models/gated_classifier.py) is a
+        # thin subclass of SpatialSpectralClassifierAux ONLY. The other five
+        # ASL-capable branches build unrelated classes (SpectralCNN1D,
+        # SpectralTransformer, SpectralHybridClassifier, the non-Aux
+        # SpatialSpectralClassifier used by --model spatial_vit, DecompSpVit,
+        # DecompSpVitAdv) with no gated counterpart and, except spatial_vit,
+        # a hardcoded n_classes=5 regardless of --seven_class. Refuse here
+        # instead of letting GatedAsymmetricLoss fail deep inside the loss
+        # computation on a shape mismatch.
+        parser.error('--gated_head requires --model spatial_vit_aux (the only '
+                     'model with a Gated* variant).')
     if args.cache_is_cr and not args.continuum_removed:
         parser.error('--cache_is_cr requires --continuum_removed.')
     if args.dual_cr and not args.continuum_removed:
@@ -391,6 +403,36 @@ def build_args():
     logging.info('weight scheme: %s', data.dataset.active_weight_scheme())
 
     return args
+
+
+def build_spatial_vit_aux_model(*, n_classes, patch_size, embed_dim, n_heads,
+                                 n_layers, dropout, aux_dim, dual_cr=False,
+                                 gated_head=False):
+    """Construct the --model spatial_vit_aux classifier.
+
+    Extracted from the `elif args.model == 'spatial_vit_aux':` branch so the
+    --gated_head class selection (flat SpatialSpectralClassifierAux, 7-wide
+    head, vs. GatedSpatialSpectralClassifierAux, which adds one gate logit on
+    top -> 8-wide head) can be exercised directly by tests without invoking
+    config/data loading or the rest of the training pipeline. Keep this in
+    sync with GatedAsymmetricLoss's expectations (models/gated_classifier.py,
+    training/gated_losses.py): the loss requires exactly n_classes+1 logits
+    when gated_head is set, and only this model class supplies them.
+    """
+    n_bands = 118 if dual_cr else 59
+    if gated_head:
+        from models.gated_classifier import GatedSpatialSpectralClassifierAux
+        return GatedSpatialSpectralClassifierAux(
+            n_bands=n_bands, patch_size=patch_size, n_classes=n_classes,
+            embed_dim=embed_dim, n_heads=n_heads, n_layers=n_layers,
+            dropout=dropout, aux_dim=aux_dim,
+        )
+    from models.spatial_spectral_classifier_aux import SpatialSpectralClassifierAux
+    return SpatialSpectralClassifierAux(
+        n_bands=n_bands, patch_size=patch_size, n_classes=n_classes,
+        embed_dim=embed_dim, n_heads=n_heads, n_layers=n_layers,
+        dropout=dropout, aux_dim=aux_dim,
+    )
 
 
 def main():
@@ -831,12 +873,11 @@ def main():
             logging.info(f'mrral_map: {len(mrral_map)} tiles found')
             df_mrral = _load_mrral_table()
             dropout = args.dropout if args.dropout is not None else 0.1
-            from models.spatial_spectral_classifier_aux import SpatialSpectralClassifierAux
-            model = SpatialSpectralClassifierAux(
-                n_bands=118 if args.dual_cr else 59,
-                patch_size=args.patch_size, n_classes=args.n_classes,
+            model = build_spatial_vit_aux_model(
+                n_classes=args.n_classes, patch_size=args.patch_size,
                 embed_dim=args.embed_dim, n_heads=args.n_heads,
                 n_layers=args.n_layers, dropout=dropout, aux_dim=aux_dim,
+                dual_cr=args.dual_cr, gated_head=args.gated_head,
             )
             if args.pretrain_ckpt:
                 ckpt = torch.load(args.pretrain_ckpt, map_location='cpu', weights_only=False)
