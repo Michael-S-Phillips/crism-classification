@@ -30,7 +30,12 @@ class AsymmetricLossFromProb(nn.Module):
         super().__init__()
         self.gamma_neg, self.gamma_pos, self.clip = gamma_neg, gamma_pos, clip
 
-    def forward(self, p, targets, weights, class_weights=None):
+    def forward(self, p, targets, weights, pos_weight=None, class_weights=None):
+        # pos_weight is accepted and ignored, exactly as training/losses.py's
+        # AsymmetricLoss does: ASL handles imbalance through its asymmetric
+        # focusing terms. It exists so train_torch's single call convention,
+        # loss_fn(logits, labels, weights, pos_weight=..., class_weights=...),
+        # reaches this loss unchanged.
         p_neg = (p - self.clip).clamp(min=0) if self.clip > 0 else p
         log_p_pos = torch.log(p.clamp(min=EPS))
         log_p_neg = torch.log((1 - p_neg).clamp(min=EPS))
@@ -63,10 +68,15 @@ class GatedAsymmetricLoss(nn.Module):
         self.lambda_gate = lambda_gate
         self.main = AsymmetricLossFromProb(gamma_neg, gamma_pos, clip)
 
-    def forward(self, logits, targets, weights, class_weights=None):
+    def forward(self, logits, targets, weights, pos_weight=None,
+                class_weights=None):
+        # pos_weight: accepted and ignored (see AsymmetricLossFromProb above).
         probs, gate = compose_gated_probs(
             logits, self.mineral_idx, self.non_mineral_idx)
-        loss = self.main(probs, targets, weights, class_weights)
+        # class_weights forwarded BY KEYWORD: pos_weight now sits in the 4th
+        # positional slot, so a positional forward here would drop the class
+        # weights into the ignored argument and silently disable them.
+        loss = self.main(probs, targets, weights, class_weights=class_weights)
         if self.lambda_gate:
             y_gate = (targets[:, self.mineral_idx].amax(dim=1) > 0).float()
             gate_bce = F.binary_cross_entropy(
