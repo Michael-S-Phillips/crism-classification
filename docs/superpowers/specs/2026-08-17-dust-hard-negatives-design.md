@@ -108,8 +108,23 @@ schema rather than assuming it: the local proxy parquets call the bland class
 `other`, the 7-class build calls it `bland`. Hard-coding either is a silent
 mislabel.
 
-- Assign each mined pixel a synthetic `polygon_id` (`dustneg_<n>`), one per
-  thinned cluster.
+- Assign each mined pixel a synthetic **integer** `polygon_id`, offset above the
+  target parquet's `polygon_id.max()` (that column is `int64`; a `dustneg_<n>`
+  string raises `ArrowInvalid` at `to_parquet`), **one per mined TILE**.
+  "One per thinned cluster" reduces to one per *pixel*, because thinning leaves
+  single pixels — and `polygon_units`' single-linkage at 0.25° then chains
+  pixels 0.017° apart across a tile, across the tile boundary, and through every
+  labeled polygon within 0.25° on the way. Measured at the miner's own density
+  (40 tiles × 3,000 px): **one** unit of 227,808 rows, 54% of the frame, handed
+  wholesale to `val`. Per tile, centroids are ~5° apart (20× the linkage radius)
+  and the same corpus yields 175 units, largest 2.3%, mined rows 70/15/15.
+- Translate the miner's `band_NN` columns to whatever the target parquet calls
+  its spectra (`m<N>` in the real file, which has **no** `band_*` columns).
+  The mapping is derived from both schemas and raises when it cannot be
+  established — never a zero-fill.
+- Anti-join the mined pixels against the labeled parquet's
+  `(tile_id, pixel_row, pixel_col)`. The miner cannot: it runs where the parquet
+  does not exist.
 - Set the bland column to 1 and every mineral column to 0.
 - `confidence_weight` / `confidence_tier`: match whatever the existing bland rows
   use, read from the target parquet. Do not invent a tier.
