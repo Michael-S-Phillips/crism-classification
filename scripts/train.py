@@ -119,6 +119,13 @@ def _build_parser():
     parser.add_argument('--asl_gamma_neg', type=float, default=4.0)
     parser.add_argument('--asl_gamma_pos', type=float, default=0.0)
     parser.add_argument('--asl_clip', type=float, default=0.05)
+    parser.add_argument('--gated_head', action='store_true',
+                        help='Hierarchical mineral-present gate: the head emits '
+                             '8 logits (1 gate + 7 conditionals) and probabilities '
+                             'are g*c for minerals, (1-g)*c for bland/junk, so '
+                             'max(p_mineral)+max(p_non-mineral) <= 1 by '
+                             'construction. Requires --seven_class. Pair with '
+                             '--asl_clip 0.0.')
     parser.add_argument('--balanced_sampling', action='store_true',
                         help='Use class-balanced WeightedRandomSampler')
     parser.add_argument('--spectral_aug', action='store_true',
@@ -592,6 +599,7 @@ def main():
                 asl_gamma_neg=args.asl_gamma_neg,
                 asl_gamma_pos=args.asl_gamma_pos,
                 asl_clip=args.asl_clip,
+                gated_head=args.gated_head,
                 use_balanced_sampling=args.balanced_sampling,
                 use_spectral_aug=args.spectral_aug,
                 aug_noise_std=args.aug_noise_std,
@@ -650,6 +658,7 @@ def main():
                 asl_gamma_neg=args.asl_gamma_neg,
                 asl_gamma_pos=args.asl_gamma_pos,
                 asl_clip=args.asl_clip,
+                gated_head=args.gated_head,
                 use_balanced_sampling=args.balanced_sampling,
                 use_spectral_aug=args.spectral_aug,
                 aug_noise_std=args.aug_noise_std,
@@ -780,6 +789,7 @@ def main():
                 asl_gamma_neg=args.asl_gamma_neg,
                 asl_gamma_pos=args.asl_gamma_pos,
                 asl_clip=args.asl_clip,
+                gated_head=args.gated_head,
                 use_balanced_sampling=args.balanced_sampling,
                 encoder_lr_scale=args.encoder_lr_scale,
                 class_weights=class_weights_tensor,
@@ -846,6 +856,7 @@ def main():
                 use_focal_loss=args.focal_loss, focal_gamma=args.focal_gamma,
                 use_asl_loss=args.asl_loss, asl_gamma_neg=args.asl_gamma_neg,
                 asl_gamma_pos=args.asl_gamma_pos, asl_clip=args.asl_clip,
+                gated_head=args.gated_head,
                 encoder_lr_scale=args.encoder_lr_scale,
                 class_weights=class_weights_tensor,
                 min_delta=args.min_delta,
@@ -932,6 +943,7 @@ def main():
                 asl_gamma_neg=args.asl_gamma_neg,
                 asl_gamma_pos=args.asl_gamma_pos,
                 asl_clip=args.asl_clip,
+                gated_head=args.gated_head,
                 use_balanced_sampling=args.balanced_sampling,
                 encoder_lr_scale=args.encoder_lr_scale,
                 class_weights=class_weights_tensor,
@@ -1006,6 +1018,7 @@ def main():
                 asl_gamma_neg=args.asl_gamma_neg,
                 asl_gamma_pos=args.asl_gamma_pos,
                 asl_clip=args.asl_clip,
+                gated_head=args.gated_head,
                 use_balanced_sampling=args.balanced_sampling,
                 encoder_lr_scale=args.encoder_lr_scale,
                 class_weights=class_weights_tensor,

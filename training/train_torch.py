@@ -178,6 +178,7 @@ def train_torch_model(
     asl_gamma_neg: float = 4.0,
     asl_gamma_pos: float = 0.0,
     asl_clip: float = 0.05,
+    gated_head: bool = False,
     use_balanced_sampling: bool = False,
     use_spectral_aug: bool = False,
     aug_noise_std: float = 0.005,
@@ -228,6 +229,10 @@ def train_torch_model(
     max_epochs=150 runs 27 more epochs, not 150 more. A resume whose epoch is
     already >= max_epochs logs and returns without training.
     """
+    if gated_head and not use_asl_loss:
+        raise ValueError('--gated_head requires --asl_loss (GatedAsymmetricLoss '
+                         'is the only gated loss implemented)')
+
     if device is None:
         device = get_device()
     device = torch.device(device)
@@ -443,6 +448,17 @@ def train_torch_model(
             f"λ_eps={decomp_lambda_eps}, λ_T={decomp_lambda_T}, "
             f"λ_b={decomp_lambda_b}, λ_smooth={decomp_lambda_smooth}"
         )
+    elif use_asl_loss and gated_head:
+        from data.dataset import LABEL_COLS
+        from models.gated_classifier import class_partition
+        from training.gated_losses import GatedAsymmetricLoss
+        mineral_idx, non_mineral_idx = class_partition(LABEL_COLS)
+        loss_fn = GatedAsymmetricLoss(
+            mineral_idx, non_mineral_idx, gamma_neg=asl_gamma_neg,
+            gamma_pos=asl_gamma_pos, clip=asl_clip, lambda_gate=1.0)
+        logger.info(
+            f'Using GatedAsymmetricLoss: gate over minerals {mineral_idx}, '
+            f'non-minerals {non_mineral_idx}, clip={asl_clip}, lambda_gate=1.0')
     elif use_asl_loss:
         from training.losses import AsymmetricLoss
         loss_fn = AsymmetricLoss(gamma_neg=asl_gamma_neg, gamma_pos=asl_gamma_pos, clip=asl_clip)
