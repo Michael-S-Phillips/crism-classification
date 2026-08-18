@@ -128,12 +128,24 @@ mislabel.
 - Set the bland column to 1 and every mineral column to 0.
 - `confidence_weight` / `confidence_tier`: match whatever the existing bland rows
   use, read from the target parquet. Do not invent a tier.
+- Set the bland column to 1, mirror it into `other` (the 7-class build keeps the
+  two mirrored via `_stamp_7cls_cols`; mined rows would otherwise be the file's
+  only `bland=1, other=0` rows), and set every mineral column to 0.
 - **Splits: reuse `split_units.assign_unit_balanced_splits` on the concatenated
-  frame. Do not assign splits directly.** `polygon_units` links polygon centroids
-  at 0.25° and unions anything sharing a literal pixel, so a mined negative near
-  a val unit is absorbed *into* that val unit and follows it. That is exactly the
-  leakage guard we want, and it already exists and is tested. Writing
-  `split='train'` by hand would put dust pixels from val terrain into train.
+  frame. Do not assign splits directly.** Writing `split='train'` by hand would
+  put dust pixels from val terrain into train.
+
+  **Corrected 2026-08-17 after measurement.** An earlier draft claimed the
+  pixel-sharing union would absorb each mined negative into a nearby val unit.
+  That is no longer true on either clause: the anti-join deletes the shared
+  pixels before splitting, and per-tile grouping puts the synthetic centroid near
+  the tile centre. What actually holds is weaker and is *accepted*: with per-tile
+  polygons, 3 of the 34 tiles carrying both mined and hand-labeled pixels share a
+  unit with their own labels, and ~1.3% of mined pixels end up cross-split from a
+  hand-labeled pixel within 0.25°. That residual is dust-background against
+  mineral polygons — different classes, not a same-polygon leak — and is the
+  accepted price of avoiding the per-pixel collapse (one unit, 54% of the frame,
+  handed wholesale to val).
 - Write a NEW parquet. The input is an input.
 
 Then the existing cache chain, unchanged: `cache_mrral_patches.py` → raw cache →
